@@ -1,0 +1,26 @@
+services:
+  agent:
+    # Image is dynamically set during deployment via IMAGE env var
+    # Defaults to building locally if IMAGE is not specified
+    image: ${IMAGE:-agent}
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8080
+      - AGENT_NAME=local-dev
+      - LOG_LEVEL=INFO
+      - RELOAD_AGENTS=true
+      - SERVE_WEB_INTERFACE=true
+      # DATABASE_URL and API Keys will be loaded from the .env file
+    env_file:
+      - .env
+    # Volumes are for hot-reloading and persisting artifacts.
+    volumes:
+      - agent_artifacts:/app/src/.adk
+    restart: always
+    command: python -m agent.server
+
+volumes:
+  agent_artifacts:
