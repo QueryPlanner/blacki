@@ -340,7 +340,7 @@ EXPOSE 8080
 ### Startup Command
 ```dockerfile
 # Run the FastAPI server via main() for unified startup logic (logging, etc.)
-CMD ["python", "-m", "agent.server"]
+CMD ["python", "-m", "blacki.server"]
 ```
 **What:** Default command when container starts
 **Why:**

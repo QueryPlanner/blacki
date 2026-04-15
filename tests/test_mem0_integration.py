@@ -9,14 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.mem0 import (
+from blacki.mem0 import (
     Mem0Manager,
     get_mem0_manager,
     is_mem0_enabled,
     save_memory,
     search_memory,
 )
-from agent.mem0.client import (
+from blacki.mem0.client import (
     _build_mem0_config,
     _create_mem0_memory_client,
     _resolve_embedder_dimensions,
@@ -35,8 +35,8 @@ def mock_mem0_enabled(client: MagicMock) -> Generator[None]:
     We patch in the manager module because that's where the functions are used.
     """
     with (
-        patch("agent.mem0.manager.is_mem0_enabled", return_value=True),
-        patch("agent.mem0.manager.get_mem0_client", return_value=client),
+        patch("blacki.mem0.manager.is_mem0_enabled", return_value=True),
+        patch("blacki.mem0.manager.get_mem0_client", return_value=client),
     ):
         yield
 
@@ -117,8 +117,8 @@ def build_mem0_module(mock_mem0_client: MagicMock) -> MagicMock:
 @pytest.fixture(autouse=True)
 def reset_mem0_globals() -> Generator[None]:
     """Reset global mem0 state before and after each test."""
-    import agent.mem0.client as client_module
-    import agent.mem0.manager as manager_module
+    import blacki.mem0.client as client_module
+    import blacki.mem0.manager as manager_module
 
     # Store original state
     original_client = client_module._mem0_client
@@ -145,7 +145,7 @@ class TestIsMem0Enabled:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test that cached enabled value is returned without re-checking."""
-        import agent.mem0.client as mem0_module
+        import blacki.mem0.client as mem0_module
 
         # Set cached value directly
         mem0_module._mem0_enabled = True
@@ -158,7 +158,7 @@ class TestIsMem0Enabled:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test that cached disabled value is returned without re-checking."""
-        import agent.mem0.client as mem0_module
+        import blacki.mem0.client as mem0_module
 
         # Set cached value directly
         mem0_module._mem0_enabled = False
@@ -190,7 +190,7 @@ class TestIsMem0Enabled:
         monkeypatch.setenv("MEM0_LLM_API_KEY", "test-key")
 
         with patch(
-            "agent.mem0.client.get_mem0_client",
+            "blacki.mem0.client.get_mem0_client",
             side_effect=Exception("Init failed"),
         ):
             result = is_mem0_enabled()
@@ -202,7 +202,7 @@ class TestIsMem0Enabled:
         """Test enabled when client initializes successfully."""
         monkeypatch.setenv("MEM0_LLM_API_KEY", "test-key")
 
-        with patch("agent.mem0.client.get_mem0_client", return_value=MagicMock()):
+        with patch("blacki.mem0.client.get_mem0_client", return_value=MagicMock()):
             result = is_mem0_enabled()
 
         assert result is True
@@ -213,7 +213,7 @@ class TestGetMem0Client:
 
     def test_returns_cached_client(self) -> None:
         """Test that cached client is returned without re-initializing."""
-        import agent.mem0.client as mem0_module
+        import blacki.mem0.client as mem0_module
 
         mock_client = MagicMock()
         mem0_module._mem0_client = mock_client
@@ -365,7 +365,7 @@ class TestMem0Manager:
         manager = Mem0Manager()
 
         with patch(
-            "agent.mem0.manager.get_mem0_client", return_value=mock_mem0_client
+            "blacki.mem0.manager.get_mem0_client", return_value=mock_mem0_client
         ) as mock_get_client:
             client = manager.client
             assert client is mock_mem0_client
@@ -380,7 +380,7 @@ class TestMem0Manager:
         manager = Mem0Manager()
 
         with patch(
-            "agent.mem0.manager.get_mem0_client", return_value=mock_mem0_client
+            "blacki.mem0.manager.get_mem0_client", return_value=mock_mem0_client
         ) as mock_get_client:
             # Access client twice
             _ = manager.client

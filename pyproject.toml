@@ -25,10 +25,12 @@ dependencies = [
     "openinference-instrumentation-google-adk>=0.1.8",
     "mem0ai>=0.1.0",
     "fastembed>=0.8.0",
+    # Telegram bot integration
+    "python-telegram-bot>=21.0,<22.0",
 ]
 
 [project.scripts]
-server = "agent.server:main"
+server = "blacki.server:main"
 
 [dependency-groups]
 dev = [
@@ -46,7 +48,7 @@ requires = ["uv_build>=0.8.21,<0.9.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = "agent"
+module-name = "blacki"
 
 [tool.ruff]
 src = ["src"]
@@ -82,7 +84,7 @@ select = [
 [tool.mypy]
 python_version = "3.13"
 mypy_path = "src"
-packages = ["agent"]
+packages = ["blacki"]
 exclude = ["init_template.py"]
 warn_return_any = true
 warn_unused_configs = true
@@ -102,10 +104,10 @@ show_error_codes = true
 source = ["src"]
 branch = true
 omit = [
-    "src/agent/**/__init__.py",
-    "src/agent/server.py",
-    "src/agent/**/agent.py",
-    "src/agent/utils/observability.py",
+    "src/blacki/**/__init__.py",
+    "src/blacki/server.py",
+    "src/blacki/**/agent.py",
+    "src/blacki/utils/observability.py",
 ]
 
 [tool.coverage.report]

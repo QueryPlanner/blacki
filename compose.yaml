@@ -20,7 +20,7 @@ services:
     volumes:
       - agent_artifacts:/app/src/.adk
     restart: always
-    command: python -m agent.server
+    command: python -m blacki.server
 
 volumes:
   agent_artifacts:

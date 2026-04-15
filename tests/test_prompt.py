@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from conftest import MockReadonlyContext
 
-from agent.prompt import (
+from blacki.prompt import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
@@ -102,7 +102,7 @@ class TestReturnGlobalInstruction:
     ) -> None:
         """Test that date updates when function is called on different days."""
         # Mock date.today() to return a specific date
-        with patch("agent.prompt.date") as mock_date:
+        with patch("blacki.prompt.date") as mock_date:
             mock_date.today.return_value = date(2025, 1, 15)
             instruction1 = return_global_instruction(mock_readonly_context)  # type: ignore
 

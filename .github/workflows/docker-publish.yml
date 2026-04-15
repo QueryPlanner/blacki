@@ -76,46 +76,94 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to Server
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Connect to Tailscale network for secure SSH access
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            # 1. Set dynamic project directory based on repository name
-            PROJECT_NAME="${{ github.event.repository.name }}"
-            PROJECT_DIR="\$HOME/$PROJECT_NAME"
-            IMAGE_NAME="ghcr.io/${{ github.repository }}:main"
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
 
-            # 2. Ensure project directory exists
-            if [ ! -d "$PROJECT_DIR" ]; then
-              echo "Project directory not found. Cloning..."
-              git clone https://github.com/${{ github.repository }} "$PROJECT_DIR"
-            fi
+      - name: Deploy to Server via Tailscale
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_TAILSCALE_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          # Setup SSH key
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-            # 3. Navigate and Update Code
-            cd "$PROJECT_DIR"
-            git pull
+          # Deploy script
+          ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" bash -s << 'DEPLOY_SCRIPT'
+          set -e
 
-            # 4. Inject Secrets into .env (Automated Configuration)
-            echo "Generating .env file from GitHub Secrets..."
-            cat <<EOF > .env
-            AGENT_NAME=production-agent
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
-            OPENROUTER_API_KEY=${{ secrets.OPENROUTER_API_KEY }}
-            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            ROOT_AGENT_MODEL=${{ secrets.ROOT_AGENT_MODEL }}
-            LANGFUSE_PUBLIC_KEY=${{ secrets.LANGFUSE_PUBLIC_KEY }}
-            LANGFUSE_SECRET_KEY=${{ secrets.LANGFUSE_SECRET_KEY }}
-            LANGFUSE_HOST=${{ secrets.LANGFUSE_HOST }}
-            LOG_LEVEL=INFO
-            PORT=8080
-            HOST=0.0.0.0
-            EOF
+          # 1. Set dynamic project directory based on repository name
+          PROJECT_NAME="blacki"
+          PROJECT_DIR="$HOME/$PROJECT_NAME"
+          IMAGE_NAME="ghcr.io/queryplanner/blacki:main"
 
-            # 5. Deploy with dynamic image
-            export IMAGE="$IMAGE_NAME"
-            docker compose pull
-            docker compose up -d
-            docker image prune -f
+          echo "=== Deploying $PROJECT_NAME to $PROJECT_DIR ==="
+
+          # 2. Ensure project directory exists
+          if [ ! -d "$PROJECT_DIR" ]; then
+            echo "Project directory not found. Cloning..."
+            git clone https://github.com/QueryPlanner/blacki "$PROJECT_DIR"
+          fi
+
+          # 3. Navigate and Update Code
+          cd "$PROJECT_DIR"
+          git pull
+
+          # 4. Stop existing container before pull (save resources on small servers)
+          echo "Stopping existing containers..."
+          docker compose down --remove-orphans 2>/dev/null || true
+
+          # 5. Aggressive cleanup for small servers
+          echo "Cleaning up old Docker resources..."
+          docker system prune -af --volumes 2>/dev/null || true
+          docker builder prune -af 2>/dev/null || true
+
+          # 6. Generate .env file from secrets (user must set these manually or use a secret manager)
+          echo "Checking .env file..."
+          if [ ! -f .env ]; then
+            echo "ERROR: .env file not found. Please create it manually on the server."
+            exit 1
+          fi
+
+          # 7. Deploy with dynamic image
+          echo "Pulling and starting containers..."
+          export IMAGE="$IMAGE_NAME"
+          docker compose pull
+          docker compose up -d
+
+          # 8. Final cleanup of unused images
+          echo "Final cleanup..."
+          docker image prune -af 2>/dev/null || true
+
+          # 9. Health check
+          echo "Waiting for health check..."
+          sleep 5
+          if curl -sf http://localhost:8080/health > /dev/null; then
+            echo "✅ Health check passed!"
+          else
+            echo "⚠️ Health check failed, checking logs..."
+            docker compose logs --tail=50
+            exit 1
+          fi
+
+          # 10. Show status
+          echo "=== Deployment Complete ==="
+          docker compose ps
+          df -h /
+          DEPLOY_SCRIPT
+
+      - name: Cleanup SSH
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa

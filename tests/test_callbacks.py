@@ -9,7 +9,7 @@ from conftest import MockMemoryCallbackContext, MockState
 from google.adk.agents.callback_context import CallbackContext
 from google.genai import types
 
-from agent.callbacks import add_memories_to_context, add_session_to_memory
+from blacki.callbacks import add_memories_to_context, add_session_to_memory
 
 
 def as_callback_context(context: MockMemoryCallbackContext) -> CallbackContext:
@@ -218,7 +218,7 @@ class TestAddMemoriesToContext:
         """Test that callback skips when mem0 is not enabled."""
         caplog.set_level(logging.DEBUG)
 
-        with patch("agent.callbacks.is_mem0_enabled", return_value=False):
+        with patch("blacki.callbacks.is_mem0_enabled", return_value=False):
             context = MockMemoriesCallbackContext()
             request = MockLlmRequestWithContents()
 
@@ -243,7 +243,7 @@ class TestAddMemoriesToContext:
             ]
         )
 
-        with patch("agent.callbacks.is_mem0_enabled", return_value=True):
+        with patch("blacki.callbacks.is_mem0_enabled", return_value=True):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
                 cast(CallbackContext, context), cast(Any, request)
@@ -276,8 +276,8 @@ class TestAddMemoriesToContext:
         }
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
             patch.dict("os.environ", {"MEM0_SEARCH_LIMIT": "5"}),
         ):
             context = MockMemoriesCallbackContext(
@@ -317,8 +317,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": []}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -347,8 +347,8 @@ class TestAddMemoriesToContext:
         )
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -374,8 +374,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
             patch.dict("os.environ", {"MEM0_SEARCH_LIMIT": "10"}),
         ):
             context = MockMemoriesCallbackContext()
@@ -407,8 +407,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -438,8 +438,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext(
                 state=MockState({"user_id": "user_abc"})
@@ -474,8 +474,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -509,8 +509,8 @@ class TestAddMemoriesToContext:
         }
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -542,8 +542,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -576,8 +576,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -611,8 +611,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -653,8 +653,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(
@@ -692,8 +692,8 @@ class TestAddMemoriesToContext:
         mock_manager.search_memory.return_value = {"memories": [{"memory": "test"}]}
 
         with (
-            patch("agent.callbacks.is_mem0_enabled", return_value=True),
-            patch("agent.callbacks.get_mem0_manager", return_value=mock_manager),
+            patch("blacki.callbacks.is_mem0_enabled", return_value=True),
+            patch("blacki.callbacks.get_mem0_manager", return_value=mock_manager),
         ):
             context = MockMemoriesCallbackContext()
             await add_memories_to_context(

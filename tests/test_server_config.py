@@ -12,10 +12,10 @@ def mock_dependencies() -> Generator[MagicMock]:
     """Mock external dependencies to prevent side effects during import."""
     with (
         patch("google.adk.cli.fast_api.get_fast_api_app") as mock_get_app,
-        patch("agent.utils.initialize_environment") as mock_init_env,
-        patch("agent.utils.configure_otel_resource"),
+        patch("blacki.utils.initialize_environment") as mock_init_env,
+        patch("blacki.utils.configure_otel_resource"),
         patch("openinference.instrumentation.google_adk.GoogleADKInstrumentor"),
-        patch("agent.utils.setup_logging"),
+        patch("blacki.utils.setup_logging"),
     ):
         # Setup basic env mock
         mock_env = MagicMock()
@@ -42,11 +42,11 @@ def mock_dependencies() -> Generator[MagicMock]:
 
 def test_server_session_db_kwargs_configuration(mock_dependencies: MagicMock) -> None:
     """Verify session_db_kwargs is configured and passed to get_fast_api_app."""
-    # Ensure agent.server is reloaded if it was already imported
-    if "agent.server" in sys.modules:
-        del sys.modules["agent.server"]
+    # Ensure blacki.server is reloaded if it was already imported
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
 
-    import agent.server  # noqa: F401
+    import blacki.server  # noqa: F401
 
     # expected kwargs
     expected_db_kwargs = {

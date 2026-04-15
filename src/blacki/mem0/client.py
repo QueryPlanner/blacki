@@ -225,7 +225,7 @@ def get_mem0_client() -> Any:
     logger.debug(f"API key source: {api_key_source}")
 
     # Step 2: Resolve LLM model
-    llm_model = os.getenv("MEM0_LLM_MODEL", "openrouter/google/gemini-2.0-flash-001")
+    llm_model = os.getenv("MEM0_LLM_MODEL", "openrouter/openai/gpt-oss-20b")
     logger.debug(f"LLM model: {llm_model}")
 
     # Step 3: Fetch additional config values

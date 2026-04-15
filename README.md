@@ -40,7 +40,7 @@ uv sync
 ### 3) Run Locally
 
 ```bash
-uv run python -m agent.server
+uv run python -m blacki.server
 ```
 Visit `http://127.0.0.1:8080`.
 
