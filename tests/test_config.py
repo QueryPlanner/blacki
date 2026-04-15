@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
-from agent.utils.config import (
+from blacki.utils.config import (
     ServerEnv,
     initialize_environment,
 )

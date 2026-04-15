@@ -5,8 +5,13 @@ features using custom OpenTelemetry setup. Includes an optional ADK web interfac
 interactive agent testing.
 """
 
+import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 import uvicorn
 from fastapi import FastAPI
@@ -19,6 +24,8 @@ from .utils import (
     initialize_environment,
     setup_logging,
 )
+
+logger = logging.getLogger(__name__)
 
 # Load and validate environment configuration
 env = initialize_environment(ServerEnv)
@@ -33,6 +40,44 @@ GoogleADKInstrumentor().instrument()
 
 # Configure logging
 setup_logging(log_level=env.log_level)
+
+# Telegram bot instance (initialized on startup)
+_telegram_bot = None
+
+
+async def _start_telegram_bot() -> None:
+    """Initialize and start the Telegram bot."""
+    global _telegram_bot
+
+    if not env.is_telegram_configured:
+        logger.info("Telegram bot not configured, skipping initialization")
+        return
+
+    try:
+        from .agent import model
+        from .telegram import TelegramConfig
+        from .telegram.bot import TelegramBot
+
+        telegram_config = TelegramConfig.model_validate(
+            {
+                "TELEGRAM_ENABLED": env.telegram_enabled,
+                "TELEGRAM_BOT_TOKEN": env.telegram_bot_token,
+            }
+        )
+        _telegram_bot = TelegramBot(telegram_config, model)
+        logger.info("Telegram bot initialized")
+
+        logger.info("Starting Telegram bot polling...")
+        await _telegram_bot.start_polling()
+    except Exception:
+        logger.exception("Failed to start Telegram bot")
+
+
+async def _stop_telegram_bot() -> None:
+    """Stop the Telegram bot."""
+    if _telegram_bot:
+        logger.info("Stopping Telegram bot...")
+        await _telegram_bot.stop()
 
 
 # Use .resolve() to handle symlinks and ensure absolute path across environments
@@ -66,12 +111,30 @@ app: FastAPI = get_fast_api_app(
 )
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Manage long-lived application resources.
+
+    Telegram polling needs to be initialized during startup and shut down
+    explicitly during application teardown. Running this in the lifespan
+    hook keeps the bot lifecycle aligned with the FastAPI app lifecycle.
+    """
+    await _start_telegram_bot()
+    try:
+        yield
+    finally:
+        await _stop_telegram_bot()
+
+
+app.router.lifespan_context = lifespan
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     """Health check endpoint for container orchestration.
 
     Returns:
-        dict with status key indicating service health
+        dict with status key indicating service health.
     """
     return {"status": "ok"}
 

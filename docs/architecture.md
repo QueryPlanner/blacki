@@ -10,13 +10,13 @@ Google ADK is useful even without Google Cloud:
 
 ### Key choices
 
-- **Entry point**: `python -m agent.server`
+- **Entry point**: `python -m blacki.server`
   - Wraps `google.adk.cli.fast_api.get_fast_api_app(...)`
   - Forces a Postgres-backed session store via `DATABASE_URL`
   - Configures OpenTelemetry for vendor-neutral tracing (Langfuse auto-config included)
 - **Agents directory**: `src/`
   - ADK Dev UI lists *directories* under `agents_dir`.
-- **Main Agent**: `src/agent/agent.py`
+- **Main Agent**: `src/blacki/agent.py`
   - Contains `root_agent` to keep ADK discovery simple.
 - **DB URL normalization**: Handled in `server.py`
   - Converts standard Postgres URLs (e.g. `postgresql://`) to asyncpg-compatible ones (`postgresql+asyncpg://`)

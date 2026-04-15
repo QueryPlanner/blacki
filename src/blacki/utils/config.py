@@ -177,6 +177,18 @@ class ServerEnv(BaseModel):
         description="Server port",
     )
 
+    telegram_enabled: bool = Field(
+        default=False,
+        alias="TELEGRAM_ENABLED",
+        description="Whether Telegram bot integration is enabled",
+    )
+
+    telegram_bot_token: str | None = Field(
+        default=None,
+        alias="TELEGRAM_BOT_TOKEN",
+        description="Telegram bot token from @BotFather",
+    )
+
     model_config = ConfigDict(
         populate_by_name=True,  # Allow both field names and aliases
         extra="ignore",  # Ignore extra env vars (system vars, etc.)
@@ -201,7 +213,10 @@ class ServerEnv(BaseModel):
         print(f"OPENROUTER_KEY:        {masked_key}")
         print(f"HOST:                  {self.host}")
         print(f"PORT:                  {self.port}")
-        print(f"ALLOW_ORIGINS:         {self.allow_origins}\n\n")
+        print(f"ALLOW_ORIGINS:         {self.allow_origins}")
+        print(f"TELEGRAM_ENABLED:      {self.telegram_enabled}")
+        masked_token = "********" if self.telegram_bot_token else None
+        print(f"TELEGRAM_BOT_TOKEN:    {masked_token}\n\n")
 
     @property
     def agent_engine_uri(self) -> str | None:
@@ -241,3 +256,12 @@ class ServerEnv(BaseModel):
         except json.JSONDecodeError as e:
             msg = f"Failed to parse ALLOW_ORIGINS as JSON: {e}"
             raise ValueError(msg) from e
+
+    @property
+    def is_telegram_configured(self) -> bool:
+        """Check if Telegram bot is properly configured.
+
+        Returns:
+            True if enabled and has a bot token, False otherwise.
+        """
+        return self.telegram_enabled and self.telegram_bot_token is not None

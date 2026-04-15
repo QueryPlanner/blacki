@@ -36,7 +36,7 @@
 
 | Task | Command | Description |
 | :--- | :--- | :--- |
-| **Run Locally** | `uv run python -m agent.server` | Starts the agent server on localhost:8080. |
+| **Run Locally** | `uv run python -m blacki.server` | Starts the agent server on localhost:8080. |
 | **Run (Script)**| `uv run server` | Alternative command using the project script entry point. |
 | **Docker Run** | `docker compose up --build -d` | Builds and starts the agent in a Docker container. |
 | **Test** | `uv run pytest` | Runs the test suite. |
@@ -47,7 +47,7 @@
 ## Development Conventions
 
 ### Code Structure
-*   **`src/agent/`**: Contains the core agent logic.
+*   **`src/blacki/`**: Contains the core agent logic.
     *   `agent.py`: Defines the `root_agent` and ADK application configuration.
     *   `server.py`: FastAPI server entry point with OTel instrumentation.
     *   `prompt.py`: Manages agent prompts and instructions.

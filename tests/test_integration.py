@@ -10,7 +10,7 @@ Future: Container-based smoke tests for CI/CD will be added here.
 from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
-from agent import app
+from blacki import app
 
 
 class AgentConfigLike(Protocol):

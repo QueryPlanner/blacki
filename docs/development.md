@@ -8,9 +8,9 @@
 
 ### Repo layout
 
-- `src/agent/server.py`: Main platform entrypoint (FastAPI + ADK + Postgres)
-- `src/agent/agent.py`: Agent definition (exports `root_agent`)
-- `src/agent/utils/`: Shared helper modules (config + observability)
+- `src/blacki/server.py`: Main platform entrypoint (FastAPI + ADK + Postgres)
+- `src/blacki/agent.py`: Agent definition (exports `root_agent`)
+- `src/blacki/utils/`: Shared helper modules (config + observability)
 - `tests/`: Unit and integration tests
 - `.env`: Configuration file (API keys, DB URL)
 
@@ -45,7 +45,7 @@ uv sync
 
 **Local Python:**
 ```bash
-uv run python -m agent.server
+uv run python -m blacki.server
 ```
 
 **Docker Compose (Recommended for full stack):**

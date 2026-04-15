@@ -1,4 +1,4 @@
-"""Unit tests for the LoggingCallbacks class in the agent.logging_callbacks module."""
+"""Unit tests for the LoggingCallbacks class in the blacki.logging_callbacks module."""
 
 import logging
 from typing import Any
@@ -17,7 +17,7 @@ from conftest import (
     MockToolContext,
 )
 
-from agent.callbacks import LoggingCallbacks
+from blacki.callbacks import LoggingCallbacks
 
 # Note: Custom mock classes (conftest.py) use duck typing to match ADK interfaces.
 
@@ -39,7 +39,7 @@ class TestLoggerInjection:
         callbacks = LoggingCallbacks()
 
         assert callbacks.logger is not None
-        assert callbacks.logger.name == "agent.callbacks"
+        assert callbacks.logger.name == "blacki.callbacks"
 
     def test_logging_callbacks_custom_logger(
         self, custom_logger: logging.Logger
