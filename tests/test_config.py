@@ -48,6 +48,39 @@ class TestServerEnv:
         assert env.openrouter_api_key is None
         assert env.allow_origins == '["http://127.0.0.1", "http://127.0.0.1:8080"]'
         assert env.host == "127.0.0.1"
+
+    def test_is_telegram_configured_true(
+        self, valid_server_env: dict[str, str]
+    ) -> None:
+        """Test is_telegram_configured returns True when enabled with token."""
+        valid_server_env["TELEGRAM_ENABLED"] = "true"
+        valid_server_env["TELEGRAM_BOT_TOKEN"] = "test-token-123"  # noqa: S105
+
+        env = ServerEnv.model_validate(valid_server_env)
+
+        assert env.is_telegram_configured is True
+
+    def test_is_telegram_configured_false_no_token(
+        self, valid_server_env: dict[str, str]
+    ) -> None:
+        """Test is_telegram_configured returns False when no token."""
+        valid_server_env["TELEGRAM_ENABLED"] = "true"
+        # Don't set TELEGRAM_BOT_TOKEN (defaults to None)
+
+        env = ServerEnv.model_validate(valid_server_env)
+
+        assert env.is_telegram_configured is False
+
+    def test_is_telegram_configured_false_disabled(
+        self, valid_server_env: dict[str, str]
+    ) -> None:
+        """Test is_telegram_configured returns False when disabled."""
+        valid_server_env["TELEGRAM_ENABLED"] = "false"
+        valid_server_env["TELEGRAM_BOT_TOKEN"] = "test-token-123"  # noqa: S105
+
+        env = ServerEnv.model_validate(valid_server_env)
+
+        assert env.is_telegram_configured is False
         assert env.port == 8080
 
     def test_server_env_optional_fields_with_values(
