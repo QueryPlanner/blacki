@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
 )
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator
+from blacki.adk_runtime import AdkRuntime, SessionLocator, TurnResponse
 
 from . import TelegramConfig
 
@@ -189,7 +189,7 @@ class TelegramBot:
         typing_task = self._start_typing_indicator(update.effective_chat.id)
 
         try:
-            response = await self.runtime.run_user_turn(
+            response = await self.runtime.run_user_turn_with_thoughts(
                 locator=SessionLocator(
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
@@ -259,10 +259,26 @@ class TelegramBot:
             session_state["telegram_thread_id"] = str(message_thread_id)
         return session_state
 
-    async def _send_response(self, message: Message, response_text: str) -> None:
-        """Send one or more Telegram messages for the assistant response."""
-        for response_chunk in self._split_response_text(response_text):
-            await message.reply_text(response_chunk)
+    async def _send_response(self, message: Message, response: TurnResponse) -> None:
+        """Send thoughts and content as separate Telegram messages."""
+        if response.thoughts:
+            await self._send_thoughts(message, response.thoughts)
+        await self._send_content(message, response.content)
+
+    async def _send_thoughts(self, message: Message, thoughts: str) -> None:
+        """Send thinking content as italicized message."""
+        formatted = f"_Thinking: {escape_markdown(thoughts)}_"
+        for chunk in self._split_response_text(formatted):
+            await message.reply_text(chunk, parse_mode="Markdown")
+
+    async def _send_content(self, message: Message, content: str) -> None:
+        """Send main response content with Markdown formatting."""
+        if not content:
+            await message.reply_text("I apologize, but I couldn't generate a response.")
+            return
+        formatted = convert_bold_to_italic(content)
+        for chunk in self._split_response_text(formatted):
+            await message.reply_text(chunk, parse_mode="Markdown")
 
     def _split_response_text(self, response_text: str) -> list[str]:
         """Split long responses into Telegram-safe chunks."""
@@ -345,6 +361,69 @@ class TelegramBot:
                 logger.info("Telegram bot stopped")
         finally:
             await self.runtime.close()
+
+
+MARKDOWN_SPECIAL_CHARS = frozenset("_*`[]")
+
+
+def escape_markdown(text: str) -> str:
+    """Escape special Markdown characters for Telegram Markdown (v1).
+
+    Does NOT escape inside code blocks or inline code - those are preserved.
+    """
+    result: list[str] = []
+    in_code_block = False
+    in_inline_code = False
+    i = 0
+
+    while i < len(text):
+        char = text[i]
+
+        if i + 2 <= len(text) and text[i : i + 3] == "```":
+            in_code_block = not in_code_block
+            result.append("```")
+            i += 3
+            continue
+
+        if char == "`" and not in_code_block:
+            in_inline_code = not in_inline_code
+            result.append(char)
+            i += 1
+            continue
+
+        if not in_code_block and not in_inline_code:
+            if char in MARKDOWN_SPECIAL_CHARS:
+                result.append("\\")
+                result.append(char)
+            else:
+                result.append(char)
+        else:
+            result.append(char)
+
+        i += 1
+
+    return "".join(result)
+
+
+def convert_bold_to_italic(text: str) -> str:
+    """Convert **bold** markdown to *bold* for Telegram Markdown.
+
+    Telegram Markdown uses single asterisks for bold, while standard Markdown
+    uses double asterisks. This function converts standard Markdown bold syntax
+    to Telegram's expected format.
+    """
+    result: list[str] = []
+    i = 0
+
+    while i < len(text):
+        if i + 1 < len(text) and text[i : i + 2] == "**":
+            result.append("*")
+            i += 2
+        else:
+            result.append(text[i])
+            i += 1
+
+    return "".join(result)
 
 
 def create_telegram_bot(

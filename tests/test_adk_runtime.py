@@ -12,8 +12,10 @@ from blacki.adk_runtime import (
     DEFAULT_EMPTY_RESPONSE,
     AdkRuntime,
     SessionLocator,
+    TurnResponse,
     _extract_event_text,
     _extract_session_version,
+    _extract_turn_parts,
     build_session_db_kwargs,
     build_session_service_uri,
     create_adk_runtime,
@@ -352,3 +354,162 @@ def test_extract_event_text_handles_leading_trailing_whitespace() -> None:
     )
 
     assert _extract_event_text(event) == "Hello world"
+
+
+def test_extract_turn_parts_separates_thoughts_from_content() -> None:
+    """Test that thoughts are separated from regular content."""
+    event = Event(
+        author="root_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="Thinking hard...", thought=True),
+                types.Part(text="Final answer", thought=False),
+            ],
+        ),
+    )
+
+    thoughts, content = _extract_turn_parts(event)
+
+    assert thoughts == "Thinking hard..."
+    assert content == "Final answer"
+
+
+def test_extract_turn_parts_handles_only_thoughts() -> None:
+    """Test event with only thought parts."""
+    event = Event(
+        author="root_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="First thought", thought=True),
+                types.Part(text="Second thought", thought=True),
+            ],
+        ),
+    )
+
+    thoughts, content = _extract_turn_parts(event)
+
+    assert thoughts == "First thoughtSecond thought"
+    assert content == ""
+
+
+def test_extract_turn_parts_handles_only_content() -> None:
+    """Test event with only content parts (no thoughts)."""
+    event = Event(
+        author="root_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="Hello "),
+                types.Part(text="world"),
+            ],
+        ),
+    )
+
+    thoughts, content = _extract_turn_parts(event)
+
+    assert thoughts == ""
+    assert content == "Hello world"
+
+
+def test_extract_turn_parts_handles_empty_event() -> None:
+    """Test event with no content returns empty strings."""
+    event = Event(author="root_agent")
+
+    thoughts, content = _extract_turn_parts(event)
+
+    assert thoughts == ""
+    assert content == ""
+
+
+def test_extract_turn_parts_skips_empty_parts() -> None:
+    """Test that parts without text are skipped."""
+    event = Event(
+        author="root_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part(text="Content", thought=False),
+                types.Part(),
+                types.Part(text="More", thought=False),
+            ],
+        ),
+    )
+
+    thoughts, content = _extract_turn_parts(event)
+
+    assert thoughts == ""
+    assert content == "ContentMore"
+
+
+async def test_run_user_turn_with_thoughts_returns_structured_response() -> None:
+    """Test that run_user_turn_with_thoughts separates thoughts and content."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Analyzing the question...", thought=True),
+                    types.Part(text="Here is my answer."),
+                ],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="Hello"
+        )
+
+    assert isinstance(response, TurnResponse)
+    assert response.thoughts == "Analyzing the question..."
+    assert response.content == "Here is my answer."
+
+
+async def test_run_user_turn_with_thoughts_handles_partial_thoughts() -> None:
+    """Test that partial thoughts are used when no final thoughts are available."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Partial thinking...", thought=True),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Final answer."),
+                ],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="Hello"
+        )
+
+    assert response.thoughts == "Partial thinking..."
+    assert response.content == "Final answer."
