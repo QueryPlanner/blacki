@@ -177,14 +177,26 @@ jobs:
           echo "Final cleanup..."
           docker image prune -af 2>/dev/null || true
 
-          # 10. Health check
+          # 10. Health check with retries
           echo "Waiting for health check..."
-          sleep 5
-          if curl -sf http://localhost:${HOST_PORT}/health > /dev/null; then
+          MAX_RETRIES=12
+          RETRY_COUNT=0
+          HEALTH_OK=false
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            if curl -sf http://localhost:${HOST_PORT}/health > /dev/null 2>&1; then
+              HEALTH_OK=true
+              break
+            fi
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            echo "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 5s..."
+            sleep 5
+          done
+
+          if [ "$HEALTH_OK" = true ]; then
             echo "✅ Health check passed on port ${HOST_PORT}!"
           else
-            echo "⚠️ Health check failed, checking logs..."
-            docker compose logs --tail=50
+            echo "⚠️ Health check failed after $MAX_RETRIES attempts, checking logs..."
+            docker compose logs --tail=100
             exit 1
           fi
 
