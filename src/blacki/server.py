@@ -16,6 +16,11 @@ from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
+from .adk_runtime import (
+    build_session_db_kwargs,
+    build_session_service_uri,
+    create_adk_runtime,
+)
 from .utils import (
     ServerEnv,
     configure_otel_resource,
@@ -55,7 +60,6 @@ async def _start_telegram_bot() -> None:
         return
 
     try:
-        from .agent import model
         from .telegram import TelegramConfig
         from .telegram.bot import TelegramBot
 
@@ -66,7 +70,8 @@ async def _start_telegram_bot() -> None:
                 "TELEGRAM_BOT_TOKEN": env.telegram_bot_token,
             }
         )
-        _telegram_bot = TelegramBot(telegram_config, model)
+        adk_runtime = create_adk_runtime(env)
+        _telegram_bot = TelegramBot(telegram_config, adk_runtime)
         logger.info("Telegram bot instance created")
 
         await _telegram_bot.start_polling()
@@ -89,19 +94,8 @@ async def _stop_telegram_bot() -> None:
 # Use .resolve() to handle symlinks and ensure absolute path across environments
 AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 
-# Handle database URL conversion for asyncpg
-session_uri = env.session_uri
-if session_uri and session_uri.startswith("postgresql://"):
-    session_uri = session_uri.replace("postgresql://", "postgresql+asyncpg://", 1)
-
-# Define engine/pool settings for asyncpg connections
-session_db_kwargs = {
-    "pool_pre_ping": env.db_pool_pre_ping,
-    "pool_recycle": env.db_pool_recycle,
-    "pool_size": env.db_pool_size,
-    "max_overflow": env.db_max_overflow,
-    "pool_timeout": env.db_pool_timeout,
-}
+session_uri = build_session_service_uri(env)
+session_db_kwargs = build_session_db_kwargs(env)
 
 # ADK fastapi app will set up OTel using resource attributes from env vars
 app: FastAPI = get_fast_api_app(
