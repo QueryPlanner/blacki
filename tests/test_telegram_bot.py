@@ -10,13 +10,15 @@ import pytest
 from telegram import Message, Update
 from telegram.ext import Application
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator
+from blacki.adk_runtime import AdkRuntime, SessionLocator, TurnResponse
 from blacki.telegram import TelegramConfig
 from blacki.telegram.bot import (
     TELEGRAM_MESSAGE_LIMIT,
     TelegramBot,
     TelegramSessionIdentity,
+    convert_bold_to_telegram,
     create_telegram_bot,
+    escape_markdown,
 )
 
 
@@ -25,6 +27,7 @@ class RecordingRuntime:
 
     def __init__(self) -> None:
         self.run_user_turn_response = "Test response"
+        self.run_user_turn_thoughts = ""
         self.run_user_turn_error: Exception | None = None
         self.create_next_session_error: Exception | None = None
         self.run_user_turn_calls: list[dict[str, Any]] = []
@@ -48,6 +51,27 @@ class RecordingRuntime:
         if self.run_user_turn_error is not None:
             raise self.run_user_turn_error
         return self.run_user_turn_response
+
+    async def run_user_turn_with_thoughts(
+        self,
+        *,
+        locator: SessionLocator,
+        message_text: str,
+        state: dict[str, Any] | None = None,
+    ) -> TurnResponse:
+        self.run_user_turn_calls.append(
+            {
+                "locator": locator,
+                "message_text": message_text,
+                "state": state,
+            }
+        )
+        if self.run_user_turn_error is not None:
+            raise self.run_user_turn_error
+        return TurnResponse(
+            thoughts=self.run_user_turn_thoughts,
+            content=self.run_user_turn_response,
+        )
 
     async def create_next_session(
         self,
@@ -416,7 +440,9 @@ async def test_handle_message_runs_adk_turn(
             },
         }
     ]
-    mock_update.message.reply_text.assert_called_once_with("Test response")
+    mock_update.message.reply_text.assert_called_once_with(
+        "Test response", parse_mode="Markdown"
+    )
 
 
 @pytest.mark.asyncio
@@ -755,3 +781,136 @@ def test_split_response_text_exits_loop_when_remaining_text_is_consumed(
         chunks = bot._split_response_text(response_text)
 
     assert chunks == [response_text]
+
+
+def test_escape_markdown_escapes_special_chars() -> None:
+    """Test that special Markdown characters are escaped."""
+    text = "Hello _world_ with text"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Hello \_world\_ with text"
+
+
+def test_escape_markdown_preserves_code_blocks() -> None:
+    """Test that code block content is not escaped."""
+    text = "Text with _underscore_ and ```code_with_special_*chars*```"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Text with \_underscore\_ and ```code_with_special_*chars*```"
+
+
+def test_escape_markdown_preserves_inline_code() -> None:
+    """Test that inline code content is not escaped."""
+    text = "Use `variable_name` for _important_ things"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Use `variable_name` for \_important\_ things"
+
+
+def test_escape_markdown_handles_nested_code() -> None:
+    """Test mixed code blocks and inline code."""
+    text = "Here is `inline_code` and ```code block``` with _text_"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Here is `inline_code` and ```code block``` with \_text\_"
+
+
+def test_convert_bold_to_telegram_converts_double_asterisk() -> None:
+    """Test that **bold** is converted to *bold*."""
+    text = "This is **bold** text"
+    converted = convert_bold_to_telegram(text)
+
+    assert converted == "This is *bold* text"
+
+
+def test_convert_bold_to_telegram_preserves_single_asterisk() -> None:
+    """Test that single asterisks are preserved."""
+    text = "This has *italic* and **bold**"
+    converted = convert_bold_to_telegram(text)
+
+    assert converted == "This has *italic* and *bold*"
+
+
+def test_convert_bold_to_telegram_handles_multiple() -> None:
+    """Test multiple bold conversions in one string."""
+    text = "**First** and **second** and **third**"
+    converted = convert_bold_to_telegram(text)
+
+    assert converted == "*First* and *second* and *third*"
+
+
+@pytest.mark.asyncio
+async def test_send_response_sends_thoughts_first(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+    mock_update: Any,
+    mock_context: Any,
+) -> None:
+    """Test that thoughts are sent before content."""
+    runtime_recorder.run_user_turn_thoughts = "Let me think..."
+    runtime_recorder.run_user_turn_response = "Here is my answer."
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+    await bot._handle_message(mock_update, mock_context)
+
+    assert mock_update.message.reply_text.await_count == 2
+    first_call = mock_update.message.reply_text.await_args_list[0]
+    second_call = mock_update.message.reply_text.await_args_list[1]
+
+    assert "Thinking: Let me think..." in first_call.args[0]
+    assert first_call.kwargs.get("parse_mode") == "Markdown"
+    assert "Here is my answer." in second_call.args[0]
+    assert second_call.kwargs.get("parse_mode") == "Markdown"
+
+
+@pytest.mark.asyncio
+async def test_send_response_skips_thoughts_when_empty(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+    mock_update: Any,
+    mock_context: Any,
+) -> None:
+    """Test that no thought message is sent when thoughts are empty."""
+    runtime_recorder.run_user_turn_thoughts = ""
+    runtime_recorder.run_user_turn_response = "Just the answer."
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+    await bot._handle_message(mock_update, mock_context)
+
+    assert mock_update.message.reply_text.await_count == 1
+    call = mock_update.message.reply_text.await_args
+    assert "Just the answer." in call.args[0]
+
+
+@pytest.mark.asyncio
+async def test_send_content_uses_markdown_parse_mode(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+    mock_update: Any,
+    mock_context: Any,
+) -> None:
+    """Test that content is sent with Markdown parse mode."""
+    runtime_recorder.run_user_turn_response = "**Bold** text"
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+    await bot._handle_message(mock_update, mock_context)
+
+    call = mock_update.message.reply_text.await_args
+    assert call.kwargs.get("parse_mode") == "Markdown"
+
+
+@pytest.mark.asyncio
+async def test_send_content_handles_empty_content(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+    mock_update: Any,
+    mock_context: Any,
+) -> None:
+    """Test that empty content sends a fallback message."""
+    runtime_recorder.run_user_turn_response = ""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+    await bot._handle_message(mock_update, mock_context)
+
+    call = mock_update.message.reply_text.await_args
+    assert "couldn't generate a response" in call.args[0]

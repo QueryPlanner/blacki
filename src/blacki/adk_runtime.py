@@ -20,6 +20,14 @@ DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."
 SESSION_VERSION_SEPARATOR = "-v"
 
 
+@dataclass(slots=True, frozen=True)
+class TurnResponse:
+    """Structured response from an ADK turn with separated thoughts and content."""
+
+    thoughts: str
+    content: str
+
+
 def build_session_service_uri(env: ServerEnv) -> str | None:
     """Build the canonical session service URI for shared ADK runtimes."""
     session_uri = env.session_uri
@@ -58,7 +66,7 @@ def create_session_service(
         return DatabaseSessionService(session_service_uri, **session_db_kwargs)
 
     msg = (
-        "Telegram ADK runtime does not support the configured session URI: "
+        "Shared ADK runtime does not support the configured session URI: "
         f"{session_service_uri}"
     )
     raise ValueError(msg)
@@ -141,14 +149,31 @@ class AdkRuntime:
         state: dict[str, Any] | None = None,
     ) -> str:
         """Run one user turn through ADK and return the final assistant text."""
+        response = await self.run_user_turn_with_thoughts(
+            locator=locator,
+            message_text=message_text,
+            state=state,
+        )
+        return response.content or DEFAULT_EMPTY_RESPONSE
+
+    async def run_user_turn_with_thoughts(
+        self,
+        *,
+        locator: SessionLocator,
+        message_text: str,
+        state: dict[str, Any] | None = None,
+    ) -> TurnResponse:
+        """Run one user turn through ADK and return structured response."""
         session = await self.get_or_create_session(locator=locator, state=state)
         new_message = types.Content(
             role="user",
             parts=[types.Part.from_text(text=message_text)],
         )
 
-        final_response = ""
-        partial_response = ""
+        thoughts_parts: list[str] = []
+        content_parts: list[str] = []
+        partial_thoughts = ""
+        partial_content = ""
 
         async for event in self.runner.run_async(
             user_id=locator.user_id,
@@ -157,17 +182,22 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
-            event_text = _extract_event_text(event)
-            if not event_text:
-                continue
+            event_thoughts, event_content = _extract_turn_parts(event)
+            if event_thoughts:
+                if event.partial:
+                    partial_thoughts = event_thoughts
+                else:
+                    thoughts_parts.append(event_thoughts)
+            if event_content:
+                if event.partial:
+                    partial_content = event_content
+                else:
+                    content_parts.append(event_content)
 
-            if event.partial:
-                partial_response = event_text
-                continue
+        final_thoughts = "".join(thoughts_parts) or partial_thoughts
+        final_content = "".join(content_parts) or partial_content
 
-            final_response = event_text
-
-        return final_response or partial_response or DEFAULT_EMPTY_RESPONSE
+        return TurnResponse(thoughts=final_thoughts, content=final_content)
 
     async def close(self) -> None:
         """Close the underlying session service when supported."""
@@ -275,7 +305,30 @@ def _extract_session_version(*, session_id: str, session_id_prefix: str) -> int:
 
 
 def _extract_event_text(event: Event) -> str:
-    if event.content is None or not event.content.parts:
-        return ""
+    """Extract all text from an event (backward compatibility helper)."""
+    thoughts, content = _extract_turn_parts(event)
+    return f"{thoughts}\n{content}".strip()
 
-    return "".join(part.text for part in event.content.parts if part.text).strip()
+
+def _extract_turn_parts(event: Event) -> tuple[str, str]:
+    """Extract thoughts and content from an event.
+
+    Returns:
+        A tuple of (thoughts, content) where thoughts are from parts marked
+        with thought=True and content is from all other text parts.
+    """
+    if event.content is None or not event.content.parts:
+        return "", ""
+
+    thoughts: list[str] = []
+    content: list[str] = []
+
+    for part in event.content.parts:
+        if not part.text:
+            continue
+        if part.thought:
+            thoughts.append(part.text)
+        else:
+            content.append(part.text)
+
+    return "".join(thoughts).strip(), "".join(content).strip()
