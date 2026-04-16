@@ -7,7 +7,9 @@ This module provides the TelegramBot class that handles:
 - Memory context injection via mem0
 """
 
+import asyncio
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any
 
 from telegram import Update
@@ -56,6 +58,7 @@ class TelegramBot:
         self.config = config
         self.model = model
         self._app: Application | None = None
+        self._session_ids: dict[str, str] = {}
 
     def _ensure_app(self) -> Application:
         """Get or create the telegram Application.
@@ -82,6 +85,75 @@ class TelegramBot:
         """
         return self._ensure_app()
 
+    def _get_session_user_id(self, chat_id: str) -> str:
+        """Get the mem0 user_id for this chat's current session.
+
+        Uses a compound user_id (chat_id_session_id) to isolate sessions.
+        A new session_id is created on first access or after /reset.
+
+        Args:
+            chat_id: The Telegram chat ID.
+
+        Returns:
+            The compound user_id for mem0 operations.
+        """
+        if chat_id not in self._session_ids:
+            self._session_ids[chat_id] = uuid.uuid4().hex[:8]
+        return f"{chat_id}_{self._session_ids[chat_id]}"
+
+    def _reset_session(self, chat_id: str) -> str:
+        """Reset the session for this chat.
+
+        Args:
+            chat_id: The Telegram chat ID.
+
+        Returns:
+            The new session_id.
+        """
+        new_session_id = uuid.uuid4().hex[:8]
+        self._session_ids[chat_id] = new_session_id
+        logger.info(f"Session reset for chat {chat_id}: new session_id={new_session_id}")
+        return new_session_id
+
+    async def _send_typing_periodically(self, chat_id: int) -> None:
+        """Send typing action every 4 seconds until cancelled.
+
+        Args:
+            chat_id: The Telegram chat ID to send typing indicator to.
+        """
+        while True:
+            try:
+                await self.app.bot.send_chat_action(chat_id=chat_id, action="typing")
+                await asyncio.sleep(4)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to send typing indicator")
+                raise
+
+    def _start_typing_indicator(self, chat_id: int) -> asyncio.Task[None]:
+        """Start the typing indicator background task.
+
+        Args:
+            chat_id: The Telegram chat ID to send typing indicator to.
+
+        Returns:
+            The asyncio Task running the typing indicator.
+        """
+        return asyncio.create_task(self._send_typing_periodically(chat_id))
+
+    async def _stop_typing_indicator(self, task: asyncio.Task[None]) -> None:
+        """Stop the typing indicator task.
+
+        Args:
+            task: The typing indicator task to stop.
+        """
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     def _setup_handlers(self, app: Application) -> None:
         """Set up command and message handlers.
 
@@ -91,7 +163,7 @@ class TelegramBot:
         # Command handlers
         app.add_handler(CommandHandler("start", self._start_command))
         app.add_handler(CommandHandler("help", self._help_command))
-        app.add_handler(CommandHandler("clear", self._clear_command))
+        app.add_handler(CommandHandler("reset", self._reset_command))
 
         # Message handler for text messages
         app.add_handler(
@@ -116,7 +188,7 @@ class TelegramBot:
             "conversations, so feel free to continue where we left off.\n\n"
             "Commands:\n"
             "/help - Show available commands\n"
-            "/clear - Clear your conversation memory"
+            "/reset - Start a fresh conversation session"
         )
         await update.message.reply_text(welcome_message)
 
@@ -138,7 +210,7 @@ class TelegramBot:
             "**Commands:**\n"
             "• /start - Start a conversation\n"
             "• /help - Show this help message\n"
-            "• /clear - Clear your conversation memory\n\n"
+            "• /reset - Start a fresh conversation session\n\n"
             "**Features:**\n"
             "• I remember our conversations (per chat)\n"
             "• Ask me anything - questions, coding help, creative tasks\n\n"
@@ -146,10 +218,10 @@ class TelegramBot:
         )
         await update.message.reply_text(help_message)
 
-    async def _clear_command(
+    async def _reset_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Handle /clear command to reset conversation memory.
+        """Handle /reset command to start a fresh session.
 
         Args:
             update: The Telegram update.
@@ -159,20 +231,12 @@ class TelegramBot:
             return
 
         chat_id = str(update.effective_chat.id)
+        new_session_id = self._reset_session(chat_id)
 
-        if is_mem0_enabled():
-            # Note: mem0 doesn't have a direct "delete all" method,
-            # so we inform the user that memory is managed per-session
-            _ = get_mem0_manager()  # Verify mem0 is working
-            await update.message.reply_text(
-                "🧹 Memory context will be fresh for new conversations.\n"
-                "Previous memories may still influence responses."
-            )
-            logger.info(f"Memory clear requested for chat {chat_id}")
-        else:
-            await update.message.reply_text(
-                "Memory is not enabled. Each conversation is independent."
-            )
+        await update.message.reply_text(
+            "🔄 Session reset. Starting fresh conversation."
+        )
+        logger.info(f"Session reset for chat {chat_id}: {new_session_id}")
 
     async def _handle_message(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -180,10 +244,12 @@ class TelegramBot:
         """Handle incoming text messages.
 
         This is the main message processing pipeline:
-        1. Retrieve memories for context
-        2. Process through LLM
-        3. Save conversation to memory
-        4. Send response
+        1. Start typing indicator
+        2. Retrieve memories for context
+        3. Process through LLM
+        4. Save conversation to memory
+        5. Send response
+        6. Stop typing indicator
 
         Args:
             update: The Telegram update.
@@ -196,6 +262,9 @@ class TelegramBot:
         user_message = update.message.text
 
         logger.info(f"Received message from chat {chat_id}: {user_message[:50]}...")
+
+        # Start typing indicator
+        typing_task = self._start_typing_indicator(update.effective_chat.id)
 
         try:
             # Build context with memories
@@ -224,9 +293,12 @@ class TelegramBot:
                 "❌ Sorry, I encountered an error processing your message. "
                 "Please try again."
             )
+        finally:
+            # Always stop typing indicator
+            await self._stop_typing_indicator(typing_task)
 
     async def _get_memory_context(self, chat_id: str, query: str) -> str:
-        """Retrieve memory context for the chat.
+        """Retrieve memory context for the chat's current session.
 
         Args:
             chat_id: The Telegram chat ID.
@@ -239,10 +311,12 @@ class TelegramBot:
             return ""
 
         try:
+            # Use session-scoped user_id for memory isolation
+            session_user_id = self._get_session_user_id(chat_id)
             manager = get_mem0_manager()
             result = manager.search_memory(
                 query=query,
-                user_id=chat_id,
+                user_id=session_user_id,
                 limit=5,
             )
 
@@ -330,7 +404,7 @@ class TelegramBot:
     async def _save_to_memory(
         self, chat_id: str, user_message: str, response: str
     ) -> None:
-        """Save the conversation to memory.
+        """Save the conversation to memory for the current session.
 
         Args:
             chat_id: The Telegram chat ID.
@@ -341,11 +415,13 @@ class TelegramBot:
             return
 
         try:
+            # Use session-scoped user_id for memory isolation
+            session_user_id = self._get_session_user_id(chat_id)
             manager = get_mem0_manager()
             conversation = f"User: {user_message}\nAssistant: {response}"
             manager.save_memory(
                 content=conversation,
-                user_id=chat_id,
+                user_id=session_user_id,
             )
             logger.debug(f"Saved conversation to memory for chat {chat_id}")
 
@@ -364,10 +440,34 @@ class TelegramBot:
         logger.info("Starting Telegram bot polling...")
         app = self._ensure_app()
         await app.initialize()
+
+        # Register bot commands with Telegram
+        await self._register_commands(app)
+
         await app.start()
         if app.updater:
+            logger.info("Requesting Telegram polling start...")
             await app.updater.start_polling()
-        logger.info("Telegram bot started successfully")
+        logger.info("Telegram polling started successfully")
+
+    async def _register_commands(self, app: Application) -> None:
+        """Register bot commands with Telegram's command menu.
+
+        Args:
+            app: The Application instance.
+        """
+        from telegram import BotCommand
+
+        commands = [
+            BotCommand("start", "Start a conversation"),
+            BotCommand("help", "Show available commands"),
+            BotCommand("reset", "Start a fresh conversation session"),
+        ]
+        try:
+            await app.bot.set_my_commands(commands)
+            logger.info("Registered Telegram bot commands")
+        except Exception:
+            logger.exception("Failed to register bot commands")
 
     async def stop(self) -> None:
         """Stop the bot gracefully."""

@@ -1,5 +1,6 @@
 """Unit tests for Telegram bot module."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -224,7 +225,7 @@ class TestTelegramBotHelpCommand:
         assert "Commands" in call_args
         assert "/start" in call_args
         assert "/help" in call_args
-        assert "/clear" in call_args
+        assert "/reset" in call_args
 
     @pytest.mark.asyncio
     async def test_help_command_no_chat(
@@ -242,64 +243,64 @@ class TestTelegramBotHelpCommand:
         mock_update_no_chat.message.reply_text.assert_not_called()
 
 
-class TestTelegramBotClearCommand:
-    """Tests for _clear_command."""
+class TestTelegramBotResetCommand:
+    """Tests for _reset_command."""
 
     @pytest.mark.asyncio
-    async def test_clear_command_with_mem0(
+    async def test_reset_command_creates_new_session(
         self,
         telegram_config: TelegramConfig,
         mock_model: str,
         mock_update: MagicMock,
         mock_context: MagicMock,
     ) -> None:
-        """Test /clear with mem0 enabled."""
+        """Test /reset creates a new session."""
         bot = TelegramBot(telegram_config, mock_model)
 
-        with (
-            patch("blacki.telegram.bot.is_mem0_enabled", return_value=True),
-            patch("blacki.telegram.bot.get_mem0_manager") as mock_get_manager,
-        ):
-            mock_get_manager.return_value = MagicMock()
+        # Set initial session
+        bot._session_ids["123456789"] = "oldsession"
 
-            await bot._clear_command(mock_update, mock_context)
+        await bot._reset_command(mock_update, mock_context)
 
         mock_update.message.reply_text.assert_called_once()
         call_args = mock_update.message.reply_text.call_args[0][0]
-        assert "Memory" in call_args
+        assert "reset" in call_args.lower()
+        # Verify session was changed
+        assert bot._session_ids["123456789"] != "oldsession"
 
     @pytest.mark.asyncio
-    async def test_clear_command_without_mem0(
-        self,
-        telegram_config: TelegramConfig,
-        mock_model: str,
-        mock_update: MagicMock,
-        mock_context: MagicMock,
-    ) -> None:
-        """Test /clear with mem0 disabled."""
-        bot = TelegramBot(telegram_config, mock_model)
-
-        with patch("blacki.telegram.bot.is_mem0_enabled", return_value=False):
-            await bot._clear_command(mock_update, mock_context)
-
-        mock_update.message.reply_text.assert_called_once()
-        call_args = mock_update.message.reply_text.call_args[0][0]
-        assert "not enabled" in call_args
-
-    @pytest.mark.asyncio
-    async def test_clear_command_no_chat(
+    async def test_reset_command_no_chat(
         self,
         telegram_config: TelegramConfig,
         mock_model: str,
         mock_update_no_chat: MagicMock,
         mock_context: MagicMock,
     ) -> None:
-        """Test /clear handles missing effective_chat."""
+        """Test /reset handles missing effective_chat."""
         bot = TelegramBot(telegram_config, mock_model)
 
-        await bot._clear_command(mock_update_no_chat, mock_context)
+        await bot._reset_command(mock_update_no_chat, mock_context)
 
         mock_update_no_chat.message.reply_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reset_command_multiple_resets(
+        self,
+        telegram_config: TelegramConfig,
+        mock_model: str,
+        mock_update: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """Test multiple /reset calls generate different session IDs."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        await bot._reset_command(mock_update, mock_context)
+        first_session = bot._session_ids["123456789"]
+
+        await bot._reset_command(mock_update, mock_context)
+        second_session = bot._session_ids["123456789"]
+
+        assert first_session != second_session
 
 
 class TestTelegramBotHandleMessage:
@@ -789,3 +790,181 @@ class TestCreateTelegramBot:
         result = create_telegram_bot(telegram_config_disabled, mock_model)
 
         assert result is None
+
+
+class TestTelegramBotTypingIndicator:
+    """Tests for typing indicator functionality."""
+
+    @pytest.mark.asyncio
+    async def test_start_typing_indicator_creates_task(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that _start_typing_indicator creates a task."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        mock_app.bot.send_chat_action = AsyncMock()
+        bot._app = mock_app
+
+        task = bot._start_typing_indicator(12345)
+
+        assert task is not None
+        assert not task.done()  # Task should be running
+        # Cancel the task to clean up
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_indicator_cancels_task(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that _stop_typing_indicator cancels the task."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        mock_app.bot.send_chat_action = AsyncMock()
+        bot._app = mock_app
+
+        task = bot._start_typing_indicator(12345)
+        await bot._stop_typing_indicator(task)
+
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_typing_indicator_in_handle_message(
+        self,
+        telegram_config: TelegramConfig,
+        mock_model: str,
+        mock_update: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        """Test that typing indicator is started and stopped during message handling."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        mock_app.bot.send_chat_action = AsyncMock()
+        bot._app = mock_app
+
+        with (
+            patch.object(bot, "_get_memory_context", return_value=""),
+            patch.object(bot, "_generate_response", return_value="Test response"),
+            patch.object(bot, "_save_to_memory"),
+            patch.object(bot, "_start_typing_indicator") as mock_start,
+            patch.object(bot, "_stop_typing_indicator") as mock_stop,
+        ):
+            mock_start.return_value = asyncio.create_task(asyncio.sleep(10))
+
+            await bot._handle_message(mock_update, mock_context)
+
+            mock_start.assert_called_once_with(123456789)
+            mock_stop.assert_called_once()
+
+
+class TestTelegramBotSessionManagement:
+    """Tests for session management functionality."""
+
+    def test_get_session_user_id_creates_session(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that _get_session_user_id creates a session if not exists."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        user_id = bot._get_session_user_id("123")
+
+        assert "123" in bot._session_ids
+        assert user_id.startswith("123_")
+        assert len(user_id.split("_")[1]) == 8  # 8-char session ID
+
+    def test_get_session_user_id_returns_same_session(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that _get_session_user_id returns the same session ID on repeated calls."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        user_id1 = bot._get_session_user_id("123")
+        user_id2 = bot._get_session_user_id("123")
+
+        assert user_id1 == user_id2
+
+    def test_reset_session_creates_new_session(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that _reset_session creates a new session ID."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        old_user_id = bot._get_session_user_id("123")
+        bot._reset_session("123")
+        new_user_id = bot._get_session_user_id("123")
+
+        assert old_user_id != new_user_id
+
+    def test_session_isolation_per_chat(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that different chats have different sessions."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        user_id1 = bot._get_session_user_id("123")
+        user_id2 = bot._get_session_user_id("456")
+
+        assert user_id1 != user_id2
+        assert user_id1.startswith("123_")
+        assert user_id2.startswith("456_")
+
+    @pytest.mark.asyncio
+    async def test_memory_uses_session_user_id(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that memory operations use session-scoped user_id."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_manager = MagicMock()
+        mock_manager.search_memory.return_value = {"memories": []}
+        mock_manager.save_memory.return_value = {"status": "success"}
+
+        with (
+            patch("blacki.telegram.bot.is_mem0_enabled", return_value=True),
+            patch("blacki.telegram.bot.get_mem0_manager", return_value=mock_manager),
+        ):
+            # Test search uses session user_id
+            await bot._get_memory_context("123", "test query")
+            call_args = mock_manager.search_memory.call_args
+            assert call_args.kwargs["user_id"].startswith("123_")
+
+            # Test save uses session user_id
+            await bot._save_to_memory("123", "Hello", "Hi")
+            call_args = mock_manager.save_memory.call_args
+            assert call_args.kwargs["user_id"].startswith("123_")
+
+
+class TestTelegramBotCommandRegistration:
+    """Tests for command registration with Telegram."""
+
+    @pytest.mark.asyncio
+    async def test_register_commands_called_on_start(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that commands are registered when polling starts."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock(spec=Application)
+        mock_app.initialize = AsyncMock()
+        mock_app.start = AsyncMock()
+        mock_app.updater = MagicMock()
+        mock_app.updater.start_polling = AsyncMock()
+        mock_app.bot = MagicMock()
+        mock_app.bot.set_my_commands = AsyncMock()
+
+        with patch.object(bot, "_ensure_app", return_value=mock_app):
+            await bot.start_polling()
+
+        mock_app.bot.set_my_commands.assert_called_once()
+        # Verify commands are correct
+        call_args = mock_app.bot.set_my_commands.call_args[0][0]
+        command_names = [cmd.command for cmd in call_args]
+        assert "start" in command_names
+        assert "help" in command_names
+        assert "reset" in command_names
