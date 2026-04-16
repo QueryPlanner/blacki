@@ -48,7 +48,10 @@ async def _start_telegram_bot() -> None:
     global _telegram_bot
 
     if not env.is_telegram_configured:
-        logger.info("Telegram bot not configured, skipping initialization")
+        logger.info(
+            "Telegram bot not configured "
+            "(TELEGRAM_ENABLED=false or missing TELEGRAM_BOT_TOKEN)"
+        )
         return
 
     try:
@@ -56,6 +59,7 @@ async def _start_telegram_bot() -> None:
         from .telegram import TelegramConfig
         from .telegram.bot import TelegramBot
 
+        logger.info("Telegram configuration detected, initializing bot...")
         telegram_config = TelegramConfig.model_validate(
             {
                 "TELEGRAM_ENABLED": env.telegram_enabled,
@@ -63,19 +67,23 @@ async def _start_telegram_bot() -> None:
             }
         )
         _telegram_bot = TelegramBot(telegram_config, model)
-        logger.info("Telegram bot initialized")
+        logger.info("Telegram bot instance created")
 
-        logger.info("Starting Telegram bot polling...")
         await _telegram_bot.start_polling()
     except Exception:
         logger.exception("Failed to start Telegram bot")
+        raise
 
 
 async def _stop_telegram_bot() -> None:
     """Stop the Telegram bot."""
     if _telegram_bot:
         logger.info("Stopping Telegram bot...")
-        await _telegram_bot.stop()
+        try:
+            await _telegram_bot.stop()
+            logger.info("Telegram bot stopped")
+        except Exception:
+            logger.exception("Error stopping Telegram bot")
 
 
 # Use .resolve() to handle symlinks and ensure absolute path across environments
