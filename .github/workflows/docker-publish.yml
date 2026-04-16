@@ -103,7 +103,7 @@ jobs:
 
           # 1. Set dynamic project directory based on repository name
           PROJECT_NAME="blacki"
-          PROJECT_DIR="$HOME/$PROJECT_NAME"
+          PROJECT_DIR="$HOME/apps/$PROJECT_NAME"
           IMAGE_NAME="ghcr.io/queryplanner/blacki:main"
 
           echo "=== Deploying $PROJECT_NAME to $PROJECT_DIR ==="
