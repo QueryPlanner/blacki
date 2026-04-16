@@ -8,6 +8,7 @@ This module provides the TelegramBot class that handles:
 """
 
 import asyncio
+import contextlib
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,14 @@ class TelegramBot:
     This class manages the Telegram bot lifecycle and integrates with
     the ADK agent for message processing with persistent memory.
 
+    Session Management:
+        Sessions are stored in-memory (_session_ids dict). On server restart,
+        new sessions are created automatically. This is intentional - mem0
+        provides long-term memory storage, while sessions enable users to
+        explicitly reset their conversation context via /reset. For production
+        use requiring session persistence across restarts, consider persisting
+        _session_ids to Redis or a database.
+
     Attributes:
         config: Telegram configuration from environment.
         app: Python-telegram-bot Application instance.
@@ -58,6 +67,7 @@ class TelegramBot:
         self.config = config
         self.model = model
         self._app: Application | None = None
+        # In-memory session IDs; lost on restart (see class docstring)
         self._session_ids: dict[str, str] = {}
 
     def _ensure_app(self) -> Application:
@@ -112,7 +122,9 @@ class TelegramBot:
         """
         new_session_id = uuid.uuid4().hex[:8]
         self._session_ids[chat_id] = new_session_id
-        logger.info(f"Session reset for chat {chat_id}: new session_id={new_session_id}")
+        logger.info(
+            f"Session reset for chat {chat_id}: new session_id={new_session_id}"
+        )
         return new_session_id
 
     async def _send_typing_periodically(self, chat_id: int) -> None:
@@ -128,8 +140,8 @@ class TelegramBot:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                logger.exception("Failed to send typing indicator")
-                raise
+                logger.warning("Failed to send typing indicator", exc_info=True)
+                return
 
     def _start_typing_indicator(self, chat_id: int) -> asyncio.Task[None]:
         """Start the typing indicator background task.
@@ -149,10 +161,8 @@ class TelegramBot:
             task: The typing indicator task to stop.
         """
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
-        except asyncio.CancelledError:
-            pass
 
     def _setup_handlers(self, app: Application) -> None:
         """Set up command and message handlers.

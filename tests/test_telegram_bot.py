@@ -1,6 +1,7 @@
 """Unit tests for Telegram bot module."""
 
 import asyncio
+import contextlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -812,10 +813,8 @@ class TestTelegramBotTypingIndicator:
         assert not task.done()  # Task should be running
         # Cancel the task to clean up
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await task
-        except asyncio.CancelledError:
-            pass
 
     @pytest.mark.asyncio
     async def test_stop_typing_indicator_cancels_task(
@@ -881,7 +880,7 @@ class TestTelegramBotSessionManagement:
     def test_get_session_user_id_returns_same_session(
         self, telegram_config: TelegramConfig, mock_model: str
     ) -> None:
-        """Test that _get_session_user_id returns the same session ID on repeated calls."""
+        """Test that _get_session_user_id returns same session on repeated calls."""
         bot = TelegramBot(telegram_config, mock_model)
 
         user_id1 = bot._get_session_user_id("123")
