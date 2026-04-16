@@ -861,6 +861,78 @@ class TestTelegramBotTypingIndicator:
             mock_start.assert_called_once_with(123456789)
             mock_stop.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_typing_indicator_handles_exception_gracefully(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that typing indicator returns gracefully on exception."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        # Make send_chat_action raise an exception
+        mock_app.bot.send_chat_action = AsyncMock(
+            side_effect=RuntimeError("Network error")
+        )
+        bot._app = mock_app
+
+        task = bot._start_typing_indicator(12345)
+
+        # Wait for the task to complete (it should return, not raise)
+        await task
+
+        assert task.done()
+        assert not task.cancelled()
+        assert task.exception() is None
+
+    @pytest.mark.asyncio
+    async def test_typing_indicator_sends_action_and_sleeps(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that typing indicator sends action and then sleeps."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        mock_app.bot.send_chat_action = AsyncMock()
+        bot._app = mock_app
+
+        task = bot._start_typing_indicator(12345)
+
+        # Give the task a moment to send the first action and start sleeping
+        await asyncio.sleep(0.1)
+
+        # Verify the action was sent
+        mock_app.bot.send_chat_action.assert_called_once_with(
+            chat_id=12345, action="typing"
+        )
+
+        # Cancel the task to clean up
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_typing_indicator_cancelled_during_sleep(
+        self, telegram_config: TelegramConfig, mock_model: str
+    ) -> None:
+        """Test that typing indicator properly re-raises CancelledError."""
+        bot = TelegramBot(telegram_config, mock_model)
+
+        mock_app = MagicMock()
+        mock_app.bot.send_chat_action = AsyncMock()
+        bot._app = mock_app
+
+        task = bot._start_typing_indicator(12345)
+
+        # Give the task a moment to start
+        await asyncio.sleep(0.05)
+
+        # Cancel the task while it's sleeping
+        task.cancel()
+
+        # The CancelledError should be re-raised
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
 
 class TestTelegramBotSessionManagement:
     """Tests for session management functionality."""
