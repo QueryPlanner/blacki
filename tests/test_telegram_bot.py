@@ -16,7 +16,7 @@ from blacki.telegram.bot import (
     TELEGRAM_MESSAGE_LIMIT,
     TelegramBot,
     TelegramSessionIdentity,
-    convert_bold_to_italic,
+    convert_bold_to_telegram,
     create_telegram_bot,
     escape_markdown,
 )
@@ -785,10 +785,10 @@ def test_split_response_text_exits_loop_when_remaining_text_is_consumed(
 
 def test_escape_markdown_escapes_special_chars() -> None:
     """Test that special Markdown characters are escaped."""
-    text = "Hello _world_ with *bold* and [link]"
+    text = "Hello _world_ with text"
     escaped = escape_markdown(text)
 
-    assert escaped == r"Hello \_world\_ with \*bold\* and \[link\]"
+    assert escaped == r"Hello \_world\_ with text"
 
 
 def test_escape_markdown_preserves_code_blocks() -> None:
@@ -815,26 +815,26 @@ def test_escape_markdown_handles_nested_code() -> None:
     assert escaped == r"Here is `inline_code` and ```code block``` with \_text\_"
 
 
-def test_convert_bold_to_italic_converts_double_asterisk() -> None:
+def test_convert_bold_to_telegram_converts_double_asterisk() -> None:
     """Test that **bold** is converted to *bold*."""
     text = "This is **bold** text"
-    converted = convert_bold_to_italic(text)
+    converted = convert_bold_to_telegram(text)
 
     assert converted == "This is *bold* text"
 
 
-def test_convert_bold_to_italic_preserves_single_asterisk() -> None:
+def test_convert_bold_to_telegram_preserves_single_asterisk() -> None:
     """Test that single asterisks are preserved."""
     text = "This has *italic* and **bold**"
-    converted = convert_bold_to_italic(text)
+    converted = convert_bold_to_telegram(text)
 
     assert converted == "This has *italic* and *bold*"
 
 
-def test_convert_bold_to_italic_handles_multiple() -> None:
+def test_convert_bold_to_telegram_handles_multiple() -> None:
     """Test multiple bold conversions in one string."""
     text = "**First** and **second** and **third**"
-    converted = convert_bold_to_italic(text)
+    converted = convert_bold_to_telegram(text)
 
     assert converted == "*First* and *second* and *third*"
 

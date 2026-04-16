@@ -276,7 +276,7 @@ class TelegramBot:
         if not content:
             await message.reply_text("I apologize, but I couldn't generate a response.")
             return
-        formatted = convert_bold_to_italic(content)
+        formatted = escape_markdown(convert_bold_to_telegram(content))
         for chunk in self._split_response_text(formatted):
             await message.reply_text(chunk, parse_mode="Markdown")
 
@@ -363,7 +363,7 @@ class TelegramBot:
             await self.runtime.close()
 
 
-MARKDOWN_SPECIAL_CHARS = frozenset("_*`[]")
+MARKDOWN_SPECIAL_CHARS = frozenset("_`")
 
 
 def escape_markdown(text: str) -> str:
@@ -405,7 +405,7 @@ def escape_markdown(text: str) -> str:
     return "".join(result)
 
 
-def convert_bold_to_italic(text: str) -> str:
+def convert_bold_to_telegram(text: str) -> str:
     """Convert **bold** markdown to *bold* for Telegram Markdown.
 
     Telegram Markdown uses single asterisks for bold, while standard Markdown
