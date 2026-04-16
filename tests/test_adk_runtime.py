@@ -245,6 +245,49 @@ async def test_close_handles_sync_close_method() -> None:
     assert session_service.closed is True
 
 
+async def test_get_or_create_session_ignores_malformed_session_ids() -> None:
+    """Test that non-versioned session IDs are filtered out during lookup."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    await runtime.session_service.create_session(
+        app_name=runtime.app_name,
+        user_id=locator.user_id,
+        session_id="telegram-chat-123-malformed",
+    )
+    await runtime.session_service.create_session(
+        app_name=runtime.app_name,
+        user_id=locator.user_id,
+        session_id="telegram-chat-123-v1",
+    )
+
+    session = await runtime.get_or_create_session(locator=locator)
+
+    assert session.id == "telegram-chat-123-v1"
+
+
+async def test_get_or_create_session_creates_v1_when_no_valid_sessions() -> None:
+    """Test that session v1 is created when only malformed sessions exist."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-456",
+        session_id_prefix="telegram-chat-456",
+    )
+
+    await runtime.session_service.create_session(
+        app_name=runtime.app_name,
+        user_id=locator.user_id,
+        session_id="telegram-chat-456-invalid",
+    )
+
+    session = await runtime.get_or_create_session(locator=locator)
+
+    assert session.id == "telegram-chat-456-v1"
+
+
 def test_create_adk_runtime_uses_env_configuration() -> None:
     """Test shared runtime construction from environment config."""
     runtime = create_adk_runtime(_build_server_env())
@@ -261,20 +304,20 @@ def test_extract_session_version_rejects_invalid_format() -> None:
         )
 
 
-def test_extract_event_text_skips_empty_parts() -> None:
-    """Test that event text extraction ignores empty and whitespace-only parts."""
+def test_extract_event_text_concatenates_parts_directly() -> None:
+    """Test that event text extraction concatenates parts without breaking."""
     event = Event(
         author="root_agent",
         content=types.Content(
             role="model",
             parts=[
-                types.Part.from_text(text="   "),
-                types.Part.from_text(text="Final answer"),
+                types.Part.from_text(text="Hello "),
+                types.Part.from_text(text="world"),
             ],
         ),
     )
 
-    assert _extract_event_text(event) == "Final answer"
+    assert _extract_event_text(event) == "Hello world"
 
 
 def test_extract_event_text_returns_empty_without_content() -> None:
@@ -293,3 +336,19 @@ def test_extract_event_text_skips_parts_without_text() -> None:
     )
 
     assert _extract_event_text(event) == ""
+
+
+def test_extract_event_text_handles_leading_trailing_whitespace() -> None:
+    """Test that whitespace is stripped from the final concatenated result."""
+    event = Event(
+        author="root_agent",
+        content=types.Content(
+            role="model",
+            parts=[
+                types.Part.from_text(text="  Hello "),
+                types.Part.from_text(text="world  "),
+            ],
+        ),
+    )
+
+    assert _extract_event_text(event) == "Hello world"

@@ -50,8 +50,7 @@ def create_session_service(
     """Create a session service for programmatic ADK runner usage."""
     if session_service_uri is None:
         logger.warning(
-            "No shared session service configured; Telegram will use in-memory "
-            "ADK sessions."
+            "No shared session service configured; using in-memory ADK sessions."
         )
         return InMemorySessionService()
 
@@ -95,7 +94,12 @@ class AdkRuntime:
         locator: SessionLocator,
         state: dict[str, Any] | None = None,
     ) -> Session:
-        """Return the latest session for a locator, or create version 1."""
+        """Return the latest session for a locator, or create version 1.
+
+        Note: The `state` parameter is only used when creating a new session.
+        If a session already exists, the provided state is ignored and the
+        existing session's state is preserved.
+        """
         existing_session = await self._get_latest_session(locator=locator)
         if existing_session is not None:
             return existing_session
@@ -180,6 +184,7 @@ class AdkRuntime:
             app_name=self.app_name,
             user_id=locator.user_id,
         )
+        version_prefix = f"{locator.session_id_prefix}{SESSION_VERSION_SEPARATOR}"
         matching_sessions = [
             session
             for session in response.sessions
@@ -187,6 +192,7 @@ class AdkRuntime:
                 session_id=session.id,
                 session_id_prefix=locator.session_id_prefix,
             )
+            and session.id.removeprefix(version_prefix).isdigit()
         ]
         if not matching_sessions:
             return None
@@ -272,13 +278,4 @@ def _extract_event_text(event: Event) -> str:
     if event.content is None or not event.content.parts:
         return ""
 
-    text_parts = []
-    for part in event.content.parts:
-        if not part.text:
-            continue
-
-        stripped_text = part.text.strip()
-        if stripped_text:
-            text_parts.append(stripped_text)
-
-    return "\n".join(text_parts)
+    return "".join(part.text for part in event.content.parts if part.text).strip()

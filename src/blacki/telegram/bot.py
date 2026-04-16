@@ -289,7 +289,12 @@ class TelegramBot:
         return chunks
 
     def _find_chunk_boundary(self, response_text: str) -> int:
-        """Find the most readable split point within Telegram's message limit."""
+        """Find the most readable split point within Telegram's message limit.
+
+        Note: Splitting on whitespace boundaries intentionally normalizes whitespace
+        between chunks. The separator character is excluded from the chunk, which is
+        acceptable for Telegram where whitespace between messages is rarely meaningful.
+        """
         for separator in ("\n\n", "\n", " "):
             split_index = response_text.rfind(separator, 0, TELEGRAM_MESSAGE_LIMIT + 1)
             if split_index > 0:
