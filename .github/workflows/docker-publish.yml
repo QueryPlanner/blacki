@@ -90,6 +90,12 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_TAILSCALE_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          # App secrets for .env generation
+          AGENT_NAME: ${{ secrets.AGENT_NAME }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ROOT_AGENT_MODEL: ${{ secrets.ROOT_AGENT_MODEL }}
+          TELEGRAM_ENABLED: ${{ secrets.TELEGRAM_ENABLED }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -97,8 +103,14 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # Deploy script
-          ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" bash -s << 'DEPLOY_SCRIPT'
+          # Deploy script with secrets passed via environment
+          ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
+            AGENT_NAME="$AGENT_NAME" \
+            OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
+            ROOT_AGENT_MODEL="$ROOT_AGENT_MODEL" \
+            TELEGRAM_ENABLED="$TELEGRAM_ENABLED" \
+            TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+            bash -s << 'DEPLOY_SCRIPT'
           set -e
 
           # 1. Set dynamic project directory based on repository name
@@ -109,8 +121,9 @@ jobs:
           echo "=== Deploying $PROJECT_NAME to $PROJECT_DIR ==="
 
           # 2. Ensure project directory exists
-          if [ ! -d "$PROJECT_DIR" ]; then
-            echo "Project directory not found. Cloning..."
+          mkdir -p "$PROJECT_DIR"
+          if [ ! -d "$PROJECT_DIR/.git" ]; then
+            echo "Project not found. Cloning..."
             git clone https://github.com/QueryPlanner/blacki "$PROJECT_DIR"
           fi
 
@@ -127,12 +140,16 @@ jobs:
           docker system prune -af --volumes 2>/dev/null || true
           docker builder prune -af 2>/dev/null || true
 
-          # 6. Generate .env file from secrets (user must set these manually or use a secret manager)
-          echo "Checking .env file..."
-          if [ ! -f .env ]; then
-            echo "ERROR: .env file not found. Please create it manually on the server."
-            exit 1
-          fi
+          # 6. Generate .env file from GitHub secrets
+          echo "Generating .env from secrets..."
+          cat > .env << ENVFILE
+          AGENT_NAME=${AGENT_NAME}
+          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+          ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
+          TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          ENVFILE
+          chmod 600 .env
 
           # 7. Deploy with dynamic image
           echo "Pulling and starting containers..."
