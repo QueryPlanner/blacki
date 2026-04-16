@@ -140,7 +140,22 @@ jobs:
           docker system prune -af --volumes 2>/dev/null || true
           docker builder prune -af 2>/dev/null || true
 
-          # 6. Generate .env file from GitHub secrets
+          # 6. Find available port starting from 8080
+          find_available_port() {
+            local port=8080
+            while ss -tuln | grep -q ":${port} " ; do
+              port=$((port + 1))
+              if [ $port -gt 8100 ]; then
+                echo "ERROR: No available port in range 8080-8100" >&2
+                exit 1
+              fi
+            done
+            echo $port
+          }
+          HOST_PORT=$(find_available_port)
+          echo "Using port: $HOST_PORT"
+
+          # 7. Generate .env file from GitHub secrets
           echo "Generating .env from secrets..."
           cat > .env << ENVFILE
           AGENT_NAME=${AGENT_NAME}
@@ -148,31 +163,32 @@ jobs:
           ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
           TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
           TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          HOST_PORT=${HOST_PORT}
           ENVFILE
           chmod 600 .env
 
-          # 7. Deploy with dynamic image
+          # 8. Deploy with dynamic image
           echo "Pulling and starting containers..."
           export IMAGE="$IMAGE_NAME"
           docker compose pull
           docker compose up -d
 
-          # 8. Final cleanup of unused images
+          # 9. Final cleanup of unused images
           echo "Final cleanup..."
           docker image prune -af 2>/dev/null || true
 
-          # 9. Health check
+          # 10. Health check
           echo "Waiting for health check..."
           sleep 5
-          if curl -sf http://localhost:8080/health > /dev/null; then
-            echo "✅ Health check passed!"
+          if curl -sf http://localhost:${HOST_PORT}/health > /dev/null; then
+            echo "✅ Health check passed on port ${HOST_PORT}!"
           else
             echo "⚠️ Health check failed, checking logs..."
             docker compose logs --tail=50
             exit 1
           fi
 
-          # 10. Show status
+          # 11. Show status
           echo "=== Deployment Complete ==="
           docker compose ps
           df -h /
