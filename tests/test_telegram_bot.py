@@ -1530,7 +1530,6 @@ class TestTelegramApiErrors:
     async def test_api_error_with_invalid_json_response(self) -> None:
         """When error response has invalid JSON, use response.text."""
         import httpx
-        import json
 
         async with TelegramApiClient("test-token") as client:
             with patch.object(client._client, "post") as mock_post:
@@ -1674,34 +1673,6 @@ class TestTelegramApiErrors:
     async def test_write_error_rate_limit_retry_failure(self, caplog: Any) -> None:
         """Test rate limit retry failure."""
         mock_api = create_autospec(TelegramApiClient, spec_set=True)
-        # Fail initially with 429, then fail again during retry, then succeed on fallback
-        mock_api.send_message = AsyncMock(
-            side_effect=[
-                TelegramApiError("Rate limit", error_code=429, retry_after=0.001),
-                TelegramApiError("Final failure", error_code=429),
-                Message.model_validate(
-                    {
-                        "message_id": 1,
-                        "date": "2024-01-01T00:00:00Z",
-                        "chat": {"id": 123, "type": "private"},
-                    }
-                ),
-            ]
-        )
-
-        session = StreamSession(api=mock_api, update_interval_sec=0.0)
-
-        async def chunks() -> AsyncIterator[StreamChunk]:
-            yield StreamChunk(thoughts="", content="Text", is_partial=False)
-
-        await session.run(chunks=chunks(), chat_id=123)
-        assert "Retry after rate limit failed" in caplog.text
-
-    @pytest.mark.asyncio
-    async def test_write_error_rate_limit_retry_failure(self, caplog: Any) -> None:
-        """Test rate limit retry failure."""
-        mock_api = create_autospec(TelegramApiClient, spec_set=True)
-        # We need many items because of the retry + fallback + finalize loop
         msg = Message.model_validate(
             {
                 "message_id": 1,
@@ -1711,15 +1682,11 @@ class TestTelegramApiErrors:
         )
         mock_api.send_message = AsyncMock(
             side_effect=[
-                TelegramApiError(
-                    "Rate limit", error_code=429, retry_after=0.001
-                ),  # initial _write
-                TelegramApiError(
-                    "Retry failure", error_code=429
-                ),  # retry in _handle_write_error
-                msg,  # fallback in _handle_write_error
-                msg,  # _write in _finalize
-                msg,  # more?
+                TelegramApiError("Rate limit", error_code=429, retry_after=1),
+                TelegramApiError("Retry failure", error_code=429),
+                msg,
+                msg,
+                msg,
             ]
         )
 
@@ -1744,12 +1711,10 @@ class TestTelegramApiErrors:
         )
         mock_api.send_message = AsyncMock(
             side_effect=[
-                TelegramApiError("Server error", error_code=500),  # initial _write
-                TelegramApiError(
-                    "Retry failure", error_code=500
-                ),  # retry in _handle_write_error
-                msg,  # fallback in _handle_write_error
-                msg,  # _write in _finalize
+                TelegramApiError("Server error", error_code=500),
+                TelegramApiError("Retry failure", error_code=500),
+                msg,
+                msg,
             ]
         )
 
@@ -1765,19 +1730,17 @@ class TestTelegramApiErrors:
     async def test_polling_loop_exception_handling(self, caplog: Any) -> None:
         """Test exception handling in polling loop."""
         bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
-        bot.config.telegram_bot_token = "token"
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
         mock_api = create_autospec(TelegramApiClient, instance=True)
         bot._api = mock_api
 
-        # Raise exception then stop
         mock_api.get_updates = AsyncMock(
             side_effect=[RuntimeError("Polling failed"), asyncio.CancelledError()]
         )
 
         bot._running = True
-        with patch("asyncio.sleep", AsyncMock()):  # Don't actually sleep
-            with pytest.raises(asyncio.CancelledError):
-                await bot._polling_loop()
+        with patch("asyncio.sleep", AsyncMock()), pytest.raises(asyncio.CancelledError):
+            await bot._polling_loop()
 
         assert "Error in polling loop" in caplog.text
 
@@ -1787,7 +1750,7 @@ class TestTelegramApiErrors:
     ) -> None:
         """Test _handle_update recognizes and handles commands."""
         bot = TelegramBot(telegram_config, create_autospec(AdkRuntime))
-        bot._handle_command = AsyncMock()
+        bot._handle_command = AsyncMock()  # type: ignore[method-assign]
 
         message = Message.model_validate(
             {
@@ -1811,7 +1774,7 @@ class TestTelegramApiErrors:
         session._message_id = 42
         session._full_text = "New text"
 
-        error = TelegramApiError("Rate limit", error_code=429, retry_after=0.001)
+        error = TelegramApiError("Rate limit", error_code=429, retry_after=1)
         mock_api.edit_message_text = AsyncMock()
 
         await session._handle_write_error(
@@ -1863,8 +1826,8 @@ class TestTelegramApiErrors:
     ) -> None:
         """Test _handle_update with message containing no text."""
         bot = TelegramBot(telegram_config, create_autospec(AdkRuntime))
-        bot._handle_command = AsyncMock()
-        bot._handle_message = AsyncMock()
+        bot._handle_command = AsyncMock()  # type: ignore[method-assign]
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
 
         message = Message.model_validate(
             {
@@ -1955,7 +1918,7 @@ class TestTelegramApiErrors:
         assert client._client is not None
         await client.close()  # hits True branch
         assert client._client is None
-        await client.close()  # hits False branch
+        await client.close()  # type: ignore[unreachable]  # hits False branch
 
     @pytest.mark.asyncio
     async def test_stream_session_finalize_direct_empty(self) -> None:
@@ -1969,7 +1932,7 @@ class TestTelegramApiErrors:
     def test_split_long_message_loop_exit(self) -> None:
         """Test split_long_message loop exit by making remaining empty."""
         # We need something that passes text.strip() but then becomes empty
-        # This is actually hard with the current implementation because strip() is at the start.
+        # This is hard because strip() is at the start.
         # If text is " a ", remaining is "a".
         # If limit is 1, chunk is "a".
         # Then remaining = remaining[1:].lstrip() -> "".
@@ -2336,7 +2299,7 @@ class TestTelegramBotEdgeCases:
         )
 
         # We need to mock _handle_update to avoid deep integration
-        bot._handle_update = AsyncMock()
+        bot._handle_update = AsyncMock()  # type: ignore[method-assign]
 
         bot._running = True
         with pytest.raises(asyncio.CancelledError):
@@ -2352,7 +2315,7 @@ class TestTelegramBotEdgeCases:
     ) -> None:
         """Test _handle_update hits the main message handling path."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        bot._handle_message = AsyncMock()
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
 
         message = Message.model_validate(
             {

@@ -428,7 +428,6 @@ def test_reset_handles_loop_create_task_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RuntimeError from loop.create_task is caught silently."""
-    from blacki.callbacks import _shared_notify_client, _shared_notify_token
 
     monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
     monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")
@@ -458,11 +457,10 @@ async def test_notify_returns_early_when_bot_token_missing(
 
     with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
         ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        result = await notify_telegram_before_tool(
+        await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("t")),
             {},
             cast(ToolContext, ctx),
         )
 
     mock_client.send_message.assert_not_called()
-    assert result is None

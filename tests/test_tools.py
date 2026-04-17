@@ -156,7 +156,7 @@ class TestGetSharedBrowserUseClient:
         with patch("blacki.tools.AsyncBrowserUse") as mock_cls:
             mock_cls.side_effect = [old_client, new_client]
 
-            client = await _get_shared_browser_use_client("key1")
+            await _get_shared_browser_use_client("key1")
             await _get_shared_browser_use_client("key2")
 
             assert "Error closing Browser Use client" in caplog.text
@@ -178,7 +178,7 @@ class TestResetBrowserUseClientCache:
 
         await reset_browser_use_client_cache()
 
-        from blacki.tools import _browser_use_client, _browser_use_api_key
+        from blacki.tools import _browser_use_api_key, _browser_use_client
 
         assert _browser_use_client is None
         assert _browser_use_api_key is None
