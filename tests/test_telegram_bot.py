@@ -11,15 +11,17 @@ from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResp
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
-    TELEGRAM_MESSAGE_LIMIT,
     TelegramBot,
     TelegramSessionIdentity,
     create_telegram_bot,
-    escape_markdown,
-    format_for_telegram,
 )
-from blacki.telegram.streaming import DraftManager, split_long_message
-from blacki.telegram.types import BotCommand, Message, ParseMode, Update
+from blacki.telegram.formatting import escape_markdown, format_for_telegram
+from blacki.telegram.streaming import (
+    TELEGRAM_MESSAGE_LIMIT,
+    StreamSession,
+    split_long_message,
+)
+from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
 
 
 class RecordingRuntime:
@@ -187,18 +189,6 @@ def test_api_property_raises_without_token(
         _ = bot.api
 
 
-def test_draft_manager_creates_on_demand(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that draft_manager is created on first access."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    dm = bot.draft_manager
-    assert dm is not None
-    assert bot._draft_manager is dm
-
-
 def test_build_session_identity_without_thread(
     telegram_config: TelegramConfig,
     runtime_recorder: RecordingRuntime,
@@ -326,7 +316,7 @@ class TestTelegramApiClient:
     async def test_send_message_draft_success(
         self, telegram_config: TelegramConfig
     ) -> None:
-        """Test successful draft message sending."""
+        """Test successful draft message sending with int draft_id."""
         async with TelegramApiClient("test-token") as client:
             with patch.object(client, "_request") as mock_request:
                 mock_request.return_value = {
@@ -336,13 +326,13 @@ class TestTelegramApiClient:
                     "text": "Draft text",
                 }
                 result = await client.send_message_draft(
-                    chat_id=123, text="Draft text", draft_id="draft-123"
+                    chat_id=123, text="Draft text", draft_id=12345
                 )
                 assert isinstance(result, Message)
                 assert result.message_id == 1
                 mock_request.assert_called_once_with(
                     "sendMessageDraft",
-                    {"chat_id": 123, "text": "Draft text", "draft_id": "draft-123"},
+                    {"chat_id": 123, "text": "Draft text", "draft_id": 12345},
                 )
 
     @pytest.mark.asyncio
@@ -558,13 +548,13 @@ class TestTelegramApiClient:
                 assert call_kwargs["allowed_updates"] == ["message"]
 
 
-class TestDraftManager:
-    """Tests for DraftManager."""
+class TestStreamSession:
+    """Tests for StreamSession."""
 
     @pytest.mark.asyncio
-    async def test_stream_response_updates_drafts(self) -> None:
-        """Test that streaming updates drafts."""
-        mock_api = create_autospec(TelegramApiClient, instance=True)
+    async def test_private_chat_uses_draft_channel(self) -> None:
+        """Test that private chat uses sendMessageDraft with int draft_id."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
         mock_api.send_message_draft = AsyncMock(
             return_value=Message.model_validate(
                 {
@@ -575,112 +565,221 @@ class TestDraftManager:
             )
         )
 
-        manager = DraftManager(mock_api, update_interval_sec=0.0)
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
 
         async def chunks() -> AsyncIterator[StreamChunk]:
-            yield StreamChunk(thoughts="Thinking...", content="Hello")
+            yield StreamChunk(thoughts="Thinking...", content="")
             yield StreamChunk(
-                thoughts="Thinking...", content="Hello world", is_partial=False
+                thoughts="Thinking...",
+                content="Hello world",
+                is_partial=False,
             )
 
-        final_thoughts, final_content = await manager.stream_response(
-            chat_id=123, chunks=chunks()
-        )
+        await session.run(chunks=chunks(), chat_id=123)
 
-        assert final_thoughts == "Thinking..."
-        assert final_content == "Hello world"
         assert mock_api.send_message_draft.await_count >= 1
+        call_kwargs = mock_api.send_message_draft.call_args.kwargs
+        assert call_kwargs["draft_id"] == 12345
+        assert isinstance(call_kwargs["draft_id"], int)
 
     @pytest.mark.asyncio
-    async def test_stream_response_handles_empty_chunks(self) -> None:
-        """Test streaming with empty content."""
-        mock_api = create_autospec(TelegramApiClient, instance=True)
-        mock_api.send_message_draft = AsyncMock()
-
-        manager = DraftManager(mock_api, update_interval_sec=0.0)
-
-        async def chunks() -> AsyncIterator[StreamChunk]:
-            yield StreamChunk(thoughts="", content="", is_partial=False)
-
-        final_thoughts, final_content = await manager.stream_response(
-            chat_id=123, chunks=chunks()
-        )
-
-        assert final_thoughts == ""
-        assert final_content == ""
-
-    @pytest.mark.asyncio
-    async def test_stream_response_with_api_error(self) -> None:
-        """Test streaming handles API errors gracefully."""
-        mock_api = create_autospec(TelegramApiClient, instance=True)
-        mock_api.send_message_draft = AsyncMock(
-            side_effect=TelegramApiError("Rate limit", error_code=429)
-        )
-
-        manager = DraftManager(mock_api, update_interval_sec=0.0)
-
-        async def chunks() -> AsyncIterator[StreamChunk]:
-            yield StreamChunk(thoughts="Thinking...", content="Hello", is_partial=False)
-
-        final_thoughts, final_content = await manager.stream_response(
-            chat_id=123, chunks=chunks()
-        )
-
-        assert final_thoughts == "Thinking..."
-        assert final_content == "Hello"
-
-    @pytest.mark.asyncio
-    async def test_stream_response_with_throttling(self) -> None:
-        """Test streaming respects throttle interval."""
-        mock_api = create_autospec(TelegramApiClient, instance=True)
-        mock_api.send_message_draft = AsyncMock(
+    async def test_group_chat_uses_edit_channel(self) -> None:
+        """Test that group chat uses sendMessage + editMessageText."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
             return_value=Message.model_validate(
                 {
-                    "message_id": 1,
+                    "message_id": 42,
                     "date": "2024-01-01T00:00:00Z",
-                    "chat": {"id": 123, "type": "private"},
+                    "chat": {"id": 123, "type": "supergroup"},
+                }
+            )
+        )
+        mock_api.edit_message_text = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 42,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "supergroup"},
                 }
             )
         )
 
-        manager = DraftManager(mock_api, update_interval_sec=1.0)
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.SUPERGROUP,
+            update_interval_sec=0.0,
+        )
 
         async def chunks() -> AsyncIterator[StreamChunk]:
-            yield StreamChunk(thoughts="A", content="B")
-            yield StreamChunk(thoughts="A", content="B", is_partial=False)
+            yield StreamChunk(thoughts="", content="Hello")
+            yield StreamChunk(thoughts="", content="Hello world", is_partial=False)
 
-        final_thoughts, final_content = await manager.stream_response(
-            chat_id=123, chunks=chunks()
-        )
+        await session.run(chunks=chunks(), chat_id=123, message_thread_id=5)
 
-        assert final_thoughts == "A"
-        assert final_content == "B"
+        mock_api.send_message.assert_called()
+        send_kwargs = mock_api.send_message.call_args.kwargs
+        assert send_kwargs.get("message_thread_id") == 5
 
     @pytest.mark.asyncio
-    async def test_stream_response_with_thread_id(self) -> None:
-        """Test streaming with message thread ID."""
-        mock_api = create_autospec(TelegramApiClient, instance=True)
+    async def test_retry_after_propagation(self) -> None:
+        """Test that 429 errors with retry_after are retried."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
         mock_api.send_message_draft = AsyncMock(
-            return_value=Message.model_validate(
-                {
-                    "message_id": 1,
-                    "date": "2024-01-01T00:00:00Z",
-                    "chat": {"id": 123, "type": "private"},
-                }
-            )
+            side_effect=[
+                TelegramApiError("Rate limit", error_code=429, retry_after=0),
+                Message.model_validate(
+                    {
+                        "message_id": 1,
+                        "date": "2024-01-01T00:00:00Z",
+                        "chat": {"id": 123, "type": "private"},
+                    }
+                ),
+            ]
         )
 
-        manager = DraftManager(mock_api, update_interval_sec=0.0)
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
 
         async def chunks() -> AsyncIterator[StreamChunk]:
             yield StreamChunk(thoughts="", content="Hello", is_partial=False)
 
-        await manager.stream_response(
-            chat_id=123, chunks=chunks(), message_thread_id=42
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert mock_api.send_message_draft.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_persistent_failure_fallback(self) -> None:
+        """Test that persistent failures fall back to sendMessage."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            side_effect=TelegramApiError("Invalid", error_code=400)
+        )
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
         )
 
-        call_kwargs = mock_api.send_message_draft.call_args.kwargs
-        assert call_kwargs.get("message_thread_id") == 42
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Hello", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        mock_api.send_message.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_long_message_split(self) -> None:
+        """Test that long messages are split correctly."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "supergroup"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.SUPERGROUP,
+            update_interval_sec=0.0,
+        )
+
+        long_text = "A" * 5000
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content=long_text, is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert mock_api.send_message.await_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_same_draft_id_reused_per_channel(self) -> None:
+        """Test that the same draft_id is reused across updates."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 99999,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="A")
+            yield StreamChunk(thoughts="", content="AB")
+            yield StreamChunk(thoughts="", content="ABC", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        draft_ids = [
+            call.kwargs["draft_id"]
+            for call in mock_api.send_message_draft.call_args_list
+        ]
+        assert all(did == 99999 for did in draft_ids)
+
+    @pytest.mark.asyncio
+    async def test_empty_stream_sends_apology(self) -> None:
+        """Test that empty stream sends apology message."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        mock_api.send_message.assert_called()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "couldn't generate" in call_kwargs["text"]
 
 
 class TestSplitLongMessage:
@@ -893,15 +992,20 @@ class TestTelegramBotMessageHandling:
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock(return_value=True)
-        mock_api.send_message = AsyncMock()
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
         bot._api = mock_api
-
-        mock_draft_manager = create_autospec(DraftManager, instance=True)
-        mock_draft_manager.stream_response = AsyncMock(return_value=("", "Hello back!"))
-        bot._draft_manager = mock_draft_manager
 
         await bot._handle_message(
             chat_id=123456789,
+            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello, bot!",
         )
@@ -909,37 +1013,40 @@ class TestTelegramBotMessageHandling:
         mock_api.send_chat_action.assert_called_once_with(
             chat_id=123456789, action="typing"
         )
-        mock_draft_manager.stream_response.assert_called_once()
+        mock_api.send_message_draft.assert_called()
 
     @pytest.mark.asyncio
-    async def test_handle_message_sends_thoughts_and_content(
+    async def test_handle_message_with_thoughts_and_content(
         self,
         telegram_config: TelegramConfig,
         runtime_recorder: RecordingRuntime,
     ) -> None:
-        """Test message handling sends both thoughts and content."""
+        """Test message handling with both thoughts and content."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
         runtime_recorder.run_user_turn_thoughts = "Let me think..."
         runtime_recorder.run_user_turn_response = "Here is my answer."
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock(return_value=True)
-        mock_api.send_message = AsyncMock()
-        bot._api = mock_api
-
-        mock_draft_manager = create_autospec(DraftManager, instance=True)
-        mock_draft_manager.stream_response = AsyncMock(
-            return_value=("Let me think...", "Here is my answer.")
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
         )
-        bot._draft_manager = mock_draft_manager
+        bot._api = mock_api
 
         await bot._handle_message(
             chat_id=123456789,
+            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello!",
         )
 
-        assert mock_api.send_message.await_count == 2
+        assert mock_api.send_message_draft.await_count >= 2
 
     @pytest.mark.asyncio
     async def test_handle_message_error(
@@ -956,14 +1063,9 @@ class TestTelegramBotMessageHandling:
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
 
-        mock_draft_manager = create_autospec(DraftManager, instance=True)
-        mock_draft_manager.stream_response = AsyncMock(
-            side_effect=RuntimeError("runner failed")
-        )
-        bot._draft_manager = mock_draft_manager
-
         await bot._handle_message(
             chat_id=123456789,
+            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello!",
         )
@@ -1075,3 +1177,235 @@ class TestTelegramBotLifecycle:
         await bot.stop()
 
         assert runtime_recorder.closed is True
+
+
+class TestAdkDuplicationRegression:
+    """Tests for ADK partial/non-partial duplication fix."""
+
+    @pytest.mark.asyncio
+    async def test_partial_then_non_partial_no_duplicate(self) -> None:
+        """Test that partial followed by non-partial doesn't duplicate."""
+        from blacki.adk_runtime import StreamChunk
+
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="Partial thought", content="", is_partial=True)
+            yield StreamChunk(thoughts="Final thought", content="", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        final_call = mock_api.send_message_draft.call_args
+        text = final_call.kwargs["text"]
+        assert text.count("Final thought") == 1
+        assert "Partial thought" not in text
+
+    @pytest.mark.asyncio
+    async def test_server_error_retry(self) -> None:
+        """Test that 5xx errors are retried."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            side_effect=[
+                TelegramApiError("Server error", error_code=500),
+                Message.model_validate(
+                    {
+                        "message_id": 1,
+                        "date": "2024-01-01T00:00:00Z",
+                        "chat": {"id": 123, "type": "private"},
+                    }
+                ),
+            ]
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Hello", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert mock_api.send_message_draft.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_group_chat_edit_after_send(self) -> None:
+        """Test that group chat edits message after initial send."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 42,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "supergroup"},
+                }
+            )
+        )
+        mock_api.edit_message_text = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 42,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "supergroup"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.SUPERGROUP,
+            update_interval_sec=0.0,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="First")
+            yield StreamChunk(thoughts="", content="First Second", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        mock_api.send_message.assert_called_once()
+        mock_api.edit_message_text.assert_called()
+        edit_kwargs = mock_api.edit_message_text.call_args.kwargs
+        assert edit_kwargs["message_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_throttle_skips_updates(self) -> None:
+        """Test that throttle skips intermediate updates."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=1.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="A")
+            yield StreamChunk(thoughts="", content="AB")
+            yield StreamChunk(thoughts="", content="ABC", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert mock_api.send_message_draft.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_fallback_after_all_writes_fail(self) -> None:
+        """Test that fallback message is sent after all writes fail."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message_draft = AsyncMock(
+            side_effect=TelegramApiError("Bad request", error_code=400)
+        )
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(
+            api=mock_api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=0.0,
+            id_factory=lambda: 12345,
+        )
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Hello world", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        mock_api.send_message.assert_called()
+        send_kwargs = mock_api.send_message.call_args.kwargs
+        assert "Hello world" in send_kwargs["text"]
+
+
+class TestCommandErrors:
+    """Tests for command error handling."""
+
+    @pytest.mark.asyncio
+    async def test_start_command_api_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /start command handles API errors."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock(
+            side_effect=TelegramApiError("Failed", error_code=400)
+        )
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/start")
+
+    @pytest.mark.asyncio
+    async def test_help_command_api_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /help command handles API errors."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock(
+            side_effect=TelegramApiError("Failed", error_code=400)
+        )
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/help")
+
+
+class TestFormattingEdgeCases:
+    """Tests for formatting edge cases."""
+
+    def test_format_bold_at_end(self) -> None:
+        """Test bold at end of string."""
+        text = "Text **bold**"
+        formatted = format_for_telegram(text)
+        assert formatted == r"Text *bold*"
+
+    def test_escape_backtick_in_text(self) -> None:
+        """Test backtick escaping behavior."""
+        text = "Use `code` here"
+        escaped = escape_markdown(text)
+        assert escaped == r"Use `code` here"
+
+    def test_format_with_newlines(self) -> None:
+        """Test formatting preserves newlines."""
+        text = "Line 1\n\nLine 2"
+        formatted = format_for_telegram(text)
+        assert "\n\n" in formatted

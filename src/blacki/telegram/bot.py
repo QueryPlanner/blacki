@@ -1,7 +1,8 @@
 """Telegram bot client backed by the shared ADK runtime.
 
 This module implements a Telegram bot using direct HTTP calls to the
-Telegram Bot API (version 9.5+) with streaming support via sendMessageDraft.
+Telegram Bot API (version 9.5+) with streaming support via sendMessageDraft
+for private chats and editMessageText for groups/supergroups.
 """
 
 import asyncio
@@ -14,12 +15,11 @@ from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
-from .streaming import DraftManager, split_long_message
-from .types import BotCommand, Message, ParseMode, Update
+from .streaming import StreamSession
+from .types import BotCommand, ChatType, Message, ParseMode, Update
 
 logger = logging.getLogger(__name__)
 
-TELEGRAM_MESSAGE_LIMIT = 4096
 POLLING_TIMEOUT = 30
 
 
@@ -33,7 +33,11 @@ class TelegramSessionIdentity:
 
 
 class TelegramBot:
-    """Telegram bot client that streams ADK responses via sendMessageDraft."""
+    """Telegram bot client that streams ADK responses.
+
+    Uses sendMessageDraft for private chats and editMessageText for
+    groups/supergroups/channels.
+    """
 
     def __init__(
         self,
@@ -44,7 +48,6 @@ class TelegramBot:
         self.config = config
         self.runtime = runtime
         self._api: TelegramApiClient | None = None
-        self._draft_manager: DraftManager | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
 
@@ -57,13 +60,6 @@ class TelegramBot:
                 raise ValueError(msg)
             self._api = TelegramApiClient(self.config.telegram_bot_token)
         return self._api
-
-    @property
-    def draft_manager(self) -> DraftManager:
-        """Get or create the draft manager."""
-        if self._draft_manager is None:
-            self._draft_manager = DraftManager(self.api)
-        return self._draft_manager
 
     async def start_polling(self) -> None:
         """Start the bot polling loop."""
@@ -144,6 +140,7 @@ class TelegramBot:
             return
 
         chat_id = message.chat.id
+        chat_type = message.chat.type
         message_thread_id = message.message_thread_id
         user_message = message.text
 
@@ -153,6 +150,7 @@ class TelegramBot:
 
         await self._handle_message(
             chat_id=chat_id,
+            chat_type=chat_type,
             message_thread_id=message_thread_id,
             user_message=user_message,
         )
@@ -250,6 +248,7 @@ class TelegramBot:
     async def _handle_message(
         self,
         chat_id: int,
+        chat_type: ChatType,
         message_thread_id: int | None,
         user_message: str,
     ) -> None:
@@ -279,16 +278,10 @@ class TelegramBot:
                 ):
                     yield chunk
 
-            final_thoughts, final_content = await self.draft_manager.stream_response(
-                chat_id=chat_id,
+            session = StreamSession(api=self.api, chat_type=chat_type)
+            await session.run(
                 chunks=get_chunks(),
-                message_thread_id=message_thread_id,
-            )
-
-            await self._send_final_messages(
                 chat_id=chat_id,
-                thoughts=final_thoughts,
-                content=final_content,
                 message_thread_id=message_thread_id,
             )
 
@@ -304,80 +297,6 @@ class TelegramBot:
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
-
-    async def _send_final_messages(
-        self,
-        chat_id: int,
-        thoughts: str,
-        content: str,
-        *,
-        message_thread_id: int | None = None,
-    ) -> None:
-        """Send final messages after streaming completes.
-
-        Replaces the drafts with properly formatted final messages.
-        """
-        if thoughts:
-            await self._send_thoughts(
-                chat_id=chat_id,
-                thoughts=thoughts,
-                message_thread_id=message_thread_id,
-            )
-
-        if content:
-            await self._send_content(
-                chat_id=chat_id,
-                content=content,
-                message_thread_id=message_thread_id,
-            )
-        elif not thoughts:
-            text = "I apologize, but I couldn't generate a response\\."
-            await self.api.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=message_thread_id,
-            )
-
-    async def _send_thoughts(
-        self,
-        chat_id: int,
-        thoughts: str,
-        *,
-        message_thread_id: int | None = None,
-    ) -> None:
-        """Send thinking content as italicized message."""
-        formatted = f"_Thinking: {escape_markdown(thoughts)}_"
-        for chunk in split_long_message(formatted):
-            try:
-                await self.api.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    message_thread_id=message_thread_id,
-                )
-            except TelegramApiError:
-                logger.exception("Failed to send thoughts message")
-
-    async def _send_content(
-        self,
-        chat_id: int,
-        content: str,
-        *,
-        message_thread_id: int | None = None,
-    ) -> None:
-        """Send main response content with Markdown formatting."""
-        formatted = format_for_telegram(content)
-        for chunk in split_long_message(formatted):
-            try:
-                await self.api.send_message(
-                    chat_id=chat_id,
-                    text=chunk,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    message_thread_id=message_thread_id,
-                )
-            except TelegramApiError:
-                logger.exception("Failed to send content message")
 
     def _build_session_identity(
         self,
@@ -425,147 +344,6 @@ class TelegramBot:
         if message_thread_id is not None:
             session_state["telegram_thread_id"] = str(message_thread_id)
         return session_state
-
-
-MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~>#+-=|{}.!\\")
-
-
-def escape_markdown(text: str) -> str:
-    """Escape special Markdown characters for Telegram MarkdownV2.
-
-    Does NOT escape inside code blocks or inline code - those are preserved.
-    """
-    result: list[str] = []
-    in_code_block = False
-    in_inline_code = False
-    i = 0
-
-    while i < len(text):
-        char = text[i]
-
-        if i + 2 <= len(text) and text[i : i + 3] == "```":
-            in_code_block = not in_code_block
-            result.append("```")
-            i += 3
-            continue
-
-        if char == "`" and not in_code_block:
-            in_inline_code = not in_inline_code
-            result.append(char)
-            i += 1
-            continue
-
-        if not in_code_block and not in_inline_code:
-            if char in MARKDOWN_SPECIAL_CHARS:
-                result.append("\\")
-                result.append(char)
-            else:
-                result.append(char)
-        else:
-            result.append(char)
-
-        i += 1
-
-    return "".join(result)
-
-
-def format_for_telegram(text: str) -> str:
-    """Format text for Telegram MarkdownV2, preserving bold formatting.
-
-    Handles **bold** markdown by:
-    1. Identifying bold sections
-    2. Escaping special chars in all content
-    3. Converting ** to * for Telegram bold syntax
-    """
-    result: list[str] = []
-    i = 0
-    in_code_block = False
-    in_inline_code = False
-
-    while i < len(text):
-        if i + 2 <= len(text) and text[i : i + 3] == "```":
-            in_code_block = not in_code_block
-            result.append("```")
-            i += 3
-            continue
-
-        if text[i] == "`" and not in_code_block:
-            in_inline_code = not in_inline_code
-            result.append("`")
-            i += 1
-            continue
-
-        if not in_code_block and not in_inline_code:
-            if i + 1 < len(text) and text[i : i + 2] == "**":
-                j = i + 2
-                inner_in_code_block = False
-                inner_in_inline_code = False
-                while j + 1 < len(text):
-                    if j + 2 <= len(text) and text[j : j + 3] == "```":
-                        inner_in_code_block = not inner_in_code_block
-                        j += 3
-                        continue
-                    if text[j] == "`" and not inner_in_code_block:
-                        inner_in_inline_code = not inner_in_inline_code
-                        j += 1
-                        continue
-                    if (
-                        not inner_in_code_block
-                        and not inner_in_inline_code
-                        and j + 1 < len(text)
-                        and text[j : j + 2] == "**"
-                    ):
-                        break
-                    j += 1
-
-                if j + 1 < len(text) and text[j : j + 2] == "**":
-                    bold_content = text[i + 2 : j]
-                    escaped_content = _escape_text_only(bold_content)
-                    result.append(f"*{escaped_content}*")
-                    i = j + 2
-                    continue
-
-            if text[i] in MARKDOWN_SPECIAL_CHARS:
-                result.append("\\")
-            result.append(text[i])
-        else:
-            result.append(text[i])
-
-        i += 1
-
-    return "".join(result)
-
-
-def _escape_text_only(text: str) -> str:
-    """Escape special chars without code block handling (for internal use)."""
-    result: list[str] = []
-    in_code_block = False
-    in_inline_code = False
-    i = 0
-
-    while i < len(text):
-        if i + 2 <= len(text) and text[i : i + 3] == "```":
-            in_code_block = not in_code_block
-            result.append("```")
-            i += 3
-            continue
-
-        if text[i] == "`" and not in_code_block:
-            in_inline_code = not in_inline_code
-            result.append("`")
-            i += 1
-            continue
-
-        if not in_code_block and not in_inline_code:
-            if text[i] in MARKDOWN_SPECIAL_CHARS:
-                result.append("\\")
-            result.append(text[i])
-        else:
-            result.append(text[i])
-
-        i += 1
-
-    return "".join(result)
 
 
 def create_telegram_bot(

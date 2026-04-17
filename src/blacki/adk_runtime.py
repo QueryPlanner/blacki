@@ -244,11 +244,13 @@ class AdkRuntime:
                     partial_thoughts = event_thoughts
                 else:
                     accumulated_thoughts.append(event_thoughts)
+                    partial_thoughts = ""
             if event_content:
                 if event.partial:
                     partial_content = event_content
                 else:
                     accumulated_content.append(event_content)
+                    partial_content = ""
 
             current_thoughts = "".join(accumulated_thoughts) + partial_thoughts
             current_content = "".join(accumulated_content) + partial_content

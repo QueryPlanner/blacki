@@ -1,36 +1,398 @@
-"""Streaming draft manager for real-time Telegram message updates.
+"""Streaming message management for real-time Telegram updates.
 
-Implements time-based throttling (300ms) for sendMessageDraft API calls,
-managing separate drafts for thoughts and content with proper formatting.
+Implements time-based throttling (300ms per channel) for streaming updates,
+with separate strategies for private chats (sendMessageDraft) and
+group/supergroup chats (editMessageText-based streaming).
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import time
-import uuid
-from collections.abc import AsyncIterator
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable
+from typing import TYPE_CHECKING
 
 from blacki.adk_runtime import StreamChunk
 
 from .api import TelegramApiClient, TelegramApiError
-from .types import ParseMode
+from .formatting import escape_markdown, format_for_telegram
+from .types import ChatType, ParseMode
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
-DRAFT_UPDATE_INTERVAL_MS = 300
-DRAFT_UPDATE_INTERVAL_SEC = DRAFT_UPDATE_INTERVAL_MS / 1000.0
+DRAFT_UPDATE_INTERVAL_SEC = 0.3
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 
+def _default_id_factory() -> int:
+    return secrets.randbits(63) or 1
+
+
+class _Channel(ABC):
+    """Abstract base for streaming message channels.
+
+    Each channel manages a single Telegram message that is created lazily
+    on first non-empty content and updated throttled at 300ms intervals.
+    """
+
+    def __init__(
+        self,
+        api: TelegramApiClient,
+        chat_id: int,
+        message_thread_id: int | None,
+        update_interval_sec: float,
+    ) -> None:
+        self.api = api
+        self.chat_id = chat_id
+        self.message_thread_id = message_thread_id
+        self.update_interval_sec = update_interval_sec
+        self._last_write_time = 0.0
+        self._full_text = ""
+        self._wrote_successfully = False
+
+    async def write(self, text: str, *, is_final: bool) -> None:
+        """Write text to the channel with throttling.
+
+        Args:
+            text: The text content to write.
+            is_final: If True, flush immediately regardless of throttle.
+        """
+        if not text:
+            return
+
+        self._full_text = text
+
+        now = time.monotonic()
+        elapsed = now - self._last_write_time
+
+        if elapsed < self.update_interval_sec and not is_final:
+            return
+
+        await self._write_throttled(text[:TELEGRAM_MESSAGE_LIMIT], is_final=is_final)
+        self._last_write_time = now
+
+    async def finalize(self) -> None:
+        """Finalize the channel, handling long messages and fallback."""
+        if not self._full_text:
+            return
+
+        if len(self._full_text) <= TELEGRAM_MESSAGE_LIMIT:
+            if not self._wrote_successfully:
+                await self._write_throttled(self._full_text, is_final=True)
+            return
+
+        chunks = split_long_message(self._full_text)
+        if not chunks:
+            return
+
+        if self._wrote_successfully:
+            await self._write_throttled(chunks[0], is_final=True)
+        else:
+            await self._write_throttled(chunks[0], is_final=True)
+
+        for chunk in chunks[1:]:
+            try:
+                await self.api.send_message(
+                    chat_id=self.chat_id,
+                    text=chunk,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    message_thread_id=self.message_thread_id,
+                )
+            except TelegramApiError:
+                logger.exception("Failed to send additional message chunk")
+
+    @abstractmethod
+    async def _write_throttled(self, text: str, *, is_final: bool) -> None:
+        """Write text to the channel (throttling already handled)."""
+        ...
+
+    async def _send_fallback(self, text: str) -> None:
+        """Send a fallback message if all writes failed."""
+        if not text:
+            return
+        try:
+            await self.api.send_message(
+                chat_id=self.chat_id,
+                text=text[:TELEGRAM_MESSAGE_LIMIT],
+                parse_mode=ParseMode.MARKDOWN_V2,
+                message_thread_id=self.message_thread_id,
+            )
+            logger.info("Sent fallback message after streaming failures")
+        except TelegramApiError:
+            logger.exception("Failed to send fallback message")
+
+
+class _DraftChannel(_Channel):
+    """Channel for private chats using sendMessageDraft.
+
+    Uses a single draft_id for all updates to the same message.
+    Telegram converts the draft to a regular message on the final call.
+    """
+
+    def __init__(
+        self,
+        api: TelegramApiClient,
+        chat_id: int,
+        message_thread_id: int | None,
+        update_interval_sec: float,
+        id_factory: Callable[[], int] | None = None,
+    ) -> None:
+        super().__init__(api, chat_id, message_thread_id, update_interval_sec)
+        self._draft_id = (id_factory or _default_id_factory)()
+
+    async def _write_throttled(self, text: str, *, is_final: bool) -> None:
+        try:
+            await self.api.send_message_draft(
+                chat_id=self.chat_id,
+                text=text,
+                draft_id=self._draft_id,
+                message_thread_id=self.message_thread_id,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            self._wrote_successfully = True
+        except TelegramApiError as e:
+            await self._handle_write_error(e, text, is_final=is_final)
+
+    async def _handle_write_error(
+        self, error: TelegramApiError, text: str, *, is_final: bool
+    ) -> None:
+        if error.error_code == 429 and error.retry_after:
+            await asyncio.sleep(error.retry_after)
+            try:
+                await self.api.send_message_draft(
+                    chat_id=self.chat_id,
+                    text=text,
+                    draft_id=self._draft_id,
+                    message_thread_id=self.message_thread_id,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                self._wrote_successfully = True
+                return
+            except TelegramApiError:
+                logger.warning("Retry after rate limit failed")
+
+        if 500 <= (error.error_code or 0) <= 599:
+            await asyncio.sleep(1.0)
+            try:
+                await self.api.send_message_draft(
+                    chat_id=self.chat_id,
+                    text=text,
+                    draft_id=self._draft_id,
+                    message_thread_id=self.message_thread_id,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                self._wrote_successfully = True
+                return
+            except TelegramApiError:
+                logger.warning("Retry after server error failed")
+
+        logger.warning("Draft write failed: %s", error)
+
+        if is_final and not self._wrote_successfully:
+            await self._send_fallback(text)
+
+
+class _EditChannel(_Channel):
+    """Channel for group/supergroup chats using editMessageText.
+
+    Creates a message on first write, then edits it for subsequent updates.
+    """
+
+    def __init__(
+        self,
+        api: TelegramApiClient,
+        chat_id: int,
+        message_thread_id: int | None,
+        update_interval_sec: float,
+    ) -> None:
+        super().__init__(api, chat_id, message_thread_id, update_interval_sec)
+        self._message_id: int | None = None
+
+    async def _write_throttled(self, text: str, *, is_final: bool) -> None:
+        if self._message_id is None:
+            try:
+                message = await self.api.send_message(
+                    chat_id=self.chat_id,
+                    text=text,
+                    message_thread_id=self.message_thread_id,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                self._message_id = message.message_id
+                self._wrote_successfully = True
+                return
+            except TelegramApiError as e:
+                await self._handle_write_error(e, text, is_final=is_final)
+                return
+
+        try:
+            await self.api.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self._message_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            self._wrote_successfully = True
+        except TelegramApiError as e:
+            await self._handle_write_error(e, text, is_final=is_final)
+
+    async def _handle_write_error(
+        self, error: TelegramApiError, text: str, *, is_final: bool
+    ) -> None:
+        if error.error_code == 429 and error.retry_after:
+            await asyncio.sleep(error.retry_after)
+            try:
+                if self._message_id is None:
+                    message = await self.api.send_message(
+                        chat_id=self.chat_id,
+                        text=text,
+                        message_thread_id=self.message_thread_id,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    self._message_id = message.message_id
+                else:
+                    await self.api.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self._message_id,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                self._wrote_successfully = True
+                return
+            except TelegramApiError:
+                logger.warning("Retry after rate limit failed")
+
+        if 500 <= (error.error_code or 0) <= 599:
+            await asyncio.sleep(1.0)
+            try:
+                if self._message_id is None:
+                    message = await self.api.send_message(
+                        chat_id=self.chat_id,
+                        text=text,
+                        message_thread_id=self.message_thread_id,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    self._message_id = message.message_id
+                else:
+                    await self.api.edit_message_text(
+                        chat_id=self.chat_id,
+                        message_id=self._message_id,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                self._wrote_successfully = True
+                return
+            except TelegramApiError:
+                logger.warning("Retry after server error failed")
+
+        logger.warning("Edit write failed: %s", error)
+
+        if is_final and not self._wrote_successfully:
+            await self._send_fallback(text)
+
+
+class StreamSession:
+    """Manages streaming of thoughts and content to Telegram.
+
+    Creates one channel for thoughts and one for content, each backed by
+    a single Telegram message. Picks _DraftChannel for private chats and
+    _EditChannel for groups/supergroups/channels.
+    """
+
+    def __init__(
+        self,
+        api: TelegramApiClient,
+        chat_type: ChatType,
+        *,
+        update_interval_sec: float = DRAFT_UPDATE_INTERVAL_SEC,
+        id_factory: Callable[[], int] | None = None,
+    ) -> None:
+        self.api = api
+        self.chat_type = chat_type
+        self.update_interval_sec = update_interval_sec
+        self.id_factory = id_factory
+        self._thoughts_channel: _Channel | None = None
+        self._content_channel: _Channel | None = None
+
+    def _create_channel(self, chat_id: int, message_thread_id: int | None) -> _Channel:
+        if self.chat_type == ChatType.PRIVATE:
+            return _DraftChannel(
+                api=self.api,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                update_interval_sec=self.update_interval_sec,
+                id_factory=self.id_factory,
+            )
+        return _EditChannel(
+            api=self.api,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            update_interval_sec=self.update_interval_sec,
+        )
+
+    async def run(
+        self,
+        chunks: AsyncIterator[StreamChunk],
+        chat_id: int,
+        message_thread_id: int | None = None,
+    ) -> tuple[str, str]:
+        """Stream chunks to Telegram, returning final (thoughts, content)."""
+        final_thoughts = ""
+        final_content = ""
+
+        async for chunk in chunks:
+            if chunk.thoughts:
+                if self._thoughts_channel is None:
+                    self._thoughts_channel = self._create_channel(
+                        chat_id, message_thread_id
+                    )
+                formatted = _format_thoughts(chunk.thoughts)
+                await self._thoughts_channel.write(
+                    formatted, is_final=not chunk.is_partial
+                )
+
+            if chunk.content:
+                if self._content_channel is None:
+                    self._content_channel = self._create_channel(
+                        chat_id, message_thread_id
+                    )
+                formatted = _format_content(chunk.content)
+                await self._content_channel.write(
+                    formatted, is_final=not chunk.is_partial
+                )
+
+            if not chunk.is_partial:
+                final_thoughts = chunk.thoughts
+                final_content = chunk.content
+
+        if self._thoughts_channel is not None:
+            await self._thoughts_channel.finalize()
+        if self._content_channel is not None:
+            await self._content_channel.finalize()
+
+        if not final_thoughts and not final_content:
+            try:
+                await self.api.send_message(
+                    chat_id=chat_id,
+                    text="I apologize, but I couldn't generate a response\\.",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    message_thread_id=message_thread_id,
+                )
+            except TelegramApiError:
+                logger.exception("Failed to send apology message")
+
+        return final_thoughts, final_content
+
+
 class DraftManager:
-    """Manages streaming draft updates with time-based throttling.
+    """Legacy adapter for backward compatibility.
 
-    This class coordinates real-time message streaming via Telegram's
-    sendMessageDraft API (Bot API 9.5+). It maintains two separate drafts:
-    one for thoughts (italicized) and one for content.
-
-    The draft update frequency is throttled to avoid hitting Telegram's
-    rate limits while providing a smooth user experience.
+    Delegates to StreamSession internally.
     """
 
     def __init__(
@@ -39,12 +401,6 @@ class DraftManager:
         *,
         update_interval_sec: float = DRAFT_UPDATE_INTERVAL_SEC,
     ) -> None:
-        """Initialize the draft manager.
-
-        Args:
-            api_client: The Telegram API client for making requests.
-            update_interval_sec: Minimum time between draft updates.
-        """
         self.api = api_client
         self.update_interval_sec = update_interval_sec
 
@@ -55,145 +411,23 @@ class DraftManager:
         *,
         message_thread_id: int | None = None,
     ) -> tuple[str, str]:
-        """Stream ADK chunks to Telegram with two draft messages.
-
-        Creates and updates two draft messages:
-        1. Thoughts draft (italicized with "Thinking:" prefix)
-        2. Content draft (formatted normally)
-
-        When the stream completes, both drafts are replaced with final messages.
-
-        Args:
-            chat_id: The Telegram chat ID to send to.
-            chunks: Async iterator of StreamChunk objects from ADK.
-            message_thread_id: Optional thread ID for topic groups.
-
-        Returns:
-            A tuple of (final_thoughts, final_content) strings.
-        """
-        thoughts_draft_id = str(uuid.uuid4())
-        content_draft_id = str(uuid.uuid4())
-
-        last_update_time = 0.0
-        accumulated_thoughts = ""
-        accumulated_content = ""
-        final_thoughts = ""
-        final_content = ""
-
-        async for chunk in chunks:
-            accumulated_thoughts = chunk.thoughts
-            accumulated_content = chunk.content
-
-            now = time.monotonic()
-            elapsed = now - last_update_time
-
-            if elapsed >= self.update_interval_sec:
-                await self._update_drafts(
-                    chat_id=chat_id,
-                    thoughts_draft_id=thoughts_draft_id,
-                    content_draft_id=content_draft_id,
-                    thoughts=accumulated_thoughts,
-                    content=accumulated_content,
-                    message_thread_id=message_thread_id,
-                )
-                last_update_time = now
-
-            if not chunk.is_partial:
-                final_thoughts = chunk.thoughts
-                final_content = chunk.content
-
-        if accumulated_thoughts or accumulated_content:
-            await self._update_drafts(
-                chat_id=chat_id,
-                thoughts_draft_id=thoughts_draft_id,
-                content_draft_id=content_draft_id,
-                thoughts=accumulated_thoughts,
-                content=accumulated_content,
-                message_thread_id=message_thread_id,
-            )
-
-        return final_thoughts, final_content
-
-    async def _update_drafts(
-        self,
-        chat_id: int,
-        thoughts_draft_id: str,
-        content_draft_id: str,
-        thoughts: str,
-        content: str,
-        *,
-        message_thread_id: int | None = None,
-    ) -> None:
-        """Update both draft messages."""
-        tasks = []
-
-        if thoughts:
-            tasks.append(
-                self._update_draft(
-                    chat_id=chat_id,
-                    draft_id=thoughts_draft_id,
-                    text=_format_thoughts(thoughts),
-                    message_thread_id=message_thread_id,
-                )
-            )
-
-        if content:
-            tasks.append(
-                self._update_draft(
-                    chat_id=chat_id,
-                    draft_id=content_draft_id,
-                    text=_format_content(content),
-                    message_thread_id=message_thread_id,
-                )
-            )
-
-        if tasks:
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.warning("Failed to update draft: %s", result)
-
-    async def _update_draft(
-        self,
-        chat_id: int,
-        draft_id: str,
-        text: str,
-        *,
-        message_thread_id: int | None = None,
-    ) -> None:
-        """Update a single draft message."""
-        try:
-            await self.api.send_message_draft(
-                chat_id=chat_id,
-                text=text[:TELEGRAM_MESSAGE_LIMIT],
-                draft_id=draft_id,
-                message_thread_id=message_thread_id,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
-        except TelegramApiError as e:
-            logger.warning("Draft update failed (draft_id=%s): %s", draft_id, e)
+        session = StreamSession(
+            api=self.api,
+            chat_type=ChatType.PRIVATE,
+            update_interval_sec=self.update_interval_sec,
+        )
+        return await session.run(
+            chunks=chunks,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+        )
 
 
 def _format_thoughts(thoughts: str) -> str:
-    """Format thoughts as italicized text with prefix.
-
-    Returns:
-        Formatted text like "_Thinking: ..._" for MarkdownV2.
-    """
-    from .bot import escape_markdown
-
-    escaped = escape_markdown(thoughts)
-    return f"_Thinking: {escaped}_"
+    return f"_Thinking: {escape_markdown(thoughts)}_"
 
 
 def _format_content(content: str) -> str:
-    """Format content for Telegram MarkdownV2.
-
-    Returns:
-        Properly formatted content for Telegram.
-    """
-    from .bot import format_for_telegram
-
     return format_for_telegram(content)
 
 
@@ -227,10 +461,6 @@ def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[s
 
 
 def _find_chunk_boundary(text: str, limit: int) -> int:
-    """Find the most readable split point within the limit.
-
-    Prefers paragraph breaks, then line breaks, then word boundaries.
-    """
     for separator in ("\n\n", "\n", " "):
         split_index = text.rfind(separator, 0, limit + 1)
         if split_index > 0:

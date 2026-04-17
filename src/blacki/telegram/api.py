@@ -212,7 +212,7 @@ class TelegramApiClient:
         self,
         chat_id: int | str,
         text: str,
-        draft_id: str,
+        draft_id: int,
         *,
         message_thread_id: int | None = None,
         parse_mode: ParseMode | None = None,
@@ -224,10 +224,13 @@ class TelegramApiClient:
         existing draft message. When the stream is complete, the draft
         automatically converts to a regular message.
 
+        Note: sendMessageDraft is only available for private chats.
+        For groups/supergroups/channels, use editMessageText-based streaming.
+
         Args:
             chat_id: Unique identifier for the target chat or username.
             text: Current text content of the draft.
-            draft_id: Unique identifier for this draft session.
+            draft_id: Unique non-zero 64-bit integer identifier for this draft.
             message_thread_id: Unique identifier for the target message thread.
             parse_mode: Mode for parsing entities in the message text.
 
