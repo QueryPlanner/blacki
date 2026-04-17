@@ -441,7 +441,7 @@ async def test_handle_message_runs_adk_turn(
         }
     ]
     mock_update.message.reply_text.assert_called_once_with(
-        "Test response", parse_mode="Markdown"
+        "Test response", parse_mode="MarkdownV2"
     )
 
 
@@ -784,11 +784,11 @@ def test_split_response_text_exits_loop_when_remaining_text_is_consumed(
 
 
 def test_escape_markdown_escapes_special_chars() -> None:
-    """Test that special Markdown characters are escaped."""
-    text = "Hello _world_ with text"
+    """Test that MarkdownV2 special characters are escaped."""
+    text = "Hello _world_ with *stars* and [brackets]"
     escaped = escape_markdown(text)
 
-    assert escaped == r"Hello \_world\_ with text"
+    assert escaped == r"Hello \_world\_ with \*stars\* and \[brackets\]"
 
 
 def test_escape_markdown_preserves_code_blocks() -> None:
@@ -813,6 +813,91 @@ def test_escape_markdown_handles_nested_code() -> None:
     escaped = escape_markdown(text)
 
     assert escaped == r"Here is `inline_code` and ```code block``` with \_text\_"
+
+
+def test_escape_markdown_escapes_all_markdown_v2_chars() -> None:
+    """Test that all MarkdownV2 special characters are escaped."""
+    text = "_ * [ ] ( ) ~ > # + - = | { } . !"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"\_ \* \[ \] \( \) \~ \> \# \+ \- \= \| \{ \} \. \!"
+
+
+def test_escape_markdown_handles_brackets_and_parens() -> None:
+    """Test that brackets and parentheses are escaped."""
+    text = "See [link](url) for more info"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"See \[link\]\(url\) for more info"
+
+
+def test_escape_markdown_handles_tilde_and_hash() -> None:
+    """Test that tilde and hash are escaped."""
+    text = "Use ~home~ and #tag"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Use \~home\~ and \#tag"
+
+
+def test_escape_markdown_handles_period_and_exclamation() -> None:
+    """Test that period and exclamation are escaped."""
+    text = "Hello. Wait! Really"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Hello\. Wait\! Really"
+
+
+def test_escape_markdown_handles_plus_minus_equals() -> None:
+    """Test that +, -, and = are escaped."""
+    text = "1 + 2 - 3 = 0"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"1 \+ 2 \- 3 \= 0"
+
+
+def test_escape_markdown_handles_curly_braces_and_pipe() -> None:
+    """Test that curly braces and pipe are escaped."""
+    text = "{key|value}"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"\{key\|value\}"
+
+
+def test_escape_markdown_preserves_code_blocks_with_all_special_chars() -> None:
+    """Test that code blocks preserve all special characters."""
+    text = "Check ```if (x > 0) { return x * 2; }``` for logic"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Check ```if (x > 0) { return x * 2; }``` for logic"
+
+
+def test_escape_markdown_preserves_inline_code_with_all_special_chars() -> None:
+    """Test that inline code preserves all special characters."""
+    text = "Use `arr[0].value!` for access"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"Use `arr[0].value!` for access"
+
+
+def test_escape_markdown_handles_empty_string() -> None:
+    """Test that empty strings are handled correctly."""
+    assert escape_markdown("") == ""
+
+
+def test_escape_markdown_handles_only_special_chars() -> None:
+    """Test a string containing only special characters."""
+    text = "_*[]"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"\_\*\[\]"
+
+
+def test_escape_markdown_handles_special_chars_at_boundaries() -> None:
+    """Test special characters at string boundaries."""
+    text = "_start and end_"
+    escaped = escape_markdown(text)
+
+    assert escaped == r"\_start and end\_"
 
 
 def test_convert_bold_to_telegram_converts_double_asterisk() -> None:
@@ -857,10 +942,10 @@ async def test_send_response_sends_thoughts_first(
     first_call = mock_update.message.reply_text.await_args_list[0]
     second_call = mock_update.message.reply_text.await_args_list[1]
 
-    assert "Thinking: Let me think..." in first_call.args[0]
-    assert first_call.kwargs.get("parse_mode") == "Markdown"
-    assert "Here is my answer." in second_call.args[0]
-    assert second_call.kwargs.get("parse_mode") == "Markdown"
+    assert "Thinking: Let me think\\.\\.\\." in first_call.args[0]
+    assert first_call.kwargs.get("parse_mode") == "MarkdownV2"
+    assert "Here is my answer\\." in second_call.args[0]
+    assert second_call.kwargs.get("parse_mode") == "MarkdownV2"
 
 
 @pytest.mark.asyncio
@@ -879,7 +964,7 @@ async def test_send_response_skips_thoughts_when_empty(
 
     assert mock_update.message.reply_text.await_count == 1
     call = mock_update.message.reply_text.await_args
-    assert "Just the answer." in call.args[0]
+    assert "Just the answer\\." in call.args[0]
 
 
 @pytest.mark.asyncio
@@ -896,7 +981,7 @@ async def test_send_content_uses_markdown_parse_mode(
     await bot._handle_message(mock_update, mock_context)
 
     call = mock_update.message.reply_text.await_args
-    assert call.kwargs.get("parse_mode") == "Markdown"
+    assert call.kwargs.get("parse_mode") == "MarkdownV2"
 
 
 @pytest.mark.asyncio
