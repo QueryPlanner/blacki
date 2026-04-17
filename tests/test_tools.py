@@ -409,7 +409,7 @@ class TestBrowserGetTaskStatus:
         with (
             patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
             patch(
-                "blacki.tools._async_poll_output",
+                "blacki.tools._poll_task_output",
                 side_effect=TimeoutError("poll timeout"),
             ),
         ):
@@ -450,7 +450,7 @@ class TestBrowserGetTaskStatus:
         with (
             patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
             patch(
-                "blacki.tools._async_poll_output",
+                "blacki.tools._poll_task_output",
                 new=AsyncMock(return_value=mock_result),
             ),
         ):
@@ -492,7 +492,7 @@ class TestBrowserGetTaskStatus:
         with (
             patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
             patch(
-                "blacki.tools._async_poll_output",
+                "blacki.tools._poll_task_output",
                 new=AsyncMock(return_value=mock_result),
             ) as mock_poll,
         ):

@@ -10,9 +10,6 @@ from typing import Any, Literal
 
 from browser_use_sdk import AsyncBrowserUse  # type: ignore[import-untyped]
 from browser_use_sdk.v2.client import SessionSettings  # type: ignore[import-untyped]
-from browser_use_sdk.v2.helpers import (  # type: ignore[import-untyped]
-    _async_poll_output,
-)
 from google.adk.tools import ToolContext
 from pydantic import BaseModel
 
@@ -79,6 +76,63 @@ def _serialize_browser_output(output: Any) -> Any:
         except json.JSONDecodeError:
             return output
     return output
+
+
+async def _poll_task_output(
+    tasks_client: Any,
+    task_id: str,
+    output_schema: type[BaseModel] | None,
+    timeout: float,
+    interval: float,
+) -> Any:
+    """Poll a Browser Use task until completion or timeout.
+
+    Args:
+        tasks_client: The AsyncTasks client from AsyncBrowserUse.
+        task_id: The task ID to poll.
+        output_schema: Optional Pydantic model for structured output parsing.
+        timeout: Maximum time to wait in seconds.
+        interval: Time between polls in seconds.
+
+    Returns:
+        An object with ``task`` (TaskView) and ``output`` attributes.
+
+    Raises:
+        TimeoutError: If the task doesn't complete within the timeout.
+    """
+    import time
+
+    start = time.monotonic()
+    while True:
+        task_view = await tasks_client.get(task_id)
+        status_value = task_view.status.value
+
+        if status_value in ("finished", "failed", "stopped"):
+            output: Any = task_view.output
+            if output is not None and output_schema is not None:
+                try:
+                    parsed = json.loads(output)
+                    output = output_schema.model_validate(parsed)
+                except (json.JSONDecodeError, Exception):  # noqa: S110
+                    pass
+
+            class _TaskResult:
+                task: Any
+                output: Any
+
+            result = _TaskResult()
+            result.task = task_view
+            result.output = output
+            return result
+
+        elapsed = time.monotonic() - start
+        if elapsed >= timeout:
+            raise TimeoutError(
+                f"Task {task_id} did not complete within {timeout}s "
+                f"(status: {status_value})"
+            )
+
+        await asyncio.sleep(interval)
 
 
 async def browser_task(
@@ -162,8 +216,8 @@ async def browser_task(
     session_settings_data: dict[str, Any] = {}
     if profile_id:
         session_settings_data["profileId"] = profile_id
-    if proxy_country is not None:
-        session_settings_data["proxyCountryCode"] = proxy_country or None
+    if proxy_country:
+        session_settings_data["proxyCountryCode"] = proxy_country
     if session_settings_data:
         create_kwargs["session_settings"] = SessionSettings(**session_settings_data)
 
@@ -276,7 +330,7 @@ async def browser_get_task_status(
 
     try:
         client = await _get_shared_browser_use_client(api_key)
-        task_result = await _async_poll_output(
+        task_result = await _poll_task_output(
             client.tasks,
             task_id,
             pydantic_schema,
