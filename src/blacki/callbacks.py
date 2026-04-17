@@ -1,10 +1,15 @@
 """Agent lifecycle callback functions for monitoring.
 
 This module provides callback functions that execute at various stages of the
-agent lifecycle. These callbacks enable comprehensive logging.
+agent lifecycle. These callbacks enable comprehensive logging and optional
+Telegram tool notifications for Telegram-backed sessions.
 """
 
+import asyncio
+import functools
 import logging
+import os
+import time
 from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
@@ -12,6 +17,205 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
+
+from .telegram import TelegramConfig
+from .telegram.api import TelegramApiClient, TelegramApiError
+from .telegram.formatting import escape_markdown
+from .telegram.types import ParseMode
+
+logger = logging.getLogger(__name__)
+
+# Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
+_TOOL_NOTIFY_LAST: dict[str, float] = {}
+_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.35
+_MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
+
+# Reuse one HTTP client per bot token (narrow lock only for swap / teardown).
+_NOTIFY_CLIENT_LOCK = asyncio.Lock()
+_shared_notify_client: TelegramApiClient | None = None
+_shared_notify_token: str | None = None
+
+
+def _evict_oldest_rate_limit_entries(count: int) -> None:
+    if count <= 0 or not _TOOL_NOTIFY_LAST:
+        return
+    sorted_keys = sorted(_TOOL_NOTIFY_LAST, key=lambda key: _TOOL_NOTIFY_LAST[key])
+    for key in sorted_keys[:count]:
+        del _TOOL_NOTIFY_LAST[key]
+
+
+def _rate_limit_allows_notification(chat_key: str, now: float) -> bool:
+    last_sent = _TOOL_NOTIFY_LAST.get(chat_key, 0.0)
+    if now - last_sent < _TOOL_NOTIFY_MIN_INTERVAL_SEC:
+        return False
+    map_is_full = (
+        len(_TOOL_NOTIFY_LAST) >= _MAX_TOOL_NOTIFY_RATE_ENTRIES
+        and chat_key not in _TOOL_NOTIFY_LAST
+    )
+    if map_is_full:
+        evict_count = max(1, _MAX_TOOL_NOTIFY_RATE_ENTRIES // 8)
+        _evict_oldest_rate_limit_entries(evict_count)
+    _TOOL_NOTIFY_LAST[chat_key] = now
+    return True
+
+
+def _schedule_shared_notify_client_close_for_tests() -> None:
+    """Drop shared client refs; best-effort async close when a loop is running."""
+    global _shared_notify_client, _shared_notify_token
+    client = _shared_notify_client
+    _shared_notify_client = None
+    _shared_notify_token = None
+    if client is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close_wrapper() -> None:
+        try:
+            await client.close()
+        except Exception:
+            logger.debug(
+                "Telegram notify client close failed after test reset",
+                exc_info=True,
+            )
+
+    try:
+        loop.create_task(_close_wrapper())
+    except RuntimeError:
+        return
+
+
+async def _shared_telegram_notify_client(token: str) -> TelegramApiClient:
+    """Return a shared ``TelegramApiClient`` for this bot token (create or swap)."""
+    global _shared_notify_client, _shared_notify_token
+    async with _NOTIFY_CLIENT_LOCK:
+        if _shared_notify_client is not None and _shared_notify_token == token:
+            return _shared_notify_client
+        if _shared_notify_client is not None:
+            await _shared_notify_client.close()
+        _shared_notify_client = TelegramApiClient(token)
+        _shared_notify_token = token
+        return _shared_notify_client
+
+
+def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
+    """Clear per-chat rate limit state and env lookup cache (tests only)."""
+    _TOOL_NOTIFY_LAST.clear()
+    _telegram_tool_notifications_enabled_impl.cache_clear()
+    _schedule_shared_notify_client_close_for_tests()
+
+
+@functools.lru_cache(maxsize=32)
+def _telegram_tool_notifications_enabled_impl(
+    telegram_enabled: str,
+    telegram_bot_token: str | None,
+    telegram_tool_notifications: str,
+) -> bool:
+    """Return whether Telegram tool notifications are on for this env snapshot."""
+    try:
+        cfg = TelegramConfig.model_validate(
+            {
+                "TELEGRAM_ENABLED": telegram_enabled,
+                "TELEGRAM_BOT_TOKEN": telegram_bot_token,
+                "TELEGRAM_TOOL_NOTIFICATIONS": telegram_tool_notifications,
+            }
+        )
+    except Exception:
+        return False
+    return cfg.tool_notifications_active()
+
+
+def telegram_tool_notifications_enabled() -> bool:
+    """Return True when Telegram tool notifications are configured and opted in.
+
+    Uses a small LRU cache keyed by the relevant env vars so repeated tool
+    calls do not re-parse the full environment each time.
+    """
+    return _telegram_tool_notifications_enabled_impl(
+        os.environ.get("TELEGRAM_ENABLED", ""),
+        os.environ.get("TELEGRAM_BOT_TOKEN"),
+        os.environ.get("TELEGRAM_TOOL_NOTIFICATIONS", ""),
+    )
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+async def notify_telegram_before_tool(
+    tool: BaseTool,
+    args: dict[str, Any],  # noqa: ARG001
+    tool_context: ToolContext,
+) -> None:
+    """Send a short Telegram notice before a tool runs (Telegram sessions only).
+
+    Skips silently when the feature is disabled, Telegram is not configured,
+    or session state has no ``telegram_chat_id``. Failures are logged and do
+    not block tool execution.
+    """
+    if not telegram_tool_notifications_enabled():
+        return None
+
+    chat_id_raw = tool_context.state.get("telegram_chat_id")
+    if not chat_id_raw:
+        return None
+
+    chat_id = _parse_optional_int(chat_id_raw)
+    if chat_id is None:
+        logger.warning("Invalid telegram_chat_id in state: %r", chat_id_raw)
+        return None
+
+    thread_id = _parse_optional_int(tool_context.state.get("telegram_thread_id"))
+
+    chat_key = str(chat_id)
+    now = time.monotonic()
+    if not _rate_limit_allows_notification(chat_key, now):
+        logger.debug(
+            "Skipping Telegram tool notify (rate limit) chat_id=%s tool=%s",
+            chat_id,
+            tool.name,
+        )
+        return None
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return None
+
+    escaped_name = escape_markdown(tool.name)
+    text = f"🔧 Using tool: *{escaped_name}*"
+
+    try:
+        client = await _shared_telegram_notify_client(token)
+        await client.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            message_thread_id=thread_id,
+            disable_notification=True,
+        )
+    except TelegramApiError as exc:
+        logger.warning(
+            "Telegram tool notification failed for tool=%s: %s",
+            tool.name,
+            exc,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected error sending Telegram tool notification tool=%s",
+            tool.name,
+        )
+
+    return None
 
 
 class LoggingCallbacks:
