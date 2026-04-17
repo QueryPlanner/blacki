@@ -17,6 +17,7 @@ from blacki.adk_runtime import (
     _extract_event_text,
     _extract_session_version,
     _extract_turn_parts,
+    _merge_stream_fragment,
     build_session_db_kwargs,
     build_session_service_uri,
     create_adk_runtime,
@@ -706,3 +707,67 @@ async def test_run_user_turn_streaming_does_not_duplicate_final_snapshot() -> No
 
     assert len(chunks) >= 3
     assert chunks[-1].content == "Hi Chirag!"
+
+
+class TestMergeStreamFragment:
+    """Tests for _merge_stream_fragment function."""
+
+    def test_returns_incoming_when_existing_is_empty(self) -> None:
+        """Test that empty existing text returns incoming."""
+        result = _merge_stream_fragment("", "Hello")
+        assert result == "Hello"
+
+    def test_returns_existing_when_incoming_is_empty(self) -> None:
+        """Test that empty incoming text returns existing."""
+        result = _merge_stream_fragment("Hello", "")
+        assert result == "Hello"
+
+    def test_returns_incoming_when_it_starts_with_existing(self) -> None:
+        """Test snapshot-style merge where incoming contains existing."""
+        result = _merge_stream_fragment("Hello", "Hello world")
+        assert result == "Hello world"
+
+    def test_returns_existing_when_it_starts_with_incoming(self) -> None:
+        """Test case where existing is longer than incoming."""
+        result = _merge_stream_fragment("Hello world", "Hello")
+        assert result == "Hello world"
+
+    def test_merges_with_overlap(self) -> None:
+        """Test delta-style merge with overlapping suffix/prefix."""
+        result = _merge_stream_fragment("Hello wor", "world!")
+        assert result == "Hello world!"
+
+    def test_concatenates_when_no_overlap(self) -> None:
+        """Test concatenation when no overlap exists."""
+        result = _merge_stream_fragment("Hello ", "world")
+        assert result == "Hello world"
+
+    def test_handles_unicode_characters(self) -> None:
+        """Test that unicode characters are merged correctly."""
+        result = _merge_stream_fragment("Hello ", "世界!")
+        assert result == "Hello 世界!"
+
+    def test_handles_emoji(self) -> None:
+        """Test that emoji characters are merged correctly."""
+        result = _merge_stream_fragment("Hello ", "👋")
+        assert result == "Hello 👋"
+
+    def test_handles_single_character(self) -> None:
+        """Test single character merges."""
+        result = _merge_stream_fragment("a", "ab")
+        assert result == "ab"
+
+    def test_handles_empty_strings(self) -> None:
+        """Test both empty strings."""
+        result = _merge_stream_fragment("", "")
+        assert result == ""
+
+    def test_full_overlap_returns_existing(self) -> None:
+        """Test when incoming is a prefix of existing."""
+        result = _merge_stream_fragment("Hello world", "Hello")
+        assert result == "Hello world"
+
+    def test_exact_match_returns_either(self) -> None:
+        """Test when strings are identical."""
+        result = _merge_stream_fragment("Hello", "Hello")
+        assert result == "Hello"

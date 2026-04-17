@@ -35,6 +35,9 @@ class StreamSession:
     Creates a single message on first content and updates it with throttling.
     Uses sendMessage + editMessageText for all chat types to ensure stable,
     persisted final messages that don't vanish.
+
+    Note: This class is implemented and tested but not yet integrated into
+    the Telegram bot. It is available for future streaming support.
     """
 
     def __init__(

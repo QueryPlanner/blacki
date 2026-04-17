@@ -19,9 +19,10 @@ from blacki.telegram.formatting import escape_markdown, format_for_telegram
 from blacki.telegram.streaming import (
     TELEGRAM_MESSAGE_LIMIT,
     StreamSession,
+    _merge_stream_text,
     split_long_message,
 )
-from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
+from blacki.telegram.types import BotCommand, Message, ParseMode, Update
 
 
 class RecordingRuntime:
@@ -791,6 +792,60 @@ class TestSplitLongMessage:
         assert chunks == []
 
 
+class TestMergeStreamText:
+    """Tests for _merge_stream_text function."""
+
+    def test_returns_incoming_when_current_is_empty(self) -> None:
+        """Test that empty current text returns incoming."""
+        result = _merge_stream_text("", "Hello", is_partial=True)
+        assert result == "Hello"
+
+    def test_returns_incoming_when_it_starts_with_current(self) -> None:
+        """Test snapshot-style merge where incoming contains current."""
+        result = _merge_stream_text("Hello", "Hello world", is_partial=True)
+        assert result == "Hello world"
+
+    def test_returns_incoming_when_is_partial_is_false(self) -> None:
+        """Test that non-partial always returns incoming."""
+        result = _merge_stream_text("Hello", "Goodbye", is_partial=False)
+        assert result == "Goodbye"
+
+    def test_returns_current_when_it_starts_with_incoming(self) -> None:
+        """Test case where current is longer than incoming (partial)."""
+        result = _merge_stream_text("Hello world", "Hello", is_partial=True)
+        assert result == "Hello world"
+
+    def test_concatenates_when_no_overlap_and_partial(self) -> None:
+        """Test concatenation when no overlap exists (partial)."""
+        result = _merge_stream_text("Hello ", "world", is_partial=True)
+        assert result == "Hello world"
+
+    def test_handles_unicode_characters(self) -> None:
+        """Test that unicode characters are merged correctly."""
+        result = _merge_stream_text("Hello ", "世界!", is_partial=True)
+        assert result == "Hello 世界!"
+
+    def test_handles_emoji(self) -> None:
+        """Test that emoji characters are merged correctly."""
+        result = _merge_stream_text("Hello ", "👋", is_partial=True)
+        assert result == "Hello 👋"
+
+    def test_handles_single_character(self) -> None:
+        """Test single character merges."""
+        result = _merge_stream_text("a", "ab", is_partial=True)
+        assert result == "ab"
+
+    def test_handles_empty_strings(self) -> None:
+        """Test both empty strings."""
+        result = _merge_stream_text("", "", is_partial=True)
+        assert result == ""
+
+    def test_non_partial_overrides_with_shorter_text(self) -> None:
+        """Test that non-partial replaces even with shorter text."""
+        result = _merge_stream_text("Longer text here", "Short", is_partial=False)
+        assert result == "Short"
+
+
 class TestEscapeMarkdown:
     """Tests for escape_markdown function."""
 
@@ -986,7 +1041,6 @@ class TestTelegramBotMessageHandling:
 
         await bot._handle_message(
             chat_id=123456789,
-            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello, bot!",
         )
@@ -1031,7 +1085,6 @@ class TestTelegramBotMessageHandling:
 
         await bot._handle_message(
             chat_id=123456789,
-            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello!",
         )
@@ -1058,7 +1111,6 @@ class TestTelegramBotMessageHandling:
 
         await bot._handle_message(
             chat_id=123456789,
-            chat_type=ChatType.PRIVATE,
             message_thread_id=None,
             user_message="Hello!",
         )

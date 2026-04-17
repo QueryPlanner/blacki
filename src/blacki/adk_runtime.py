@@ -220,6 +220,9 @@ class AdkRuntime:
         """Yield streaming chunks as ADK events arrive.
 
         The final chunk has is_partial=False, indicating the stream is complete.
+
+        Note: This method is implemented and tested but not yet integrated into
+        the Telegram bot. It is available for future streaming support.
         """
         session = await self.get_or_create_session(locator=locator, state=state)
         new_message = types.Content(

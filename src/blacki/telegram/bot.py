@@ -11,7 +11,7 @@ from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import format_for_telegram
 from .streaming import split_long_message
-from .types import BotCommand, ChatType, Message, ParseMode, Update
+from .types import BotCommand, Message, ParseMode, Update
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,6 @@ class TelegramBot:
             return
 
         chat_id = message.chat.id
-        chat_type = message.chat.type
         message_thread_id = message.message_thread_id
         user_message = message.text
 
@@ -141,7 +140,6 @@ class TelegramBot:
 
         await self._handle_message(
             chat_id=chat_id,
-            chat_type=chat_type,
             message_thread_id=message_thread_id,
             user_message=user_message,
         )
@@ -239,7 +237,6 @@ class TelegramBot:
     async def _handle_message(
         self,
         chat_id: int,
-        chat_type: ChatType,
         message_thread_id: int | None,
         user_message: str,
     ) -> None:
@@ -252,7 +249,6 @@ class TelegramBot:
         logger.info("Received message from chat %s: %s...", chat_id, user_message[:50])
 
         try:
-            del chat_type
             await self.api.send_chat_action(chat_id=chat_id, action="typing")
 
             final_response = await self.runtime.run_user_turn(

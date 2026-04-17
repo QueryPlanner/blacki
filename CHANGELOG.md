@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Migrate Telegram bot to official Bot API with streaming support via `sendMessageDraft` (#13).
 - Add `run_user_turn_streaming()` to ADK runtime for real-time response streaming.
-- Add `DraftManager` for throttled draft message updates (300ms interval).
+- Add `StreamSession` for throttled draft message updates (300ms interval).
 - Add `TelegramApiClient` with direct HTTP calls using `httpx`.
 - Add Pydantic models for Telegram Bot API types.
 
