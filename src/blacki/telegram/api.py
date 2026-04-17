@@ -83,7 +83,7 @@ class TelegramApiClient:
         self,
         method: str,
         params: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         """Make an API request and return the result.
 
         Args:
@@ -101,7 +101,17 @@ class TelegramApiClient:
         url = self._build_url(method)
 
         response = await client.post(url, json=params)
-        response.raise_for_status()
+
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("description", response.text)
+            except Exception:
+                error_msg = response.text
+            raise TelegramApiError(
+                message=f"HTTP {response.status_code}: {error_msg}",
+                error_code=response.status_code,
+            )
 
         data = response.json()
         telegram_response = TelegramResponse.model_validate(data)
@@ -125,7 +135,7 @@ class TelegramApiClient:
         Returns:
             Bot information including id, username, etc.
         """
-        return await self._request("getMe")
+        return await self._request("getMe")  # type: ignore[no-any-return]
 
     async def get_updates(
         self,
@@ -206,7 +216,7 @@ class TelegramApiClient:
         *,
         message_thread_id: int | None = None,
         parse_mode: ParseMode | None = None,
-    ) -> Message:
+    ) -> Message | bool:
         """Send or update a streaming draft message.
 
         This method (added in Bot API 9.5, March 2026) enables real-time
@@ -235,6 +245,8 @@ class TelegramApiClient:
             params["parse_mode"] = parse_mode.value
 
         result = await self._request("sendMessageDraft", params)
+        if isinstance(result, bool):
+            return result
         return Message.model_validate(result)
 
     async def edit_message_text(

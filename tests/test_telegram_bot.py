@@ -338,6 +338,7 @@ class TestTelegramApiClient:
                 result = await client.send_message_draft(
                     chat_id=123, text="Draft text", draft_id="draft-123"
                 )
+                assert isinstance(result, Message)
                 assert result.message_id == 1
                 mock_request.assert_called_once_with(
                     "sendMessageDraft",
@@ -464,11 +465,11 @@ class TestTelegramApiClient:
         async with TelegramApiClient("test-token") as client:
             with patch.object(client._client, "post") as mock_post:
                 mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 200
                 mock_response.json.return_value = {
                     "ok": True,
                     "result": {"id": 123, "is_bot": True},
                 }
-                mock_response.raise_for_status = lambda: None
                 mock_post.return_value = mock_response
 
                 result = await client._request("getMe")
@@ -482,12 +483,12 @@ class TestTelegramApiClient:
         async with TelegramApiClient("test-token") as client:
             with patch.object(client._client, "post") as mock_post:
                 mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 200
                 mock_response.json.return_value = {
                     "ok": False,
                     "error_code": 400,
                     "description": "Bad Request: test error",
                 }
-                mock_response.raise_for_status = lambda: None
                 mock_post.return_value = mock_response
 
                 with pytest.raises(TelegramApiError, match="Bad Request"):
@@ -501,13 +502,13 @@ class TestTelegramApiClient:
         async with TelegramApiClient("test-token") as client:
             with patch.object(client._client, "post") as mock_post:
                 mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 200
                 mock_response.json.return_value = {
                     "ok": False,
                     "error_code": 429,
                     "description": "Too Many Requests",
                     "parameters": {"retry_after": 30},
                 }
-                mock_response.raise_for_status = lambda: None
                 mock_post.return_value = mock_response
 
                 with pytest.raises(TelegramApiError) as exc_info:
