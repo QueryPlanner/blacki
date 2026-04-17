@@ -269,7 +269,7 @@ class TelegramBot:
         """Send thinking content as italicized message."""
         formatted = f"_Thinking: {escape_markdown(thoughts)}_"
         for chunk in self._split_response_text(formatted):
-            await message.reply_text(chunk, parse_mode="Markdown")
+            await message.reply_text(chunk, parse_mode="MarkdownV2")
 
     async def _send_content(self, message: Message, content: str) -> None:
         """Send main response content with Markdown formatting."""
@@ -278,7 +278,7 @@ class TelegramBot:
             return
         formatted = escape_markdown(convert_bold_to_telegram(content))
         for chunk in self._split_response_text(formatted):
-            await message.reply_text(chunk, parse_mode="Markdown")
+            await message.reply_text(chunk, parse_mode="MarkdownV2")
 
     def _split_response_text(self, response_text: str) -> list[str]:
         """Split long responses into Telegram-safe chunks."""
@@ -363,11 +363,11 @@ class TelegramBot:
             await self.runtime.close()
 
 
-MARKDOWN_SPECIAL_CHARS = frozenset("_`")
+MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~>#+-=|{}.!")
 
 
 def escape_markdown(text: str) -> str:
-    """Escape special Markdown characters for Telegram Markdown (v1).
+    """Escape special Markdown characters for Telegram MarkdownV2.
 
     Does NOT escape inside code blocks or inline code - those are preserved.
     """
