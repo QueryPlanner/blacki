@@ -2,6 +2,7 @@
 
 import inspect
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,6 +27,15 @@ class TurnResponse:
 
     thoughts: str
     content: str
+
+
+@dataclass(slots=True, frozen=True)
+class StreamChunk:
+    """A streaming chunk from ADK with partial or complete thoughts/content."""
+
+    thoughts: str
+    content: str
+    is_partial: bool = True
 
 
 def build_session_service_uri(env: ServerEnv) -> str | None:
@@ -198,6 +208,66 @@ class AdkRuntime:
         final_content = "".join(content_parts) or partial_content
 
         return TurnResponse(thoughts=final_thoughts, content=final_content)
+
+    async def run_user_turn_streaming(
+        self,
+        *,
+        locator: SessionLocator,
+        message_text: str,
+        state: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Yield streaming chunks as ADK events arrive.
+
+        The final chunk has is_partial=False, indicating the stream is complete.
+        """
+        session = await self.get_or_create_session(locator=locator, state=state)
+        new_message = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=message_text)],
+        )
+
+        accumulated_thoughts: list[str] = []
+        accumulated_content: list[str] = []
+        partial_thoughts = ""
+        partial_content = ""
+
+        async for event in self.runner.run_async(
+            user_id=locator.user_id,
+            session_id=session.id,
+            new_message=new_message,
+        ):
+            self._raise_on_event_error(event)
+
+            event_thoughts, event_content = _extract_turn_parts(event)
+            if event_thoughts:
+                if event.partial:
+                    partial_thoughts = event_thoughts
+                else:
+                    accumulated_thoughts.append(event_thoughts)
+            if event_content:
+                if event.partial:
+                    partial_content = event_content
+                else:
+                    accumulated_content.append(event_content)
+
+            current_thoughts = "".join(accumulated_thoughts) + partial_thoughts
+            current_content = "".join(accumulated_content) + partial_content
+
+            if current_thoughts or current_content:
+                yield StreamChunk(
+                    thoughts=current_thoughts,
+                    content=current_content,
+                    is_partial=True,
+                )
+
+        final_thoughts = "".join(accumulated_thoughts) or partial_thoughts
+        final_content = "".join(accumulated_content) or partial_content
+
+        yield StreamChunk(
+            thoughts=final_thoughts,
+            content=final_content,
+            is_partial=False,
+        )
 
     async def close(self) -> None:
         """Close the underlying session service when supported."""

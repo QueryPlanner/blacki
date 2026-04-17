@@ -1,25 +1,25 @@
 """Unit tests for Telegram bot module."""
 
-import asyncio
-import contextlib
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
-from telegram import Message, Update
-from telegram.ext import Application
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator, TurnResponse
+from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
 from blacki.telegram import TelegramConfig
+from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
     TELEGRAM_MESSAGE_LIMIT,
     TelegramBot,
     TelegramSessionIdentity,
-    convert_bold_to_telegram,
     create_telegram_bot,
     escape_markdown,
+    format_for_telegram,
 )
+from blacki.telegram.streaming import DraftManager, split_long_message
+from blacki.telegram.types import BotCommand, Message, ParseMode, Update
 
 
 class RecordingRuntime:
@@ -73,6 +73,30 @@ class RecordingRuntime:
             content=self.run_user_turn_response,
         )
 
+    async def run_user_turn_streaming(
+        self,
+        *,
+        locator: SessionLocator,
+        message_text: str,
+        state: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        self.run_user_turn_calls.append(
+            {
+                "locator": locator,
+                "message_text": message_text,
+                "state": state,
+            }
+        )
+        if self.run_user_turn_error is not None:
+            raise self.run_user_turn_error
+        if self.run_user_turn_thoughts:
+            yield StreamChunk(thoughts=self.run_user_turn_thoughts, content="")
+        yield StreamChunk(
+            thoughts=self.run_user_turn_thoughts,
+            content=self.run_user_turn_response,
+            is_partial=False,
+        )
+
     async def create_next_session(
         self,
         *,
@@ -99,7 +123,7 @@ def telegram_config() -> TelegramConfig:
     return TelegramConfig.model_validate(
         {
             "TELEGRAM_ENABLED": True,
-            "TELEGRAM_BOT_TOKEN": "test-token-123",  # noqa: S106
+            "TELEGRAM_BOT_TOKEN": "test-token-123",
         }
     )
 
@@ -122,33 +146,23 @@ def runtime_recorder() -> RecordingRuntime:
 
 
 @pytest.fixture
-def mock_update() -> Any:
+def mock_message() -> Message:
+    """Create a mock Telegram message."""
+    return Message.model_validate(
+        {
+            "message_id": 1,
+            "date": "2024-01-01T00:00:00Z",
+            "chat": {"id": 123456789, "type": "private"},
+            "text": "Hello, bot!",
+            "from": {"id": 123456789, "first_name": "Test", "is_bot": False},
+        }
+    )
+
+
+@pytest.fixture
+def mock_update(mock_message: Message) -> Update:
     """Create a mock Telegram update."""
-    message = create_autospec(Message, instance=True, spec_set=True)
-    message.text = "Hello, bot!"
-    message.reply_text = AsyncMock()
-    message.message_thread_id = None
-
-    update = create_autospec(Update, instance=True, spec_set=True)
-    update.effective_chat = SimpleNamespace(id=123456789)
-    update.message = message
-    return update
-
-
-@pytest.fixture
-def mock_update_no_chat() -> Any:
-    """Create a mock Telegram update without effective_chat."""
-    update = create_autospec(Update, instance=True, spec_set=True)
-    update.effective_chat = None
-    update.message = create_autospec(Message, instance=True, spec_set=True)
-    update.message.reply_text = AsyncMock()
-    return update
-
-
-@pytest.fixture
-def mock_context() -> Any:
-    """Create a placeholder Telegram context."""
-    return object()
+    return Update.model_validate({"update_id": 1, "message": mock_message.model_dump()})
 
 
 def test_init_with_config(
@@ -160,62 +174,29 @@ def test_init_with_config(
 
     assert bot.config == telegram_config
     assert cast(Any, bot.runtime) is runtime_recorder
-    assert bot._app is None
 
 
-def test_ensure_app_creates_app(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that _ensure_app creates the Application."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    with patch("blacki.telegram.bot.Application.builder") as mock_builder:
-        mock_app = create_autospec(Application, instance=True, spec_set=True)
-        mock_builder.return_value.token.return_value.build.return_value = mock_app
-
-        app = bot._ensure_app()
-
-        assert app == mock_app
-        mock_builder.return_value.token.assert_called_once_with(
-            telegram_config.telegram_bot_token
-        )
-
-
-def test_app_property_reuses_existing_app(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that app property returns the already-created Application."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    bot._app = mock_app
-
-    assert bot.app is mock_app
-
-
-def test_ensure_app_raises_without_token(
+def test_api_property_raises_without_token(
     telegram_config_disabled: TelegramConfig,
     runtime_recorder: RecordingRuntime,
 ) -> None:
-    """Test that _ensure_app raises ValueError without token."""
+    """Test that api property raises ValueError without token."""
     bot = TelegramBot(telegram_config_disabled, cast(AdkRuntime, runtime_recorder))
 
     with pytest.raises(ValueError, match="TELEGRAM_BOT_TOKEN is required"):
-        bot._ensure_app()
+        _ = bot.api
 
 
-def test_setup_handlers_adds_handlers(
+def test_draft_manager_creates_on_demand(
     telegram_config: TelegramConfig,
     runtime_recorder: RecordingRuntime,
 ) -> None:
-    """Test that _setup_handlers adds all required handlers."""
+    """Test that draft_manager is created on first access."""
     bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
 
-    bot._setup_handlers(mock_app)
-
-    assert mock_app.add_handler.call_count == 4
+    dm = bot.draft_manager
+    assert dm is not None
+    assert bot._draft_manager is dm
 
 
 def test_build_session_identity_without_thread(
@@ -268,368 +249,6 @@ def test_build_session_state_includes_thread_when_present(
     assert session_state["telegram_thread_id"] == "99"
 
 
-@pytest.mark.asyncio
-async def test_start_command_sends_welcome(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /start sends welcome message."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._start_command(mock_update, mock_context)
-
-    mock_update.message.reply_text.assert_called_once()
-    welcome_message = mock_update.message.reply_text.call_args.args[0]
-    assert "Hello" in welcome_message
-    assert "ADK" in welcome_message
-
-
-@pytest.mark.asyncio
-async def test_start_command_no_chat(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update_no_chat: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /start exits early without a chat."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._start_command(mock_update_no_chat, mock_context)
-
-    mock_update_no_chat.message.reply_text.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_help_command_sends_help(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /help sends help message."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._help_command(mock_update, mock_context)
-
-    mock_update.message.reply_text.assert_called_once()
-    help_message = mock_update.message.reply_text.call_args.args[0]
-    assert "Commands" in help_message
-    assert "/reset" in help_message
-
-
-@pytest.mark.asyncio
-async def test_help_command_no_chat(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update_no_chat: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /help exits early without a chat."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._help_command(mock_update_no_chat, mock_context)
-
-    mock_update_no_chat.message.reply_text.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_reset_command_creates_next_session(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /reset creates the next ADK session version."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._reset_command(mock_update, mock_context)
-
-    assert runtime_recorder.create_next_session_calls == [
-        {
-            "locator": SessionLocator(
-                user_id="telegram-chat-123456789",
-                session_id_prefix="telegram-chat-123456789",
-            ),
-            "state": {
-                "user_id": "telegram-chat-123456789",
-                "telegram_chat_id": "123456789",
-                "telegram_conversation_key": "chat-123456789",
-            },
-        }
-    ]
-    mock_update.message.reply_text.assert_called_once()
-    assert "fresh ADK conversation" in mock_update.message.reply_text.call_args.args[0]
-
-
-@pytest.mark.asyncio
-async def test_reset_command_no_chat(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update_no_chat: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /reset exits early without a chat."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._reset_command(mock_update_no_chat, mock_context)
-
-    assert runtime_recorder.create_next_session_calls == []
-    mock_update_no_chat.message.reply_text.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_reset_command_uses_thread_identity(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /reset uses topic thread identity when present."""
-    mock_update.message.message_thread_id = 22
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._reset_command(mock_update, mock_context)
-
-    locator = runtime_recorder.create_next_session_calls[0]["locator"]
-    assert locator.user_id == "telegram-chat-123456789-thread-22"
-    assert locator.session_id_prefix == "telegram-chat-123456789-thread-22"
-
-
-@pytest.mark.asyncio
-async def test_reset_command_error(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that /reset returns a user-facing error when runtime reset fails."""
-    runtime_recorder.create_next_session_error = RuntimeError("reset failed")
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._reset_command(mock_update, mock_context)
-
-    error_message = mock_update.message.reply_text.call_args.args[0]
-    assert "couldn't reset" in error_message
-
-
-@pytest.mark.asyncio
-async def test_handle_message_runs_adk_turn(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test successful message handling through the ADK runtime."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    assert runtime_recorder.run_user_turn_calls == [
-        {
-            "locator": SessionLocator(
-                user_id="telegram-chat-123456789",
-                session_id_prefix="telegram-chat-123456789",
-            ),
-            "message_text": "Hello, bot!",
-            "state": {
-                "user_id": "telegram-chat-123456789",
-                "telegram_chat_id": "123456789",
-                "telegram_conversation_key": "chat-123456789",
-            },
-        }
-    ]
-    mock_update.message.reply_text.assert_called_once_with(
-        "Test response", parse_mode="MarkdownV2"
-    )
-
-
-@pytest.mark.asyncio
-async def test_handle_message_splits_long_responses(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that long responses are split into Telegram-safe chunks."""
-    runtime_recorder.run_user_turn_response = (
-        ("A" * TELEGRAM_MESSAGE_LIMIT) + "\n\n" + ("B" * 100)
-    )
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    assert mock_update.message.reply_text.await_count == 2
-    first_chunk = mock_update.message.reply_text.await_args_list[0].args[0]
-    second_chunk = mock_update.message.reply_text.await_args_list[1].args[0]
-    assert len(first_chunk) <= TELEGRAM_MESSAGE_LIMIT
-    assert second_chunk == "B" * 100
-
-
-@pytest.mark.asyncio
-async def test_handle_message_error(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test message handling with an ADK runtime error."""
-    runtime_recorder.run_user_turn_error = RuntimeError("runner failed")
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    mock_update.message.reply_text.assert_called_once()
-    error_message = mock_update.message.reply_text.call_args.args[0]
-    assert "error" in error_message.lower()
-
-
-@pytest.mark.asyncio
-async def test_handle_message_no_chat(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update_no_chat: Any,
-    mock_context: Any,
-) -> None:
-    """Test message handling with missing effective_chat."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update_no_chat, mock_context)
-
-    mock_update_no_chat.message.reply_text.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_start_polling_success(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test successful start_polling."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    mock_app.initialize = AsyncMock()
-    mock_app.start = AsyncMock()
-    mock_app.bot = SimpleNamespace(set_my_commands=AsyncMock())
-    mock_app.updater = SimpleNamespace(start_polling=AsyncMock())
-
-    with patch.object(bot, "_ensure_app", return_value=mock_app):
-        await bot.start_polling()
-
-    mock_app.initialize.assert_awaited_once()
-    mock_app.start.assert_awaited_once()
-    mock_app.updater.start_polling.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_start_polling_not_configured(
-    telegram_config_disabled: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test start_polling when Telegram is disabled."""
-    bot = TelegramBot(
-        telegram_config_disabled,
-        cast(AdkRuntime, runtime_recorder),
-    )
-
-    await bot.start_polling()
-
-    assert bot._app is None
-
-
-@pytest.mark.asyncio
-async def test_start_polling_without_updater(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test start_polling when the app has no updater."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    mock_app.initialize = AsyncMock()
-    mock_app.start = AsyncMock()
-    mock_app.bot = SimpleNamespace(set_my_commands=AsyncMock())
-    mock_app.updater = None
-
-    with patch.object(bot, "_ensure_app", return_value=mock_app):
-        await bot.start_polling()
-
-    mock_app.initialize.assert_awaited_once()
-    mock_app.start.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_register_commands_error(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that command registration errors are swallowed."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    mock_app.bot = SimpleNamespace(
-        set_my_commands=AsyncMock(side_effect=RuntimeError("boom"))
-    )
-
-    await bot._register_commands(mock_app)
-
-
-@pytest.mark.asyncio
-async def test_stop_with_app(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test stop with initialized app."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    mock_app.stop = AsyncMock()
-    mock_app.shutdown = AsyncMock()
-    mock_app.updater = SimpleNamespace(stop=AsyncMock())
-    bot._app = mock_app
-
-    await bot.stop()
-
-    mock_app.updater.stop.assert_awaited_once()
-    mock_app.stop.assert_awaited_once()
-    mock_app.shutdown.assert_awaited_once()
-    assert runtime_recorder.closed is True
-
-
-@pytest.mark.asyncio
-async def test_stop_with_app_without_updater(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test stop when the app was initialized without an updater."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    mock_app = create_autospec(Application, instance=True, spec_set=True)
-    mock_app.stop = AsyncMock()
-    mock_app.shutdown = AsyncMock()
-    mock_app.updater = None
-    bot._app = mock_app
-
-    await bot.stop()
-
-    mock_app.stop.assert_awaited_once()
-    mock_app.shutdown.assert_awaited_once()
-    assert runtime_recorder.closed is True
-
-
-@pytest.mark.asyncio
-async def test_stop_without_app_still_closes_runtime(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test stop when the bot app was never initialized."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot.stop()
-
-    assert runtime_recorder.closed is True
-
-
 def test_create_bot_configured(
     telegram_config: TelegramConfig,
     runtime_recorder: RecordingRuntime,
@@ -654,348 +273,804 @@ def test_create_bot_not_configured(
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_start_typing_indicator_creates_task(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that _start_typing_indicator creates a task."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+class TestTelegramApiClient:
+    """Tests for TelegramApiClient."""
 
-    mock_app = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
-    bot._app = cast(Any, mock_app)
+    @pytest.mark.asyncio
+    async def test_send_message_success(self, telegram_config: TelegramConfig) -> None:
+        """Test successful message sending."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                }
+                result = await client.send_message(chat_id=123, text="Hello")
+                assert result.message_id == 1
 
-    task = bot._start_typing_indicator(12345)
+    @pytest.mark.asyncio
+    async def test_context_manager_creates_client(self) -> None:
+        """Test context manager creates HTTP client."""
+        async with TelegramApiClient("test-token") as client:
+            assert client._client is not None
 
-    assert task is not None
-    assert not task.done()
-    task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await task
+    @pytest.mark.asyncio
+    async def test_close_clears_client(self) -> None:
+        """Test close clears the HTTP client."""
+        client = TelegramApiClient("test-token")
+        await client._ensure_client()
+        assert client._client is not None
+
+        await client.close()
+        assert client._client is None
+
+    @pytest.mark.asyncio
+    async def test_ensure_client_reuses_existing(self) -> None:
+        """Test _ensure_client reuses existing client."""
+        client = TelegramApiClient("test-token")
+        first = await client._ensure_client()
+        second = await client._ensure_client()
+        assert first is second
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_build_url(self) -> None:
+        """Test URL building."""
+        client = TelegramApiClient("test-token")
+        url = client._build_url("sendMessage")
+        assert url == "https://api.telegram.org/bottest-token/sendMessage"
+
+    @pytest.mark.asyncio
+    async def test_send_message_draft_success(
+        self, telegram_config: TelegramConfig
+    ) -> None:
+        """Test successful draft message sending."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Draft text",
+                }
+                result = await client.send_message_draft(
+                    chat_id=123, text="Draft text", draft_id="draft-123"
+                )
+                assert result.message_id == 1
+                mock_request.assert_called_once_with(
+                    "sendMessageDraft",
+                    {"chat_id": 123, "text": "Draft text", "draft_id": "draft-123"},
+                )
+
+    @pytest.mark.asyncio
+    async def test_get_updates_success(self) -> None:
+        """Test successful updates retrieval."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = [
+                    {
+                        "update_id": 1,
+                        "message": {
+                            "message_id": 1,
+                            "date": "2024-01-01T00:00:00Z",
+                            "chat": {"id": 123, "type": "private"},
+                            "text": "Hello",
+                        },
+                    }
+                ]
+                updates = await client.get_updates()
+                assert len(updates) == 1
+                assert updates[0].update_id == 1
+
+    @pytest.mark.asyncio
+    async def test_set_my_commands_success(self) -> None:
+        """Test successful command registration."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = True
+                commands = [
+                    BotCommand(command="start", description="Start"),
+                    BotCommand(command="help", description="Help"),
+                ]
+                result = await client.set_my_commands(commands)
+                assert result is True
+
+    @pytest.mark.asyncio
+    async def test_api_error_raised(self) -> None:
+        """Test that API errors are properly raised."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.side_effect = TelegramApiError(
+                    "Bad Request", error_code=400
+                )
+                with pytest.raises(TelegramApiError, match="Bad Request"):
+                    await client.send_message(chat_id=123, text="test")
+
+    @pytest.mark.asyncio
+    async def test_get_me_success(self) -> None:
+        """Test successful getMe call."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {"id": 123, "is_bot": True}
+                result = await client.get_me()
+                assert result["id"] == 123
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text_success(self) -> None:
+        """Test successful editMessageText call."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Edited",
+                }
+                result = await client.edit_message_text(
+                    chat_id=123, message_id=1, text="Edited"
+                )
+                assert result.text == "Edited"
+
+    @pytest.mark.asyncio
+    async def test_delete_message_success(self) -> None:
+        """Test successful deleteMessage call."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = True
+                result = await client.delete_message(chat_id=123, message_id=1)
+                assert result is True
+
+    @pytest.mark.asyncio
+    async def test_send_chat_action_success(self) -> None:
+        """Test successful sendChatAction call."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = True
+                result = await client.send_chat_action(chat_id=123, action="typing")
+                assert result is True
+
+    @pytest.mark.asyncio
+    async def test_get_my_commands_success(self) -> None:
+        """Test successful getMyCommands call."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = [
+                    {"command": "start", "description": "Start"}
+                ]
+                commands = await client.get_my_commands()
+                assert len(commands) == 1
+                assert commands[0].command == "start"
+
+    @pytest.mark.asyncio
+    async def test_api_error_with_retry_after(self) -> None:
+        """Test API error includes retry_after parameter."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                error = TelegramApiError(
+                    "Too Many Requests", error_code=429, retry_after=30
+                )
+                mock_request.side_effect = error
+                with pytest.raises(TelegramApiError) as exc_info:
+                    await client.send_message(chat_id=123, text="test")
+                assert exc_info.value.retry_after == 30
+
+    @pytest.mark.asyncio
+    async def test_request_with_real_http_mock(self) -> None:
+        """Test _request method with mocked HTTP response."""
+        import httpx
+
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.json.return_value = {
+                    "ok": True,
+                    "result": {"id": 123, "is_bot": True},
+                }
+                mock_response.raise_for_status = lambda: None
+                mock_post.return_value = mock_response
+
+                result = await client._request("getMe")
+                assert result == {"id": 123, "is_bot": True}
+
+    @pytest.mark.asyncio
+    async def test_request_handles_api_error(self) -> None:
+        """Test _request handles Telegram API error response."""
+        import httpx
+
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.json.return_value = {
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: test error",
+                }
+                mock_response.raise_for_status = lambda: None
+                mock_post.return_value = mock_response
+
+                with pytest.raises(TelegramApiError, match="Bad Request"):
+                    await client._request("sendMessage")
+
+    @pytest.mark.asyncio
+    async def test_request_handles_api_error_with_parameters(self) -> None:
+        """Test _request handles error with retry_after parameter."""
+        import httpx
+
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.json.return_value = {
+                    "ok": False,
+                    "error_code": 429,
+                    "description": "Too Many Requests",
+                    "parameters": {"retry_after": 30},
+                }
+                mock_response.raise_for_status = lambda: None
+                mock_post.return_value = mock_response
+
+                with pytest.raises(TelegramApiError) as exc_info:
+                    await client._request("sendMessage")
+                assert exc_info.value.retry_after == 30
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_all_options(self) -> None:
+        """Test send_message with all options."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+                await client.send_message(
+                    chat_id=123,
+                    text="Hello",
+                    message_thread_id=1,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    disable_notification=True,
+                    protect_content=True,
+                )
+                call_kwargs = mock_request.call_args.args[1]
+                assert call_kwargs["message_thread_id"] == 1
+                assert call_kwargs["parse_mode"] == "MarkdownV2"
+                assert call_kwargs["disable_notification"] is True
+                assert call_kwargs["protect_content"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_updates_with_options(self) -> None:
+        """Test get_updates with all options."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = []
+                await client.get_updates(
+                    offset=100,
+                    limit=50,
+                    timeout=10,
+                    allowed_updates=["message"],
+                )
+                call_kwargs = mock_request.call_args.args[1]
+                assert call_kwargs["offset"] == 100
+                assert call_kwargs["limit"] == 50
+                assert call_kwargs["timeout"] == 10
+                assert call_kwargs["allowed_updates"] == ["message"]
 
 
-@pytest.mark.asyncio
-async def test_typing_indicator_returns_on_send_error(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that typing indicator stops when Telegram rejects chat actions."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+class TestDraftManager:
+    """Tests for DraftManager."""
 
-    mock_app = SimpleNamespace(
-        bot=SimpleNamespace(
-            send_chat_action=AsyncMock(side_effect=RuntimeError("network error"))
+    @pytest.mark.asyncio
+    async def test_stream_response_updates_drafts(self) -> None:
+        """Test that streaming updates drafts."""
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
         )
-    )
-    bot._app = cast(Any, mock_app)
 
-    task = bot._start_typing_indicator(12345)
-    await task
+        manager = DraftManager(mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="Thinking...", content="Hello")
+            yield StreamChunk(
+                thoughts="Thinking...", content="Hello world", is_partial=False
+            )
+
+        final_thoughts, final_content = await manager.stream_response(
+            chat_id=123, chunks=chunks()
+        )
+
+        assert final_thoughts == "Thinking..."
+        assert final_content == "Hello world"
+        assert mock_api.send_message_draft.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_stream_response_handles_empty_chunks(self) -> None:
+        """Test streaming with empty content."""
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message_draft = AsyncMock()
+
+        manager = DraftManager(mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="", is_partial=False)
+
+        final_thoughts, final_content = await manager.stream_response(
+            chat_id=123, chunks=chunks()
+        )
+
+        assert final_thoughts == ""
+        assert final_content == ""
+
+    @pytest.mark.asyncio
+    async def test_stream_response_with_api_error(self) -> None:
+        """Test streaming handles API errors gracefully."""
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message_draft = AsyncMock(
+            side_effect=TelegramApiError("Rate limit", error_code=429)
+        )
+
+        manager = DraftManager(mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="Thinking...", content="Hello", is_partial=False)
+
+        final_thoughts, final_content = await manager.stream_response(
+            chat_id=123, chunks=chunks()
+        )
+
+        assert final_thoughts == "Thinking..."
+        assert final_content == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_stream_response_with_throttling(self) -> None:
+        """Test streaming respects throttle interval."""
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        manager = DraftManager(mock_api, update_interval_sec=1.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="A", content="B")
+            yield StreamChunk(thoughts="A", content="B", is_partial=False)
+
+        final_thoughts, final_content = await manager.stream_response(
+            chat_id=123, chunks=chunks()
+        )
+
+        assert final_thoughts == "A"
+        assert final_content == "B"
+
+    @pytest.mark.asyncio
+    async def test_stream_response_with_thread_id(self) -> None:
+        """Test streaming with message thread ID."""
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message_draft = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        manager = DraftManager(mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Hello", is_partial=False)
+
+        await manager.stream_response(
+            chat_id=123, chunks=chunks(), message_thread_id=42
+        )
 
-    assert task.done()
-    assert task.exception() is None
+        call_kwargs = mock_api.send_message_draft.call_args.kwargs
+        assert call_kwargs.get("message_thread_id") == 42
 
 
-@pytest.mark.asyncio
-async def test_typing_indicator_reraises_cancelled_error(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that typing indicator re-raises CancelledError during sleep."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+class TestSplitLongMessage:
+    """Tests for split_long_message function."""
 
-    mock_app = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
-    bot._app = cast(Any, mock_app)
+    def test_short_message_returns_single_chunk(self) -> None:
+        """Test that short messages are not split."""
+        text = "Short message"
+        chunks = split_long_message(text)
+        assert chunks == [text]
 
-    task = bot._start_typing_indicator(12345)
-    await asyncio.sleep(0.05)
-    task.cancel()
+    def test_exact_limit_returns_single_chunk(self) -> None:
+        """Test that messages at exactly the limit are not split."""
+        text = "A" * TELEGRAM_MESSAGE_LIMIT
+        chunks = split_long_message(text)
+        assert chunks == [text]
 
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    def test_long_message_splits_on_paragraph(self) -> None:
+        """Test that long messages split on paragraph boundaries."""
+        text = ("A" * 100) + "\n\n" + ("B" * 100)
+        text = text * 50
+        chunks = split_long_message(text)
+        for chunk in chunks:
+            assert len(chunk) <= TELEGRAM_MESSAGE_LIMIT
 
+    def test_no_boundary_hard_split(self) -> None:
+        """Test hard split when no boundary exists."""
+        text = "A" * (TELEGRAM_MESSAGE_LIMIT + 100)
+        chunks = split_long_message(text)
+        assert len(chunks) == 2
+        assert len(chunks[0]) == TELEGRAM_MESSAGE_LIMIT
+        assert len(chunks[1]) == 100
 
-@pytest.mark.asyncio
-async def test_stop_typing_indicator_cancels_task(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that _stop_typing_indicator cancels the task."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    def test_empty_string_returns_empty_list(self) -> None:
+        """Test that empty strings return empty list."""
+        chunks = split_long_message("")
+        assert chunks == []
 
-    mock_app = SimpleNamespace(bot=SimpleNamespace(send_chat_action=AsyncMock()))
-    bot._app = cast(Any, mock_app)
 
-    task = bot._start_typing_indicator(12345)
-    await bot._stop_typing_indicator(task)
+class TestEscapeMarkdown:
+    """Tests for escape_markdown function."""
 
-    assert task.cancelled()
+    def test_escape_markdown_escapes_special_chars(self) -> None:
+        """Test that MarkdownV2 special characters are escaped."""
+        text = "Hello _world_ with *stars* and [brackets]"
+        escaped = escape_markdown(text)
 
+        assert escaped == r"Hello \_world\_ with \*stars\* and \[brackets\]"
 
-def test_split_response_text_returns_empty_chunk_for_blank_response(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test that blank responses produce a single empty chunk."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    assert bot._split_response_text("   ") == [""]
-
-
-def test_split_response_text_uses_hard_split_without_boundaries(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test fallback chunk splitting when no readable boundary exists."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-    response_text = "A" * (TELEGRAM_MESSAGE_LIMIT + 10)
-
-    chunks = bot._split_response_text(response_text)
-
-    assert len(chunks) == 2
-    assert len(chunks[0]) == TELEGRAM_MESSAGE_LIMIT
-    assert len(chunks[1]) == 10
-
-
-def test_find_chunk_boundary_falls_back_to_limit(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test chunk boundary fallback when no separator exists."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    boundary = bot._find_chunk_boundary("A" * (TELEGRAM_MESSAGE_LIMIT + 10))
-
-    assert boundary == TELEGRAM_MESSAGE_LIMIT
-
-
-def test_split_response_text_exits_loop_when_remaining_text_is_consumed(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-) -> None:
-    """Test the loop path where one chunk consumes the remaining long response."""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-    response_text = "A" * (TELEGRAM_MESSAGE_LIMIT + 10)
-
-    with patch.object(bot, "_find_chunk_boundary", return_value=len(response_text)):
-        chunks = bot._split_response_text(response_text)
-
-    assert chunks == [response_text]
-
-
-def test_escape_markdown_escapes_special_chars() -> None:
-    """Test that MarkdownV2 special characters are escaped."""
-    text = "Hello _world_ with *stars* and [brackets]"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Hello \_world\_ with \*stars\* and \[brackets\]"
-
-
-def test_escape_markdown_preserves_code_blocks() -> None:
-    """Test that code block content is not escaped."""
-    text = "Text with _underscore_ and ```code_with_special_*chars*```"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Text with \_underscore\_ and ```code_with_special_*chars*```"
-
-
-def test_escape_markdown_preserves_inline_code() -> None:
-    """Test that inline code content is not escaped."""
-    text = "Use `variable_name` for _important_ things"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Use `variable_name` for \_important\_ things"
-
-
-def test_escape_markdown_handles_nested_code() -> None:
-    """Test mixed code blocks and inline code."""
-    text = "Here is `inline_code` and ```code block``` with _text_"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Here is `inline_code` and ```code block``` with \_text\_"
-
-
-def test_escape_markdown_escapes_all_markdown_v2_chars() -> None:
-    """Test that all MarkdownV2 special characters are escaped."""
-    text = "_ * [ ] ( ) ~ > # + - = | { } . !"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"\_ \* \[ \] \( \) \~ \> \# \+ \- \= \| \{ \} \. \!"
-
-
-def test_escape_markdown_handles_brackets_and_parens() -> None:
-    """Test that brackets and parentheses are escaped."""
-    text = "See [link](url) for more info"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"See \[link\]\(url\) for more info"
-
-
-def test_escape_markdown_handles_tilde_and_hash() -> None:
-    """Test that tilde and hash are escaped."""
-    text = "Use ~home~ and #tag"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Use \~home\~ and \#tag"
-
-
-def test_escape_markdown_handles_period_and_exclamation() -> None:
-    """Test that period and exclamation are escaped."""
-    text = "Hello. Wait! Really"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Hello\. Wait\! Really"
-
-
-def test_escape_markdown_handles_plus_minus_equals() -> None:
-    """Test that +, -, and = are escaped."""
-    text = "1 + 2 - 3 = 0"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"1 \+ 2 \- 3 \= 0"
-
-
-def test_escape_markdown_handles_curly_braces_and_pipe() -> None:
-    """Test that curly braces and pipe are escaped."""
-    text = "{key|value}"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"\{key\|value\}"
-
-
-def test_escape_markdown_preserves_code_blocks_with_all_special_chars() -> None:
-    """Test that code blocks preserve all special characters."""
-    text = "Check ```if (x > 0) { return x * 2; }``` for logic"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Check ```if (x > 0) { return x * 2; }``` for logic"
-
-
-def test_escape_markdown_preserves_inline_code_with_all_special_chars() -> None:
-    """Test that inline code preserves all special characters."""
-    text = "Use `arr[0].value!` for access"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"Use `arr[0].value!` for access"
-
-
-def test_escape_markdown_handles_empty_string() -> None:
-    """Test that empty strings are handled correctly."""
-    assert escape_markdown("") == ""
-
-
-def test_escape_markdown_handles_only_special_chars() -> None:
-    """Test a string containing only special characters."""
-    text = "_*[]"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"\_\*\[\]"
-
-
-def test_escape_markdown_handles_special_chars_at_boundaries() -> None:
-    """Test special characters at string boundaries."""
-    text = "_start and end_"
-    escaped = escape_markdown(text)
-
-    assert escaped == r"\_start and end\_"
-
-
-def test_convert_bold_to_telegram_converts_double_asterisk() -> None:
-    """Test that **bold** is converted to *bold*."""
-    text = "This is **bold** text"
-    converted = convert_bold_to_telegram(text)
-
-    assert converted == "This is *bold* text"
-
-
-def test_convert_bold_to_telegram_preserves_single_asterisk() -> None:
-    """Test that single asterisks are preserved."""
-    text = "This has *italic* and **bold**"
-    converted = convert_bold_to_telegram(text)
-
-    assert converted == "This has *italic* and *bold*"
-
-
-def test_convert_bold_to_telegram_handles_multiple() -> None:
-    """Test multiple bold conversions in one string."""
-    text = "**First** and **second** and **third**"
-    converted = convert_bold_to_telegram(text)
-
-    assert converted == "*First* and *second* and *third*"
-
-
-@pytest.mark.asyncio
-async def test_send_response_sends_thoughts_first(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that thoughts are sent before content."""
-    runtime_recorder.run_user_turn_thoughts = "Let me think..."
-    runtime_recorder.run_user_turn_response = "Here is my answer."
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    assert mock_update.message.reply_text.await_count == 2
-    first_call = mock_update.message.reply_text.await_args_list[0]
-    second_call = mock_update.message.reply_text.await_args_list[1]
-
-    assert "Thinking: Let me think\\.\\.\\." in first_call.args[0]
-    assert first_call.kwargs.get("parse_mode") == "MarkdownV2"
-    assert "Here is my answer\\." in second_call.args[0]
-    assert second_call.kwargs.get("parse_mode") == "MarkdownV2"
-
-
-@pytest.mark.asyncio
-async def test_send_response_skips_thoughts_when_empty(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that no thought message is sent when thoughts are empty."""
-    runtime_recorder.run_user_turn_thoughts = ""
-    runtime_recorder.run_user_turn_response = "Just the answer."
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    assert mock_update.message.reply_text.await_count == 1
-    call = mock_update.message.reply_text.await_args
-    assert "Just the answer\\." in call.args[0]
-
-
-@pytest.mark.asyncio
-async def test_send_content_uses_markdown_parse_mode(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that content is sent with Markdown parse mode."""
-    runtime_recorder.run_user_turn_response = "**Bold** text"
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    call = mock_update.message.reply_text.await_args
-    assert call.kwargs.get("parse_mode") == "MarkdownV2"
-
-
-@pytest.mark.asyncio
-async def test_send_content_handles_empty_content(
-    telegram_config: TelegramConfig,
-    runtime_recorder: RecordingRuntime,
-    mock_update: Any,
-    mock_context: Any,
-) -> None:
-    """Test that empty content sends a fallback message."""
-    runtime_recorder.run_user_turn_response = ""
-    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-
-    await bot._handle_message(mock_update, mock_context)
-
-    call = mock_update.message.reply_text.await_args
-    assert "couldn't generate a response" in call.args[0]
+    def test_escape_markdown_preserves_code_blocks(self) -> None:
+        """Test that code block content is not escaped."""
+        text = "Text with _underscore_ and ```code_with_special_*chars*```"
+        escaped = escape_markdown(text)
+
+        assert (
+            escaped == r"Text with \_underscore\_ and ```code_with_special_*chars*```"
+        )
+
+    def test_escape_markdown_preserves_inline_code(self) -> None:
+        """Test that inline code content is not escaped."""
+        text = "Use `variable_name` for _important_ things"
+        escaped = escape_markdown(text)
+
+        assert escaped == r"Use `variable_name` for \_important\_ things"
+
+    def test_escape_markdown_handles_empty_string(self) -> None:
+        """Test that empty strings are handled correctly."""
+        assert escape_markdown("") == ""
+
+    def test_escape_markdown_escapes_all_markdown_v2_chars(self) -> None:
+        """Test that all MarkdownV2 special characters are escaped."""
+        text = "_ * [ ] ( ) ~ > # + - = | { } . ! \\"
+        escaped = escape_markdown(text)
+
+        assert escaped == r"\_ \* \[ \] \( \) \~ \> \# \+ \- \= \| \{ \} \. \! \\"
+
+
+class TestFormatForTelegram:
+    """Tests for format_for_telegram function."""
+
+    def test_format_for_telegram_preserves_bold_markers(self) -> None:
+        """Test that bold formatting markers are not escaped."""
+        text = "This is **bold** text"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"This is *bold* text"
+
+    def test_format_for_telegram_escapes_content_inside_bold(self) -> None:
+        """Test that special chars inside bold are escaped."""
+        text = "**Hello_World**"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*Hello\_World*"
+
+    def test_format_for_telegram_escapes_regular_text(self) -> None:
+        """Test that special chars outside bold are escaped."""
+        text = "Hello_World"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"Hello\_World"
+
+    def test_format_for_telegram_handles_multiple_bold(self) -> None:
+        """Test multiple bold sections."""
+        text = "**First** and **Second**"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*First* and *Second*"
+
+    def test_format_for_telegram_preserves_code_blocks(self) -> None:
+        """Test that code blocks are preserved and not escaped."""
+        text = "**bold** and ```code_with_special**```"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*bold* and ```code_with_special**```"
+
+    def test_format_for_telegram_preserves_inline_code(self) -> None:
+        """Test that inline code is preserved."""
+        text = "**bold** and `code_with_underscore`"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*bold* and `code_with_underscore`"
+
+
+class TestTelegramBotCommands:
+    """Tests for Telegram bot command handling."""
+
+    @pytest.mark.asyncio
+    async def test_handle_start_command(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /start command sends welcome message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/start")
+        mock_api.send_message.assert_called_once()
+        call_args = mock_api.send_message.call_args
+        assert "Hello" in call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_help_command(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /help command sends help message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/help")
+        mock_api.send_message.assert_called_once()
+        call_args = mock_api.send_message.call_args
+        assert "Commands" in call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_reset_command(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /reset command creates next session."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/reset")
+        assert len(runtime_recorder.create_next_session_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_handle_reset_command_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test /reset command handles errors."""
+        runtime_recorder.create_next_session_error = RuntimeError("reset failed")
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/reset")
+        call_args = mock_api.send_message.call_args
+        assert "couldn't reset" in call_args.kwargs["text"]
+
+
+class TestTelegramBotMessageHandling:
+    """Tests for Telegram bot message handling with streaming."""
+
+    @pytest.mark.asyncio
+    async def test_handle_message_streams_response(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test message handling with streaming."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_response = "Hello back!"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        mock_draft_manager = create_autospec(DraftManager, instance=True)
+        mock_draft_manager.stream_response = AsyncMock(return_value=("", "Hello back!"))
+        bot._draft_manager = mock_draft_manager
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=None,
+            user_message="Hello, bot!",
+        )
+
+        mock_api.send_chat_action.assert_called_once_with(
+            chat_id=123456789, action="typing"
+        )
+        mock_draft_manager.stream_response.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_message_sends_thoughts_and_content(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test message handling sends both thoughts and content."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_thoughts = "Let me think..."
+        runtime_recorder.run_user_turn_response = "Here is my answer."
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        mock_draft_manager = create_autospec(DraftManager, instance=True)
+        mock_draft_manager.stream_response = AsyncMock(
+            return_value=("Let me think...", "Here is my answer.")
+        )
+        bot._draft_manager = mock_draft_manager
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=None,
+            user_message="Hello!",
+        )
+
+        assert mock_api.send_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_handle_message_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test message handling with error."""
+        runtime_recorder.run_user_turn_error = RuntimeError("runner failed")
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        mock_draft_manager = create_autospec(DraftManager, instance=True)
+        mock_draft_manager.stream_response = AsyncMock(
+            side_effect=RuntimeError("runner failed")
+        )
+        bot._draft_manager = mock_draft_manager
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=None,
+            user_message="Hello!",
+        )
+
+        mock_api.send_message.assert_called()
+        call_args = mock_api.send_message.call_args
+        assert "error" in call_args.kwargs["text"].lower()
+
+
+class TestTelegramBotLifecycle:
+    """Tests for Telegram bot lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_start_polling_not_configured(
+        self,
+        telegram_config_disabled: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test start_polling when Telegram is disabled."""
+        bot = TelegramBot(
+            telegram_config_disabled,
+            cast(AdkRuntime, runtime_recorder),
+        )
+
+        await bot.start_polling()
+
+        assert bot._api is None
+
+    @pytest.mark.asyncio
+    async def test_start_polling_starts_task(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test start_polling creates polling task."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.set_my_commands = AsyncMock(return_value=True)
+        bot._api = mock_api
+
+        await bot.start_polling()
+
+        assert bot._running is True
+        assert bot._polling_task is not None
+
+        await bot.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_api(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test stop closes API client."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.close = AsyncMock()
+        bot._api = mock_api
+
+        await bot.stop()
+
+        mock_api.close.assert_called_once()
+        assert runtime_recorder.closed is True
+
+    @pytest.mark.asyncio
+    async def test_register_commands_success(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test command registration."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.set_my_commands = AsyncMock(return_value=True)
+        bot._api = mock_api
+
+        await bot._register_commands()
+
+        mock_api.set_my_commands.assert_called_once()
+        commands = mock_api.set_my_commands.call_args.args[0]
+        assert len(commands) == 3
+        assert commands[0].command == "start"
+
+    @pytest.mark.asyncio
+    async def test_register_commands_handles_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test command registration handles errors."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.set_my_commands = AsyncMock(
+            side_effect=TelegramApiError("Failed", error_code=400)
+        )
+        bot._api = mock_api
+
+        await bot._register_commands()
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_runtime(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test stop closes the runtime."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        await bot.stop()
+
+        assert runtime_recorder.closed is True

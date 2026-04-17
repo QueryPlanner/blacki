@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-17
+
+### Added
+- Migrate Telegram bot to official Bot API with streaming support via `sendMessageDraft` (#13).
+- Add `run_user_turn_streaming()` to ADK runtime for real-time response streaming.
+- Add `DraftManager` for throttled draft message updates (300ms interval).
+- Add `TelegramApiClient` with direct HTTP calls using `httpx`.
+- Add Pydantic models for Telegram Bot API types.
+
+### Changed
+- Replace `python-telegram-bot` with native `httpx`-based API client.
+- Stream thoughts and content separately as italicized draft messages.
+
+### Removed
+- Remove `python-telegram-bot` dependency.
+
 ## [0.2.0] - 2026-03-28
 
 ### Added
@@ -46,7 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolved `ValueError: Missing key inputs argument` by ensuring API keys are properly injected into the container environment.
 - Addressed interactive prompt issues in `setup.sh` by setting `DEBIAN_FRONTEND=noninteractive`.
 
-[Unreleased]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/releases/tag/v0.1.0

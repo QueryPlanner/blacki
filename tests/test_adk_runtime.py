@@ -12,6 +12,7 @@ from blacki.adk_runtime import (
     DEFAULT_EMPTY_RESPONSE,
     AdkRuntime,
     SessionLocator,
+    StreamChunk,
     TurnResponse,
     _extract_event_text,
     _extract_session_version,
@@ -513,3 +514,102 @@ async def test_run_user_turn_with_thoughts_handles_partial_thoughts() -> None:
 
     assert response.thoughts == "Partial thinking..."
     assert response.content == "Final answer."
+
+
+async def test_run_user_turn_streaming_yields_chunks() -> None:
+    """Test that streaming yields chunks as events arrive."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Thinking...", thought=True),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Partial answer"),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Analyzing...", thought=True),
+                    types.Part(text="Final answer."),
+                ],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) >= 3
+    assert chunks[-1].is_partial is False
+    assert chunks[-1].thoughts == "Analyzing..."
+    assert chunks[-1].content == "Final answer."
+
+
+async def test_run_user_turn_streaming_handles_partial_content() -> None:
+    """Test that partial content is accumulated correctly."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Building..."),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Complete."),
+                ],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) >= 2
+    assert "Building..." in chunks[0].content
+    assert chunks[-1].content == "Complete."
+    assert chunks[-1].is_partial is False
