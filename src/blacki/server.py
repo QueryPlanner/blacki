@@ -68,6 +68,7 @@ async def _start_telegram_bot() -> None:
             {
                 "TELEGRAM_ENABLED": env.telegram_enabled,
                 "TELEGRAM_BOT_TOKEN": env.telegram_bot_token,
+                "TELEGRAM_TOOL_NOTIFICATIONS": env.telegram_tool_notifications,
             }
         )
         adk_runtime = create_adk_runtime(env)

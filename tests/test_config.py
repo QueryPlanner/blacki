@@ -81,6 +81,19 @@ class TestServerEnv:
         env = ServerEnv.model_validate(valid_server_env)
 
         assert env.is_telegram_configured is False
+
+    def test_is_telegram_tool_notifications_active(
+        self, valid_server_env: dict[str, str]
+    ) -> None:
+        """Tool notifications require Telegram plus the opt-in flag."""
+        valid_server_env["TELEGRAM_ENABLED"] = "true"
+        valid_server_env["TELEGRAM_BOT_TOKEN"] = "test-token-123"  # noqa: S105
+        env = ServerEnv.model_validate(valid_server_env)
+        assert env.is_telegram_tool_notifications_active is False
+
+        valid_server_env["TELEGRAM_TOOL_NOTIFICATIONS"] = "true"
+        env_on = ServerEnv.model_validate(valid_server_env)
+        assert env_on.is_telegram_tool_notifications_active is True
         assert env.port == 8080
 
     def test_server_env_optional_fields_with_values(

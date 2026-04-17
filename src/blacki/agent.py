@@ -11,7 +11,11 @@ from google.adk.apps import App
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
-from .callbacks import LoggingCallbacks
+from .callbacks import (
+    LoggingCallbacks,
+    notify_telegram_before_tool,
+    telegram_tool_notifications_enabled,
+)
 from .prompt import (
     return_description_root,
     return_global_instruction,
@@ -92,6 +96,13 @@ if use_litellm:
             "OpenRouter models may not work."
         )
 
+before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
+if telegram_tool_notifications_enabled():
+    logger.info(
+        "Telegram tool notifications enabled; registering before_tool callback"
+    )
+    before_tool_callbacks.append(notify_telegram_before_tool)
+
 root_agent = LlmAgent(
     name="root_agent",
     description=return_description_root(),
@@ -102,7 +113,7 @@ root_agent = LlmAgent(
     tools=[example_tool],
     before_model_callback=logging_callbacks.before_model,
     after_model_callback=logging_callbacks.after_model,
-    before_tool_callback=logging_callbacks.before_tool,
+    before_tool_callback=before_tool_callbacks,
     after_tool_callback=logging_callbacks.after_tool,
 )
 
