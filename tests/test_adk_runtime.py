@@ -16,7 +16,9 @@ from blacki.adk_runtime import (
     TurnResponse,
     _extract_event_text,
     _extract_session_version,
+    _extract_stream_turn_parts,
     _extract_turn_parts,
+    _join_token,
     _merge_stream_fragment,
     build_session_db_kwargs,
     build_session_service_uri,
@@ -771,3 +773,105 @@ class TestMergeStreamFragment:
         """Test when strings are identical."""
         result = _merge_stream_fragment("Hello", "Hello")
         assert result == "Hello"
+
+
+class TestJoinToken:
+    """Tests for _join_token function."""
+
+    def test_returns_accumulated_when_token_empty(self) -> None:
+        """Test that empty token returns accumulated unchanged."""
+        result = _join_token("Hello", "")
+        assert result == "Hello"
+
+    def test_returns_token_when_accumulated_empty(self) -> None:
+        """Test that empty accumulated returns token."""
+        result = _join_token("", "world")
+        assert result == "world"
+
+    def test_no_space_before_punctuation(self) -> None:
+        """Test that no space is added before punctuation."""
+        result = _join_token("Hello", ", world!")
+        assert result == "Hello, world!"
+
+    def test_adds_space_before_non_punctuation(self) -> None:
+        """Test that space is added before non-punctuation."""
+        result = _join_token("Hello", "world")
+        assert result == "Hello world"
+
+
+class TestExtractStreamTurnParts:
+    """Tests for _extract_stream_turn_parts function."""
+
+    def test_returns_empty_when_content_is_none(self) -> None:
+        """Test that None content returns empty strings."""
+        event = Event(
+            author="model",
+            content=None,
+        )
+        thoughts, content = _extract_stream_turn_parts(event)
+        assert thoughts == ""
+        assert content == ""
+
+    def test_returns_empty_when_parts_empty(self) -> None:
+        """Test that empty parts returns empty strings."""
+        event = Event(
+            author="model",
+            content=types.Content(role="model", parts=[]),
+        )
+        thoughts, content = _extract_stream_turn_parts(event)
+        assert thoughts == ""
+        assert content == ""
+
+    def test_skips_parts_with_no_text(self) -> None:
+        """Test that parts with no text are skipped."""
+        event = Event(
+            author="model",
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="thought", thought=True),
+                    types.Part(),  # No text
+                    types.Part(text="content"),
+                ],
+            ),
+        )
+        thoughts, content = _extract_stream_turn_parts(event)
+        assert thoughts == "thought"
+        assert content == "content"
+
+
+async def test_run_user_turn_streaming_skips_empty_events() -> None:
+    """Test that streaming skips events with no thoughts or content."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(author="root_agent", partial=True)  # Empty event
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Final answer")],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    # The empty event was skipped.
+    # The final event has content, so it yields a partial chunk (line 276)
+    # and then the loop ends and it yields a final chunk (line 285).
+    assert len(chunks) == 2
+    assert chunks[0].is_partial is True
+    assert chunks[0].content == "Final answer"
+    assert chunks[1].is_partial is False
+    assert chunks[1].content == "Final answer"

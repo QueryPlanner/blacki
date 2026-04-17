@@ -1,6 +1,7 @@
 """Tests for Telegram tool notification callback (issue #14)."""
 
 import asyncio
+import logging
 from collections.abc import Iterator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -393,3 +394,75 @@ async def test_reset_schedules_async_close_when_loop_running(
         await asyncio.sleep(0)
 
     mock_client.close.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reset_handles_close_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Exception during client close in reset is logged, not raised."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+    caplog.set_level(logging.DEBUG)
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("t")),
+            {},
+            cast(ToolContext, ctx),
+        )
+        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await asyncio.sleep(0)
+
+    assert "Telegram notify client close failed" in caplog.text
+
+
+def test_reset_handles_loop_create_task_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RuntimeError from loop.create_task is caught silently."""
+    from blacki.callbacks import _shared_notify_client, _shared_notify_token
+
+    monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
+    monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")
+
+    mock_loop = MagicMock()
+    mock_loop.create_task = MagicMock(side_effect=RuntimeError("loop closed"))
+
+    with patch("asyncio.get_running_loop", return_value=mock_loop):
+        reset_telegram_tool_notify_rate_limiter_for_tests()
+
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None
+
+
+@pytest.mark.asyncio
+async def test_notify_returns_early_when_bot_token_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Telegram traffic when TELEGRAM_BOT_TOKEN is empty string."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+    callbacks_module._telegram_tool_notifications_enabled_impl.cache_clear()
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
+        result = await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("t")),
+            {},
+            cast(ToolContext, ctx),
+        )
+
+    mock_client.send_message.assert_not_called()
+    assert result is None
