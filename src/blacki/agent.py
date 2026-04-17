@@ -11,12 +11,7 @@ from google.adk.apps import App
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
-from .callbacks import (
-    LoggingCallbacks,
-    add_memories_to_context,
-    add_session_to_memory,
-)
-from .mem0 import is_mem0_enabled, save_memory, search_memory
+from .callbacks import LoggingCallbacks
 from .prompt import (
     return_description_root,
     return_global_instruction,
@@ -97,30 +92,15 @@ if use_litellm:
             "OpenRouter models may not work."
         )
 
-# Build the list of tools, optionally including mem0 tools
-agent_tools: list[Any] = [example_tool]
-
-# Conditionally add mem0 tools if mem0 is configured
-if is_mem0_enabled():
-    logger.info("mem0 is enabled, adding memory tools")
-    agent_tools.extend([save_memory, search_memory])
-else:
-    logger.info("mem0 is not configured, memory tools disabled")
-
-# Build before_model_callback with optional memory injection
-before_model_callbacks: list[Any] = [logging_callbacks.before_model]
-if is_mem0_enabled():
-    before_model_callbacks.append(add_memories_to_context)
-
 root_agent = LlmAgent(
     name="root_agent",
     description=return_description_root(),
     before_agent_callback=logging_callbacks.before_agent,
-    after_agent_callback=[logging_callbacks.after_agent, add_session_to_memory],
+    after_agent_callback=logging_callbacks.after_agent,
     model=model,
     instruction=return_instruction_root(),
-    tools=agent_tools,
-    before_model_callback=before_model_callbacks,
+    tools=[example_tool],
+    before_model_callback=logging_callbacks.before_model,
     after_model_callback=logging_callbacks.after_model,
     before_tool_callback=logging_callbacks.before_tool,
     after_tool_callback=logging_callbacks.after_tool,

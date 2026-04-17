@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ADK Callback Mock Objects for testing callbacks
 class MockState:
     """Mock State object for ADK callback testing.
 
@@ -65,40 +64,6 @@ class MockSession:
     def __init__(self, user_id: str = "test_user_123") -> None:
         """Initialize mock session with user_id."""
         self.user_id = user_id
-
-
-class MockMemoryCallbackContext:
-    """Minimal mock CallbackContext for add_session_to_memory callback testing.
-
-    Controls behavior through constructor parameters instead of rebuilding
-    ADK's internal logic. This keeps tests independent of ADK implementation.
-    """
-
-    def __init__(
-        self,
-        should_raise: type[Exception] | None = None,
-        error_message: str = "",
-    ) -> None:
-        """Initialize mock callback context with controlled behavior.
-
-        Args:
-            should_raise: Exception type to raise when add_session_to_memory is called.
-                         None means the call succeeds.
-            error_message: Message for the exception if should_raise is set.
-        """
-        self._should_raise = should_raise
-        self._error_message = error_message
-        self.add_session_to_memory_called = False
-
-    async def add_session_to_memory(self) -> None:
-        """Mock implementation that either succeeds or raises controlled exception.
-
-        Raises:
-            Exception: The exception type configured in __init__ if should_raise is set.
-        """
-        self.add_session_to_memory_called = True
-        if self._should_raise:
-            raise self._should_raise(self._error_message)
 
 
 class MockLoggingCallbackContext:
@@ -224,7 +189,7 @@ class MockReadonlyContext:
     @property
     def state(self) -> dict[str, Any]:
         """The state of the current session (read-only)."""
-        return self._state.copy()  # Return a copy to enforce read-only
+        return self._state.copy()
 
     @property
     def user_content(self) -> MockContent | None:
@@ -237,7 +202,6 @@ class MockReadonlyContext:
         return self._session
 
 
-# Fixtures for ADK callback testing
 @pytest.fixture
 def mock_state() -> MockState:
     """Create a mock state with test data."""
@@ -309,39 +273,6 @@ def mock_base_tool() -> MockBaseTool:
 
 
 @pytest.fixture
-def mock_memory_callback_context() -> MockMemoryCallbackContext:
-    """Create a mock callback context that succeeds."""
-    return MockMemoryCallbackContext()
-
-
-@pytest.fixture
-def mock_memory_callback_context_no_service() -> MockMemoryCallbackContext:
-    """Create a mock callback context that raises ValueError (no service)."""
-    return MockMemoryCallbackContext(
-        should_raise=ValueError,
-        error_message="Cannot add session to memory: memory service is not available.",
-    )
-
-
-@pytest.fixture
-def mock_memory_callback_context_with_runtime_error() -> MockMemoryCallbackContext:
-    """Create a mock callback context that raises RuntimeError."""
-    return MockMemoryCallbackContext(
-        should_raise=RuntimeError,
-        error_message="Memory service connection failed",
-    )
-
-
-@pytest.fixture
-def mock_memory_callback_context_with_attribute_error() -> MockMemoryCallbackContext:
-    """Create a mock callback context that raises AttributeError."""
-    return MockMemoryCallbackContext(
-        should_raise=AttributeError,
-        error_message="'MockMemoryCallbackContext' has no invocation context",
-    )
-
-
-@pytest.fixture
 def mock_readonly_context() -> MockReadonlyContext:
     """Create a mock readonly context for InstructionProvider testing."""
     return MockReadonlyContext(
@@ -351,7 +282,6 @@ def mock_readonly_context() -> MockReadonlyContext:
     )
 
 
-# Config testing fixtures
 @pytest.fixture
 def valid_server_env() -> dict[str, str]:
     """Valid environment variables for ServerEnv model.
@@ -471,7 +401,6 @@ def mock_print_config() -> Callable[[type], AbstractContextManager[MagicMock]]:
         Factory function that creates a context manager for mocking print_config.
     """
     from contextlib import contextmanager
-    from unittest.mock import patch
 
     @contextmanager
     def _mock_print_config(model_class: type) -> Generator[MagicMock]:

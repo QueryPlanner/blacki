@@ -65,21 +65,7 @@ The blacki Telegram bot supports these commands:
 |---------|-------------|
 | `/start` | Start a conversation and see welcome message |
 | `/help` | Show available commands and usage |
-| `/clear` | Clear conversation memory for fresh start |
-
-## Memory Features
-
-The bot uses **mem0** for persistent memory:
-
-- Each Telegram chat has its own isolated memory context
-- The bot remembers previous conversations with each user
-- Memories are stored locally in `./data/qdrant`
-
-### Testing Memory
-
-1. Tell the bot something about yourself: "My name is Alice and I like Python"
-2. Later, ask: "What's my name?" or "What programming language do I like?"
-3. The bot should remember from the previous conversation
+| `/clear` | Clear conversation for fresh start |
 
 ## Security Considerations
 
@@ -130,17 +116,6 @@ For 1-on-1 conversations, the bot sees all messages.
 2. **Check database:**
    - Verify `DATABASE_URL` is correct
    - Ensure the database is accessible
-
-### Memory Not Working
-
-1. **Check mem0 configuration:**
-   - `OPENROUTER_API_KEY` must be set for mem0's LLM operations
-   - Check that `./data/qdrant` directory is writable
-
-2. **View memory storage:**
-   ```bash
-   ls -la ./data/qdrant
-   ```
 
 ## Advanced Configuration
 
