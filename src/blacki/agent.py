@@ -98,9 +98,7 @@ if use_litellm:
 
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
 if telegram_tool_notifications_enabled():
-    logger.info(
-        "Telegram tool notifications enabled; registering before_tool callback"
-    )
+    logger.info("Telegram tool notifications enabled; registering before_tool callback")
     before_tool_callbacks.append(notify_telegram_before_tool)
 
 root_agent = LlmAgent(
