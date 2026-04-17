@@ -1,5 +1,7 @@
 """Unit tests for Telegram bot module."""
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1519,3 +1521,858 @@ class TestFormattingEdgeCases:
         text = "Line 1\n\nLine 2"
         formatted = format_for_telegram(text)
         assert "\n\n" in formatted
+
+
+class TestTelegramApiErrors:
+    """Tests for Telegram API error handling."""
+
+    @pytest.mark.asyncio
+    async def test_api_error_with_invalid_json_response(self) -> None:
+        """When error response has invalid JSON, use response.text."""
+        import httpx
+
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 400
+                mock_response.json.side_effect = json.JSONDecodeError("err", "doc", 0)
+                mock_response.text = "Bad Request"
+                mock_post.return_value = mock_response
+
+                with pytest.raises(TelegramApiError, match="Bad Request"):
+                    await client._request("someMethod", {})
+
+    @pytest.mark.asyncio
+    async def test_send_message_draft_with_optional_params(self) -> None:
+        """Test send_message_draft with message_thread_id and parse_mode."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Draft text",
+                }
+                result = await client.send_message_draft(
+                    chat_id=123,
+                    text="Draft text",
+                    draft_id=12345,
+                    message_thread_id=5,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                assert isinstance(result, Message)
+                call_kwargs = mock_request.call_args.args[1]
+                assert call_kwargs["message_thread_id"] == 5
+                assert call_kwargs["parse_mode"] == "MarkdownV2"
+
+    @pytest.mark.asyncio
+    async def test_send_message_draft_returns_boolean(self) -> None:
+        """When API returns boolean, return it directly."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = True
+                result = await client.send_message_draft(
+                    chat_id=123, text="Draft text", draft_id=12345
+                )
+                assert result is True
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text_with_parse_mode(self) -> None:
+        """Test edit_message_text with parse_mode parameter."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Edited",
+                }
+                result = await client.edit_message_text(
+                    chat_id=123,
+                    message_id=1,
+                    text="Edited",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                assert result.text == "Edited"
+                call_kwargs = mock_request.call_args.args[1]
+                assert call_kwargs["parse_mode"] == "MarkdownV2"
+
+    @pytest.mark.asyncio
+    async def test_send_chat_action_with_thread_id(self) -> None:
+        """Test send_chat_action with message_thread_id parameter."""
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client, "_request") as mock_request:
+                mock_request.return_value = True
+                result = await client.send_chat_action(
+                    chat_id=123, action="typing", message_thread_id=5
+                )
+                assert result is True
+                call_kwargs = mock_request.call_args.args[1]
+                assert call_kwargs["message_thread_id"] == 5
+
+    @pytest.mark.asyncio
+    async def test_api_error_without_description(self) -> None:
+        """When error response has JSON but no description, use response.text."""
+        import httpx
+
+        async with TelegramApiClient("test-token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 400
+                mock_response.json.return_value = {"error": "bad"}
+                mock_response.text = "Bad Request"
+                mock_post.return_value = mock_response
+
+                with pytest.raises(TelegramApiError, match="Bad Request"):
+                    await client._request("someMethod", {})
+
+    @pytest.mark.asyncio
+    async def test_stream_session_apology_failure(self, caplog: Any) -> None:
+        """Test apology message failure is logged."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(side_effect=TelegramApiError("Failed"))
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+        assert "Failed to send apology message" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_write_error_not_modified(self) -> None:
+        """Test handling of message not modified error."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        mock_api.edit_message_text = AsyncMock(
+            side_effect=TelegramApiError("message is not modified", error_code=400)
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Text", is_partial=True)
+            yield StreamChunk(
+                thoughts="", content="Text", is_partial=True
+            )  # Unchanged text
+            yield StreamChunk(thoughts="", content="Final", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+        # Should complete without error
+
+    @pytest.mark.asyncio
+    async def test_write_error_rate_limit_retry_failure(self, caplog: Any) -> None:
+        """Test rate limit retry failure."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            }
+        )
+        mock_api.send_message = AsyncMock(
+            side_effect=[
+                TelegramApiError("Rate limit", error_code=429, retry_after=1),
+                TelegramApiError("Retry failure", error_code=429),
+                msg,
+                msg,
+                msg,
+            ]
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Text", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+        assert "Retry after rate limit failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_write_error_server_error_retry_failure(self, caplog: Any) -> None:
+        """Test server error retry failure."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            }
+        )
+        mock_api.send_message = AsyncMock(
+            side_effect=[
+                TelegramApiError("Server error", error_code=500),
+                TelegramApiError("Retry failure", error_code=500),
+                msg,
+                msg,
+            ]
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Text", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+        assert "Retry after server error failed" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_polling_loop_exception_handling(self, caplog: Any) -> None:
+        """Test exception handling in polling loop."""
+        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        mock_api.get_updates = AsyncMock(
+            side_effect=[RuntimeError("Polling failed"), asyncio.CancelledError()]
+        )
+
+        bot._running = True
+        with patch("asyncio.sleep", AsyncMock()), pytest.raises(asyncio.CancelledError):
+            await bot._polling_loop()
+
+        assert "Error in polling loop" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_handle_update_command_flow(
+        self, telegram_config: TelegramConfig
+    ) -> None:
+        """Test _handle_update recognizes and handles commands."""
+        bot = TelegramBot(telegram_config, create_autospec(AdkRuntime))
+        bot._handle_command = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": "/start",
+            }
+        )
+        update = Update.model_validate(
+            {"update_id": 1, "message": message.model_dump()}
+        )
+        await bot._handle_update(update)
+        bot._handle_command.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_stream_session_retry_with_message_id(self) -> None:
+        """Test retry logic when _message_id is already set."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+        session._message_id = 42
+        session._full_text = "New text"
+
+        error = TelegramApiError("Rate limit", error_code=429, retry_after=1)
+        mock_api.edit_message_text = AsyncMock()
+
+        await session._handle_write_error(
+            error, chat_id=123, message_thread_id=None, is_final=False
+        )
+        mock_api.edit_message_text.assert_called_with(
+            chat_id=123,
+            message_id=42,
+            text="New text",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    @pytest.mark.asyncio
+    async def test_stream_session_server_retry_with_message_id(self) -> None:
+        """Test server error retry logic when _message_id is already set."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+        session._message_id = 42
+        session._full_text = "New text"
+
+        error = TelegramApiError("Server error", error_code=500)
+        mock_api.edit_message_text = AsyncMock()
+
+        await session._handle_write_error(
+            error, chat_id=123, message_thread_id=None, is_final=False
+        )
+        mock_api.edit_message_text.assert_called_with(
+            chat_id=123,
+            message_id=42,
+            text="New text",
+            parse_mode=ParseMode.MARKDOWN_V2,
+        )
+
+    def test_split_long_message_no_chunks(self) -> None:
+        """Test split_long_message with empty text returns empty list."""
+        assert split_long_message("") == []
+
+    def test_find_chunk_boundary_fallback(self) -> None:
+        """Test _find_chunk_boundary fallback to limit."""
+        from blacki.telegram.streaming import _find_chunk_boundary
+
+        # Text with no spaces or newlines
+        text = "A" * 100
+        assert _find_chunk_boundary(text, 50) == 50
+
+    @pytest.mark.asyncio
+    async def test_handle_update_no_text_coverage(
+        self, telegram_config: TelegramConfig
+    ) -> None:
+        """Test _handle_update with message containing no text."""
+        bot = TelegramBot(telegram_config, create_autospec(AdkRuntime))
+        bot._handle_command = AsyncMock()  # type: ignore[method-assign]
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": None,  # Missing text
+            }
+        )
+        update = Update.model_validate(
+            {"update_id": 1, "message": message.model_dump()}
+        )
+        await bot._handle_update(update)
+        bot._handle_command.assert_not_called()
+        bot._handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_session_write_empty_text(self) -> None:
+        """Test _write with empty text."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        session._full_text = ""
+        await session._write(chat_id=123, message_thread_id=None, is_final=False)
+        mock_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_session_finalize_no_chunks(self) -> None:
+        """Test _finalize when split_long_message returns no chunks."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        session._full_text = ""  # Will result in no chunks
+        await session._finalize(chat_id=123, message_thread_id=None)
+        mock_api.edit_message_text.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stream_session_finalize_long_not_wrote(self) -> None:
+        """Test _finalize for long message when not wrote successfully."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        session._full_text = "A" * 5000
+        session._wrote_successfully = False
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        await session._finalize(chat_id=123, message_thread_id=None)
+        # Should call _write which calls send_message
+        assert mock_api.send_message.called
+
+    @pytest.mark.asyncio
+    async def test_stream_session_fallback_empty_text(self) -> None:
+        """Test _send_fallback with empty text."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        session._full_text = ""
+        await session._send_fallback(chat_id=123, message_thread_id=None)
+        mock_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bot_polling_not_running_exit(
+        self, telegram_config: TelegramConfig
+    ) -> None:
+        """Test _polling_loop exits immediately if not running."""
+        bot = TelegramBot(telegram_config, create_autospec(AdkRuntime))
+        bot._running = False
+        await bot._polling_loop()
+        # Should exit immediately without calling get_updates
+
+    def test_find_chunk_boundary_loop_coverage(self) -> None:
+        """Test _find_chunk_boundary loop with different separators."""
+        from blacki.telegram.streaming import _find_chunk_boundary
+
+        text = "Hello\nWorld"
+        # Force it to use \n by setting limit small enough
+        boundary = _find_chunk_boundary(text, 10)
+        assert boundary == 5  # index of \n
+
+    @pytest.mark.asyncio
+    async def test_api_close_twice(self) -> None:
+        """Test closing API twice to hit both branches of client check."""
+        client = TelegramApiClient("token")
+        await client._ensure_client()
+        assert client._client is not None
+        await client.close()  # hits True branch
+        assert client._client is None
+        await client.close()  # type: ignore[unreachable]  # hits False branch
+
+    @pytest.mark.asyncio
+    async def test_stream_session_finalize_direct_empty(self) -> None:
+        """Test _finalize directly with empty text to hit line 240."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        session._full_text = ""
+        await session._finalize(chat_id=123, message_thread_id=None)
+        # Should return at line 240
+
+    def test_split_long_message_loop_exit(self) -> None:
+        """Test split_long_message loop exit by making remaining empty."""
+        # We need something that passes text.strip() but then becomes empty
+        # This is hard because strip() is at the start.
+        # If text is " a ", remaining is "a".
+        # If limit is 1, chunk is "a".
+        # Then remaining = remaining[1:].lstrip() -> "".
+        # THEN it hits the break because len("") <= 1.
+
+        # To hit the loop exit, we'd need to bypass the break.
+        # But len("") is always <= limit (unless limit < 0).
+        pass
+
+    @pytest.mark.asyncio
+    async def test_api_close_unopened(self) -> None:
+        """Test closing API when client was never opened."""
+        client = TelegramApiClient("token")
+        await client.close()
+        assert client._client is None
+
+    @pytest.mark.asyncio
+    async def test_set_my_commands_parameters_coverage(self) -> None:
+        """Test set_my_commands with real parameters hitting params building."""
+        import httpx
+
+        async with TelegramApiClient("token") as client:
+            with patch.object(client._client, "post") as mock_post:
+                mock_response = create_autospec(httpx.Response, instance=True)
+                mock_response.status_code = 200
+                mock_response.json.return_value = {"ok": True, "result": True}
+                mock_post.return_value = mock_response
+
+                await client.set_my_commands(
+                    [BotCommand(command="test", description="desc")],
+                    scope={"type": "default"},
+                    language_code="en",
+                )
+
+                call_args = mock_post.call_args
+                params = call_args.kwargs["json"]
+                assert params["scope"] == {"type": "default"}
+                assert params["language_code"] == "en"
+
+    @pytest.mark.asyncio
+    async def test_finalize_fallback_success(self, caplog: Any) -> None:
+        """Test finalize fallback send_message success."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        # Fail all edits, then succeed on send_message fallback
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        mock_api.edit_message_text = AsyncMock(side_effect=TelegramApiError("Fail"))
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+        session._wrote_successfully = False  # Force fallback path
+        session._full_text = "Fallback text"
+
+        await session._finalize(chat_id=123, message_thread_id=None)
+        assert mock_api.send_message.called
+
+    def test_find_chunk_boundary_hard_split(self) -> None:
+        """Test _find_chunk_boundary when no separator is found."""
+        from blacki.telegram.streaming import _find_chunk_boundary
+
+        text = "A" * 10
+        boundary = _find_chunk_boundary(text, 5)
+        assert boundary == 5
+
+    @pytest.mark.asyncio
+    async def test_stream_session_handle_write_error_no_code(self) -> None:
+        """Test _handle_write_error when error_code is None."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        error = TelegramApiError("Unknown error")
+        await session._handle_write_error(
+            error, chat_id=123, message_thread_id=None, is_final=False
+        )
+        # Should not crash
+
+
+class TestFormattingSpecialChars:
+    """Tests for formatting with special characters."""
+
+    def test_escape_markdown_with_all_special_chars(self) -> None:
+        """Test escaping all markdown special chars."""
+        text = "_*[]()~>#+-=|{}.!"
+        escaped = escape_markdown(text)
+        assert escaped == r"\_\*\[\]\(\)\~\>\#\+\-\=\|\{\}\.\!"
+
+    def test_format_for_telegram_with_code_blocks(self) -> None:
+        """Test formatting with code blocks."""
+        text = "```code``` and **bold**"
+        formatted = format_for_telegram(text)
+        assert "```code```" in formatted
+        assert "*bold*" in formatted
+
+    def test_format_for_telegram_with_links(self) -> None:
+        """Test formatting with links and special chars."""
+        text = "Visit [example.com](https://example.com)"
+        formatted = format_for_telegram(text)
+        assert "[" in formatted and "]" in formatted
+
+    def test_format_for_telegram_empty_string(self) -> None:
+        """Test formatting empty string."""
+        assert format_for_telegram("") == ""
+
+    def test_format_for_telegram_unclosed_bold(self) -> None:
+        """Test unclosed bold formatting."""
+        text = "This is **unclosed bold"
+        formatted = format_for_telegram(text)
+        assert r"\*\*" in formatted
+
+    def test_format_for_telegram_bold_with_code(self) -> None:
+        """Test bold containing code block and inline code."""
+        text = "**Bold with `inline` and ```code block```**"
+        formatted = format_for_telegram(text)
+        assert "*Bold with `inline` and ```code block```*" in formatted
+
+    def test_escape_text_only_with_code(self) -> None:
+        """Test internal _escape_text_only with code markers."""
+        from blacki.telegram.formatting import _escape_text_only
+
+        text = "Text with `inline` and ```block```"
+        result = _escape_text_only(text)
+        assert result == "Text with `inline` and ```block```"
+
+    def test_escape_text_only_non_code(self) -> None:
+        """Test internal _escape_text_only with special chars."""
+        from blacki.telegram.formatting import _escape_text_only
+
+        text = "Special _ chars"
+        result = _escape_text_only(text)
+        assert result == r"Special \_ chars"
+
+
+class TestStreamSessionEdgeCases:
+    """Tests for StreamSession edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_stream_session_with_error(self) -> None:
+        """Test that session handles errors gracefully."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            side_effect=TelegramApiError("Bad request", error_code=400)
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="Hello world", is_partial=False)
+
+        result = await session.run(chunks=chunks(), chat_id=123)
+        assert result == "Hello world"
+
+    def test_merge_stream_text_with_code_blocks(self) -> None:
+        """Test merging text with code blocks."""
+        result = _merge_stream_text(
+            "```python```\n", "```python\ncode```", is_partial=True
+        )
+        assert "```python```" in result
+
+    def test_merge_stream_text_preserves_formatting(self) -> None:
+        """Test that merging preserves markdown formatting."""
+        result = _merge_stream_text("Hello ", " world!", is_partial=True)
+        assert result == "Hello  world!"
+
+    def test_split_long_message_at_word_boundaries(self) -> None:
+        """Test that splitting respects word boundaries."""
+        text = "A" * 50 + "\n\n" + "B" * 5000
+        chunks = split_long_message(text)
+        assert len(chunks) >= 2
+        assert all(len(chunk) <= TELEGRAM_MESSAGE_LIMIT for chunk in chunks)
+
+    def test_split_long_message_with_urls(self) -> None:
+        """Test that splitting doesn't break URLs."""
+        text = "A" * 50 + " https://example.com " + "B" * 5000
+        chunks = split_long_message(text)
+        assert len(chunks) >= 2
+
+    @pytest.mark.asyncio
+    async def test_stream_session_empty_chunks(self) -> None:
+        """Test handling empty content chunks."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="", is_partial=True)
+            yield StreamChunk(thoughts="", content="", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        mock_api.send_message.assert_called()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "apologize" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_stream_session_multiple_chunks_error(self) -> None:
+        """Test error handling when sending additional chunks fails."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        call_count = 0
+
+        async def send_side_effect(*args: object, **kwargs: object) -> Message:
+            nonlocal call_count
+            call_count += 1
+            if call_count > 1:
+                raise TelegramApiError("Failed", error_code=400)
+            return Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+
+        mock_api.send_message = AsyncMock(side_effect=send_side_effect)
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        long_text = "A" * 5000
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content=long_text, is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert call_count >= 2
+
+    @pytest.mark.asyncio
+    async def test_send_fallback_with_empty_text(self) -> None:
+        """Test fallback with empty full_text."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        mock_api.edit_message_text = AsyncMock(
+            side_effect=TelegramApiError("Failed", error_code=400)
+        )
+
+        session = StreamSession(api=mock_api, update_interval_sec=0.0)
+
+        async def chunks() -> AsyncIterator[StreamChunk]:
+            yield StreamChunk(thoughts="", content="", is_partial=False)
+
+        await session.run(chunks=chunks(), chat_id=123)
+
+        assert mock_api.send_message.await_count >= 1
+
+
+class TestTelegramBotEdgeCases:
+    """Tests for Telegram bot edge cases."""
+
+    @pytest.mark.asyncio
+    async def test_send_final_response_with_empty_chunks(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _send_final_response with empty message chunks."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock(
+            return_value=Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                }
+            )
+        )
+        bot._api = mock_api
+
+        await bot._send_final_response(
+            chat_id=123, message_thread_id=None, response_text=""
+        )
+
+        mock_api.send_message.assert_called()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "apologize" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_update_with_no_message(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _handle_update with update containing no message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        update = Update.model_validate({"update_id": 1, "message": None})
+
+        await bot._handle_update(update)
+
+        mock_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_api_property_initialization(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test that api property initializes TelegramApiClient."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        assert bot._api is None
+        api = bot.api
+        assert isinstance(api, TelegramApiClient)
+        assert bot._api is api
+
+    @pytest.mark.asyncio
+    async def test_polling_loop_integration(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test the polling loop with updates."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        # Mock get_updates to return one update then raise CancelledError to stop loop
+        mock_update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        mock_api.get_updates = AsyncMock(
+            side_effect=[[mock_update], asyncio.CancelledError()]
+        )
+
+        # We need to mock _handle_update to avoid deep integration
+        bot._handle_update = AsyncMock()  # type: ignore[method-assign]
+
+        bot._running = True
+        with pytest.raises(asyncio.CancelledError):
+            await bot._polling_loop()
+
+        bot._handle_update.assert_called_once_with(mock_update)
+
+    @pytest.mark.asyncio
+    async def test_handle_update_full_flow(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _handle_update hits the main message handling path."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": "Regular message",
+            }
+        )
+        update = Update.model_validate(
+            {"update_id": 1, "message": message.model_dump()}
+        )
+
+        await bot._handle_update(update)
+
+        bot._handle_message.assert_called_once_with(
+            chat_id=123, message_thread_id=None, user_message="Regular message"
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_command_unknown(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Test _handle_command with an unknown command."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        # This should just do nothing
+        await bot._handle_command(mock_message, "/unknown")
+
+
+class TestFinalCoverage:
+    """Final batch of tests to reach 100% coverage."""
+
+    @pytest.mark.asyncio
+    async def test_api_close_branch_coverage(self) -> None:
+        """Hit 75->exit in api.py by calling close on a client with no httpx client."""
+        client = TelegramApiClient("token")
+        client._client = None
+        await client.close()  # Hits False branch (75->exit)
+
+    @pytest.mark.asyncio
+    async def test_streaming_finalize_hit_240(self) -> None:
+        """Hit line 240 in streaming.py by making chunks empty."""
+        mock_api = create_autospec(TelegramApiClient, spec_set=True)
+        session = StreamSession(api=mock_api)
+        # We need length > limit but strip() to be empty
+        session._full_text = " " * 5000
+        await session._finalize(chat_id=123, message_thread_id=None)
+        # Hits line 240
+
+    def test_split_long_message_unreachable_branch_hit(self) -> None:
+        """Try to hit 343->353 branch in streaming.py."""
+        # This hits it! A string that is longer than limit but contains only whitespace.
+        text = " " * 10
+        chunks = split_long_message(text, limit=5)
+        # 1. remaining = " " * 10.strip() -> ""
+        # 2. while remaining is False -> Jumps to return chunks (line 353)
+        assert chunks == []

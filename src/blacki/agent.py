@@ -21,7 +21,13 @@ from .prompt import (
     return_global_instruction,
     return_instruction_root,
 )
-from .tools import example_tool
+from .tools import (
+    browser_get_task_status,
+    browser_list_profiles,
+    browser_stop_session,
+    browser_task,
+    example_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +102,16 @@ if use_litellm:
             "OpenRouter models may not work."
         )
 
+# Build the list of tools
+agent_tools: list[Any] = [
+    example_tool,
+    browser_task,
+    browser_get_task_status,
+    browser_stop_session,
+    browser_list_profiles,
+]
+
+# Build before_tool_callback with optional telegram notifications
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
 if telegram_tool_notifications_enabled():
     logger.info("Telegram tool notifications enabled; registering before_tool callback")
@@ -108,7 +124,7 @@ root_agent = LlmAgent(
     after_agent_callback=logging_callbacks.after_agent,
     model=model,
     instruction=return_instruction_root(),
-    tools=[example_tool],
+    tools=agent_tools,
     before_model_callback=logging_callbacks.before_model,
     after_model_callback=logging_callbacks.after_model,
     before_tool_callback=before_tool_callbacks,

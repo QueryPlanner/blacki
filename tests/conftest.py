@@ -1,6 +1,6 @@
 """Shared pytest fixtures for all tests."""
 
-from collections.abc import Callable, Generator
+from collections.abc import AsyncIterator, Callable, Generator
 from contextlib import AbstractContextManager
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -416,3 +416,13 @@ def mock_print_config() -> Callable[[type], AbstractContextManager[MagicMock]]:
             yield mock
 
     return _mock_print_config
+
+
+@pytest.fixture(autouse=True)
+async def _reset_browser_use_client_cache_between_tests() -> AsyncIterator[None]:
+    """Avoid leaking the shared Browser Use client (and mocks) across tests."""
+    from blacki.tools import reset_browser_use_client_cache
+
+    await reset_browser_use_client_cache()
+    yield
+    await reset_browser_use_client_cache()

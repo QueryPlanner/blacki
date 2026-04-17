@@ -24,6 +24,7 @@ dependencies = [
     "langfuse>=3.12.0",
     "openinference-instrumentation-google-adk>=0.1.8",
     "httpx>=0.27.0,<1.0.0",
+    "browser-use-sdk>=0.1.0",
 ]
 
 [project.scripts]
@@ -111,7 +112,7 @@ omit = [
 show_missing = true
 skip_covered = false
 precision = 2
-fail_under = 90
+fail_under = 100
 
 [tool.coverage.html]
 directory = "htmlcov"
