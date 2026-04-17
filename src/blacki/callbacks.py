@@ -25,15 +25,86 @@ from .telegram.types import ParseMode
 
 logger = logging.getLogger(__name__)
 
+# Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
 _TOOL_NOTIFY_LAST: dict[str, float] = {}
-_TOOL_NOTIFY_LOCK = asyncio.Lock()
 _TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.35
+_MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
+
+# Reuse one HTTP client per bot token (narrow lock only for swap / teardown).
+_NOTIFY_CLIENT_LOCK = asyncio.Lock()
+_shared_notify_client: TelegramApiClient | None = None
+_shared_notify_token: str | None = None
+
+
+def _evict_oldest_rate_limit_entries(count: int) -> None:
+    if count <= 0 or not _TOOL_NOTIFY_LAST:
+        return
+    sorted_keys = sorted(_TOOL_NOTIFY_LAST, key=lambda key: _TOOL_NOTIFY_LAST[key])
+    for key in sorted_keys[:count]:
+        del _TOOL_NOTIFY_LAST[key]
+
+
+def _rate_limit_allows_notification(chat_key: str, now: float) -> bool:
+    last_sent = _TOOL_NOTIFY_LAST.get(chat_key, 0.0)
+    if now - last_sent < _TOOL_NOTIFY_MIN_INTERVAL_SEC:
+        return False
+    map_is_full = (
+        len(_TOOL_NOTIFY_LAST) >= _MAX_TOOL_NOTIFY_RATE_ENTRIES
+        and chat_key not in _TOOL_NOTIFY_LAST
+    )
+    if map_is_full:
+        evict_count = max(1, _MAX_TOOL_NOTIFY_RATE_ENTRIES // 8)
+        _evict_oldest_rate_limit_entries(evict_count)
+    _TOOL_NOTIFY_LAST[chat_key] = now
+    return True
+
+
+def _schedule_shared_notify_client_close_for_tests() -> None:
+    """Drop shared client refs; best-effort async close when a loop is running."""
+    global _shared_notify_client, _shared_notify_token
+    client = _shared_notify_client
+    _shared_notify_client = None
+    _shared_notify_token = None
+    if client is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _close_wrapper() -> None:
+        try:
+            await client.close()
+        except Exception:
+            logger.debug(
+                "Telegram notify client close failed after test reset",
+                exc_info=True,
+            )
+
+    try:
+        loop.create_task(_close_wrapper())
+    except RuntimeError:
+        return
+
+
+async def _shared_telegram_notify_client(token: str) -> TelegramApiClient:
+    """Return a shared ``TelegramApiClient`` for this bot token (create or swap)."""
+    global _shared_notify_client, _shared_notify_token
+    async with _NOTIFY_CLIENT_LOCK:
+        if _shared_notify_client is not None and _shared_notify_token == token:
+            return _shared_notify_client
+        if _shared_notify_client is not None:
+            await _shared_notify_client.close()
+        _shared_notify_client = TelegramApiClient(token)
+        _shared_notify_token = token
+        return _shared_notify_client
 
 
 def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
     """Clear per-chat rate limit state and env lookup cache (tests only)."""
     _TOOL_NOTIFY_LAST.clear()
     _telegram_tool_notifications_enabled_impl.cache_clear()
+    _schedule_shared_notify_client_close_for_tests()
 
 
 @functools.lru_cache(maxsize=32)
@@ -107,18 +178,14 @@ async def notify_telegram_before_tool(
     thread_id = _parse_optional_int(tool_context.state.get("telegram_thread_id"))
 
     chat_key = str(chat_id)
-    async with _TOOL_NOTIFY_LOCK:
-        now = time.monotonic()
-        last_sent = _TOOL_NOTIFY_LAST.get(chat_key, 0.0)
-        elapsed = now - last_sent
-        if elapsed < _TOOL_NOTIFY_MIN_INTERVAL_SEC:
-            logger.debug(
-                "Skipping Telegram tool notify (rate limit) chat_id=%s tool=%s",
-                chat_id,
-                tool.name,
-            )
-            return None
-        _TOOL_NOTIFY_LAST[chat_key] = now
+    now = time.monotonic()
+    if not _rate_limit_allows_notification(chat_key, now):
+        logger.debug(
+            "Skipping Telegram tool notify (rate limit) chat_id=%s tool=%s",
+            chat_id,
+            tool.name,
+        )
+        return None
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -128,14 +195,14 @@ async def notify_telegram_before_tool(
     text = f"🔧 Using tool: *{escaped_name}*"
 
     try:
-        async with TelegramApiClient(token) as client:
-            await client.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=thread_id,
-                disable_notification=True,
-            )
+        client = await _shared_telegram_notify_client(token)
+        await client.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            message_thread_id=thread_id,
+            disable_notification=True,
+        )
     except TelegramApiError as exc:
         logger.warning(
             "Telegram tool notification failed for tool=%s: %s",
