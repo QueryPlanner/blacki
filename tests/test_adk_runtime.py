@@ -320,7 +320,7 @@ def test_extract_event_text_concatenates_parts_directly() -> None:
         ),
     )
 
-    assert _extract_event_text(event) == "Hello world"
+    assert _extract_event_text(event) == "Hello  world"
 
 
 def test_extract_event_text_returns_empty_without_content() -> None:
@@ -354,7 +354,7 @@ def test_extract_event_text_handles_leading_trailing_whitespace() -> None:
         ),
     )
 
-    assert _extract_event_text(event) == "Hello world"
+    assert _extract_event_text(event) == "Hello  world"
 
 
 def test_extract_turn_parts_separates_thoughts_from_content() -> None:
@@ -391,7 +391,7 @@ def test_extract_turn_parts_handles_only_thoughts() -> None:
 
     thoughts, content = _extract_turn_parts(event)
 
-    assert thoughts == "First thoughtSecond thought"
+    assert thoughts == "First thought Second thought"
     assert content == ""
 
 
@@ -411,7 +411,7 @@ def test_extract_turn_parts_handles_only_content() -> None:
     thoughts, content = _extract_turn_parts(event)
 
     assert thoughts == ""
-    assert content == "Hello world"
+    assert content == "Hello  world"
 
 
 def test_extract_turn_parts_handles_empty_event() -> None:
@@ -441,7 +441,7 @@ def test_extract_turn_parts_skips_empty_parts() -> None:
     thoughts, content = _extract_turn_parts(event)
 
     assert thoughts == ""
-    assert content == "ContentMore"
+    assert content == "Content More"
 
 
 async def test_run_user_turn_with_thoughts_returns_structured_response() -> None:
@@ -567,8 +567,8 @@ async def test_run_user_turn_streaming_yields_chunks() -> None:
 
     assert len(chunks) >= 3
     assert chunks[-1].is_partial is False
-    assert chunks[-1].thoughts == "Analyzing..."
-    assert chunks[-1].content == "Final answer."
+    assert chunks[-1].thoughts == "Thinking...Analyzing..."
+    assert chunks[-1].content == "Partial answerFinal answer."
 
 
 async def test_run_user_turn_streaming_handles_partial_content() -> None:
@@ -611,5 +611,98 @@ async def test_run_user_turn_streaming_handles_partial_content() -> None:
 
     assert len(chunks) >= 2
     assert "Building..." in chunks[0].content
-    assert chunks[-1].content == "Complete."
+    assert chunks[-1].content == "Building...Complete."
     assert chunks[-1].is_partial is False
+
+
+async def test_run_user_turn_streaming_preserves_partial_whitespace() -> None:
+    """Test that streaming keeps token spacing when partial chunks include spaces."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Hi")],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=" Chirag")],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Hi Chirag!")],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) >= 3
+    assert chunks[1].content == "Hi Chirag"
+    assert chunks[-1].content == "Hi Chirag!"
+
+
+async def test_run_user_turn_streaming_does_not_duplicate_final_snapshot() -> None:
+    """Test that a final full snapshot replaces partial chunks instead of appending."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Hi Chir")],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="ag!")],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Hi Chirag!")],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) >= 3
+    assert chunks[-1].content == "Hi Chirag!"

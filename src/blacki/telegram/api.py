@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
 TELEGRAM_API_TIMEOUT = 30.0
+LONG_POLL_TIMEOUT_BUFFER_SEC = 5.0
 
 
 class TelegramApiError(Exception):
@@ -83,6 +84,8 @@ class TelegramApiClient:
         self,
         method: str,
         params: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> Any:
         """Make an API request and return the result.
 
@@ -100,7 +103,8 @@ class TelegramApiClient:
         client = await self._ensure_client()
         url = self._build_url(method)
 
-        response = await client.post(url, json=params)
+        request_timeout = self.timeout if timeout is None else timeout
+        response = await client.post(url, json=params, timeout=request_timeout)
 
         if response.status_code >= 400:
             try:
@@ -166,7 +170,18 @@ class TelegramApiClient:
         if allowed_updates is not None:
             params["allowed_updates"] = allowed_updates
 
-        result = await self._request("getUpdates", params)
+        request_timeout = self.timeout
+        if timeout > 0:
+            request_timeout = max(
+                self.timeout,
+                float(timeout) + LONG_POLL_TIMEOUT_BUFFER_SEC,
+            )
+
+        result = await self._request(
+            "getUpdates",
+            params,
+            timeout=request_timeout,
+        )
         return [Update.model_validate(u) for u in result]
 
     async def send_message(
@@ -220,12 +235,14 @@ class TelegramApiClient:
         """Send or update a streaming draft message.
 
         This method (added in Bot API 9.5, March 2026) enables real-time
-        message streaming. Each call with the same draft_id updates the
-        existing draft message. When the stream is complete, the draft
-        automatically converts to a regular message.
+        message streaming previews in private chats. Each call with the same
+        draft_id updates the existing draft message.
+
+        WARNING: Draft messages are temporary and may not persist reliably as
+        final messages. For stable, persisted final messages, use sendMessage
+        + editMessageText instead.
 
         Note: sendMessageDraft is only available for private chats.
-        For groups/supergroups/channels, use editMessageText-based streaming.
 
         Args:
             chat_id: Unique identifier for the target chat or username.
@@ -235,7 +252,7 @@ class TelegramApiClient:
             parse_mode: Mode for parsing entities in the message text.
 
         Returns:
-            The draft Message object.
+            The draft Message object, or True if the response was a boolean.
         """
         params: dict[str, Any] = {
             "chat_id": chat_id,

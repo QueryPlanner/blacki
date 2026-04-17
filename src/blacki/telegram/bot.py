@@ -1,21 +1,16 @@
-"""Telegram bot client backed by the shared ADK runtime.
-
-This module implements a Telegram bot using direct HTTP calls to the
-Telegram Bot API (version 9.5+) with streaming support via sendMessageDraft
-for private chats and editMessageText for groups/supergroups.
-"""
+"""Telegram bot client backed by the shared ADK runtime."""
 
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk
+from blacki.adk_runtime import AdkRuntime, SessionLocator
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
-from .streaming import StreamSession
+from .formatting import format_for_telegram
+from .streaming import split_long_message
 from .types import BotCommand, ChatType, Message, ParseMode, Update
 
 logger = logging.getLogger(__name__)
@@ -33,11 +28,7 @@ class TelegramSessionIdentity:
 
 
 class TelegramBot:
-    """Telegram bot client that streams ADK responses.
-
-    Uses sendMessageDraft for private chats and editMessageText for
-    groups/supergroups/channels.
-    """
+    """Telegram bot client that sends typing indicators and final replies."""
 
     def __init__(
         self,
@@ -252,7 +243,7 @@ class TelegramBot:
         message_thread_id: int | None,
         user_message: str,
     ) -> None:
-        """Handle a regular text message with streaming response."""
+        """Handle a regular text message with typing + final response."""
         session_identity = self._build_session_identity(
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
@@ -261,28 +252,25 @@ class TelegramBot:
         logger.info("Received message from chat %s: %s...", chat_id, user_message[:50])
 
         try:
+            del chat_type
             await self.api.send_chat_action(chat_id=chat_id, action="typing")
 
-            async def get_chunks() -> AsyncIterator[StreamChunk]:
-                async for chunk in self.runtime.run_user_turn_streaming(
-                    locator=SessionLocator(
-                        user_id=session_identity.user_id,
-                        session_id_prefix=session_identity.session_id_prefix,
-                    ),
-                    message_text=user_message,
-                    state=self._build_session_state(
-                        chat_id=str(chat_id),
-                        message_thread_id=message_thread_id,
-                        conversation_key=session_identity.conversation_key,
-                    ),
-                ):
-                    yield chunk
-
-            session = StreamSession(api=self.api, chat_type=chat_type)
-            await session.run(
-                chunks=get_chunks(),
+            final_response = await self.runtime.run_user_turn(
+                locator=SessionLocator(
+                    user_id=session_identity.user_id,
+                    session_id_prefix=session_identity.session_id_prefix,
+                ),
+                message_text=user_message,
+                state=self._build_session_state(
+                    chat_id=str(chat_id),
+                    message_thread_id=message_thread_id,
+                    conversation_key=session_identity.conversation_key,
+                ),
+            )
+            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
+                response_text=final_response,
             )
 
             logger.info("Sent ADK response to chat %s", chat_id)
@@ -296,6 +284,28 @@ class TelegramBot:
                 chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
+    async def _send_final_response(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        response_text: str,
+    ) -> None:
+        """Send the final assistant response, splitting long messages if needed."""
+        formatted_response = format_for_telegram(response_text)
+        message_chunks = split_long_message(formatted_response)
+
+        if not message_chunks:
+            message_chunks = ["I apologize, but I couldn't generate a response\\."]
+
+        for message_chunk in message_chunks:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=message_chunk,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                message_thread_id=message_thread_id,
             )
 
     def _build_session_identity(
