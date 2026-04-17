@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from typing import Any, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +12,7 @@ from conftest import MockState, MockToolContext
 from google.adk.tools import ToolContext
 from pydantic import BaseModel
 
-from blacki.tools import browser_task, example_tool
+from blacki.tools import _serialize_browser_output, browser_task, example_tool
 
 
 class TestExampleTool:
@@ -86,6 +86,23 @@ class _SampleOutputModel(BaseModel):
     title: str
 
 
+class TestSerializeBrowserOutput:
+    """Tests for ``_serialize_browser_output`` (Browser Use result shaping)."""
+
+    def test_serializes_list_of_models(self) -> None:
+        """Lists of Pydantic models become JSON-ready dict lists."""
+        rows = [_SampleOutputModel(title="a"), _SampleOutputModel(title="b")]
+        assert _serialize_browser_output(rows) == [
+            {"title": "a"},
+            {"title": "b"},
+        ]
+
+    def test_serializes_dict_with_nested_model(self) -> None:
+        """Dict values that are models are serialized recursively."""
+        payload = {"item": _SampleOutputModel(title="x"), "n": 1}
+        assert _serialize_browser_output(payload) == {"item": {"title": "x"}, "n": 1}
+
+
 class TestBrowserTask:
     """Tests for Browser Use Cloud ``browser_task``."""
 
@@ -138,20 +155,11 @@ class TestBrowserTask:
         assert result["status"] == "error"
         assert "output_schema" in (result.get("error") or "")
 
-    @staticmethod
-    def _fake_run_coroutine(
-        mock_result: MagicMock,
-    ) -> Any:
-        async def _run() -> MagicMock:
-            return mock_result
-
-        return _run()
-
     @pytest.mark.asyncio
     async def test_browser_task_success_with_mocked_client(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Happy path: mocked ``AsyncBrowserUse`` returns a finished task."""
+        """Happy path: create task, fetch live URL, then poll for completion."""
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
         tool_context = self._tool_context()
 
@@ -166,17 +174,25 @@ class TestBrowserTask:
         mock_result.task = mock_task
         mock_result.output = '{"ok": true}'
 
+        mock_created = MagicMock()
+        mock_created.session_id = sid
+        mock_created.id = tid
+
         mock_session = MagicMock()
         mock_session.live_url = "https://live.example/session"
 
         mock_client = MagicMock()
-        mock_client.run = MagicMock(
-            side_effect=lambda *_a, **_k: self._fake_run_coroutine(mock_result)
-        )
+        mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=mock_session)
         mock_client.close = AsyncMock()
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._async_poll_output",
+                new=AsyncMock(return_value=mock_result),
+            ) as mock_poll,
+        ):
             result = await browser_task("open example.com", tool_context)
 
         assert result["status"] == "finished"
@@ -185,13 +201,19 @@ class TestBrowserTask:
         assert result["session_id"] == str(sid)
         assert result["task_id"] == str(tid)
         assert result["is_success"] is True
-        mock_client.close.assert_awaited_once()
+        mock_client.tasks.create.assert_awaited_once()
+        mock_client.sessions.get.assert_awaited_once_with(str(sid))
+        mock_poll.assert_awaited_once_with(
+            mock_client.tasks,
+            str(tid),
+            None,
+        )
 
     @pytest.mark.asyncio
-    async def test_browser_task_passes_json_schema_to_run(
+    async def test_browser_task_passes_json_schema_to_create(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Dict ``output_schema`` should be sent as ``structured_output`` JSON."""
+        """Dict ``output_schema`` should be sent as ``structured_output`` on create."""
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
         tool_context = self._tool_context()
 
@@ -207,29 +229,37 @@ class TestBrowserTask:
         mock_result.task = mock_task
         mock_result.output = '{"x": 1}'
 
+        mock_created = MagicMock()
+        mock_created.session_id = sid
+        mock_created.id = tid
+
         mock_client = MagicMock()
-        mock_client.run = MagicMock(
-            side_effect=lambda *_a, **_k: self._fake_run_coroutine(mock_result)
-        )
+        mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
         mock_client.close = AsyncMock()
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._async_poll_output",
+                new=AsyncMock(return_value=mock_result),
+            ),
+        ):
             await browser_task(
                 "extract x",
                 tool_context,
                 output_schema=schema,
             )
 
-        _args, kwargs = mock_client.run.call_args
+        _args, kwargs = mock_client.tasks.create.call_args
         assert kwargs.get("structured_output") is not None
         assert "integer" in kwargs["structured_output"]
 
     @pytest.mark.asyncio
-    async def test_browser_task_passes_pydantic_model_to_run(
+    async def test_browser_task_passes_pydantic_schema_to_poll(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Pydantic model ``output_schema`` uses typed ``output_schema=`` on run."""
+        """Pydantic model is passed to the poll step for typed output parsing."""
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
         tool_context = self._tool_context()
 
@@ -244,20 +274,34 @@ class TestBrowserTask:
         mock_result.task = mock_task
         mock_result.output = _SampleOutputModel(title="hi")
 
+        mock_created = MagicMock()
+        mock_created.session_id = sid
+        mock_created.id = tid
+
         mock_client = MagicMock()
-        mock_client.run = MagicMock(
-            side_effect=lambda *_a, **_k: self._fake_run_coroutine(mock_result)
-        )
+        mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
         mock_client.close = AsyncMock()
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._async_poll_output",
+                new=AsyncMock(return_value=mock_result),
+            ) as mock_poll,
+        ):
             result = await browser_task(
                 "get title",
                 tool_context,
                 output_schema=_SampleOutputModel,
             )
 
-        _args, kwargs = mock_client.run.call_args
-        assert kwargs.get("output_schema") is _SampleOutputModel
+        _args, kwargs = mock_client.tasks.create.call_args
+        assert "structured_output" in kwargs
+        assert _SampleOutputModel.__name__ in kwargs["structured_output"]
+        mock_poll.assert_awaited_once_with(
+            mock_client.tasks,
+            str(tid),
+            _SampleOutputModel,
+        )
         assert result["output"] == {"title": "hi"}

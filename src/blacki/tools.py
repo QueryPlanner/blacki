@@ -2,18 +2,61 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from typing import Any
 
 from browser_use_sdk import AsyncBrowserUse  # type: ignore[import-untyped]
+from browser_use_sdk.v2.helpers import (  # type: ignore[import-untyped]
+    _async_poll_output,
+)
 from google.adk.tools import ToolContext
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 _BROWSER_USE_DEFAULT_LLM = "browser-use-llm"
+
+_browser_use_lock = asyncio.Lock()
+_browser_use_client: AsyncBrowserUse | None = None
+_browser_use_api_key: str | None = None
+
+
+async def reset_browser_use_client_cache() -> None:
+    """Close and clear the shared Browser Use client.
+
+    Used between tests and if the API key changes, so connection pools are not
+    leaked and mocked clients are not reused across pytest cases.
+    """
+    global _browser_use_client, _browser_use_api_key
+    async with _browser_use_lock:
+        if _browser_use_client is not None:
+            try:
+                await _browser_use_client.close()
+            except Exception:
+                logger.exception("Error while closing shared Browser Use client")
+        _browser_use_client = None
+        _browser_use_api_key = None
+
+
+async def _get_shared_browser_use_client(api_key: str) -> AsyncBrowserUse:
+    """Return a process-wide ``AsyncBrowserUse`` for the given API key."""
+    global _browser_use_client, _browser_use_api_key
+    async with _browser_use_lock:
+        if _browser_use_client is not None and _browser_use_api_key == api_key:
+            return _browser_use_client
+        if _browser_use_client is not None:
+            try:
+                await _browser_use_client.close()
+            except Exception:
+                logger.exception(
+                    "Error closing Browser Use client before API key rotation"
+                )
+        _browser_use_client = AsyncBrowserUse(api_key=api_key)
+        _browser_use_api_key = api_key
+        return _browser_use_client
 
 
 def _serialize_browser_output(output: Any) -> Any:
@@ -22,6 +65,10 @@ def _serialize_browser_output(output: Any) -> Any:
         return None
     if isinstance(output, BaseModel):
         return output.model_dump(mode="json")
+    if isinstance(output, (list, tuple)):
+        return [_serialize_browser_output(item) for item in output]
+    if isinstance(output, dict):
+        return {key: _serialize_browser_output(value) for key, value in output.items()}
     if isinstance(output, str):
         try:
             return json.loads(output)
@@ -76,17 +123,19 @@ async def browser_task(
             "session_id": None,
         }
 
-    run_kwargs: dict[str, Any] = {
+    create_kwargs: dict[str, Any] = {
         "llm": _BROWSER_USE_DEFAULT_LLM,
         "keepAlive": False,
     }
     pydantic_schema: type[BaseModel] | None = None
     if output_schema is not None:
         if isinstance(output_schema, dict):
-            run_kwargs["structured_output"] = json.dumps(output_schema)
-            pydantic_schema = None
+            create_kwargs["structured_output"] = json.dumps(output_schema)
         elif isinstance(output_schema, type) and issubclass(output_schema, BaseModel):
             pydantic_schema = output_schema
+            create_kwargs["structured_output"] = json.dumps(
+                output_schema.model_json_schema()
+            )
         else:
             return {
                 "status": "error",
@@ -100,21 +149,11 @@ async def browser_task(
                 "session_id": None,
             }
 
-    client: AsyncBrowserUse | None = None
     try:
-        client = AsyncBrowserUse(api_key=api_key)
-        if pydantic_schema is not None:
-            run_handle = client.run(
-                stripped_task,
-                output_schema=pydantic_schema,
-                **run_kwargs,
-            )
-        else:
-            run_handle = client.run(stripped_task, **run_kwargs)
-        task_result = await run_handle
-        session_id_str = str(task_result.task.session_id)
-        task_id_str = str(task_result.task.id)
-        terminal_status = task_result.task.status.value
+        client = await _get_shared_browser_use_client(api_key)
+        created = await client.tasks.create(stripped_task, **create_kwargs)
+        session_id_str = str(created.session_id)
+        task_id_str = str(created.id)
 
         live_preview_url: str | None = None
         try:
@@ -125,6 +164,13 @@ async def browser_task(
                 "Failed to load Browser Use session for live URL (session_id=%s)",
                 session_id_str,
             )
+
+        task_result = await _async_poll_output(
+            client.tasks,
+            task_id_str,
+            pydantic_schema,
+        )
+        terminal_status = task_result.task.status.value
 
         return {
             "status": terminal_status,
@@ -144,9 +190,6 @@ async def browser_task(
             "task_id": None,
             "session_id": None,
         }
-    finally:
-        if client is not None:
-            await client.close()
 
 
 def example_tool(
