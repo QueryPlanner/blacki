@@ -2,9 +2,11 @@
 
 import inspect
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService, Session
@@ -26,6 +28,15 @@ class TurnResponse:
 
     thoughts: str
     content: str
+
+
+@dataclass(slots=True, frozen=True)
+class StreamChunk:
+    """A streaming chunk from ADK with partial or complete thoughts/content."""
+
+    thoughts: str
+    content: str
+    is_partial: bool = True
 
 
 def build_session_service_uri(env: ServerEnv) -> str | None:
@@ -199,6 +210,84 @@ class AdkRuntime:
 
         return TurnResponse(thoughts=final_thoughts, content=final_content)
 
+    async def run_user_turn_streaming(
+        self,
+        *,
+        locator: SessionLocator,
+        message_text: str,
+        state: dict[str, Any] | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Yield streaming chunks as ADK events arrive.
+
+        The final chunk has is_partial=False, indicating the stream is complete.
+
+        Note: This method is implemented and tested but not yet integrated into
+        the Telegram bot. It is available for future streaming support.
+        """
+        session = await self.get_or_create_session(locator=locator, state=state)
+        new_message = types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=message_text)],
+        )
+
+        accumulated_thoughts: list[str] = []
+        accumulated_content: list[str] = []
+        partial_thoughts = ""
+        partial_content = ""
+
+        streaming_config = RunConfig(streaming_mode=StreamingMode.SSE)
+
+        async for event in self.runner.run_async(
+            user_id=locator.user_id,
+            session_id=session.id,
+            new_message=new_message,
+            run_config=streaming_config,
+        ):
+            self._raise_on_event_error(event)
+
+            event_thoughts, event_content = _extract_stream_turn_parts(event)
+            if event_thoughts:
+                if event.partial:
+                    partial_thoughts = _merge_stream_fragment(
+                        partial_thoughts,
+                        event_thoughts,
+                    )
+                else:
+                    accumulated_thoughts.append(
+                        _merge_stream_fragment(partial_thoughts, event_thoughts)
+                    )
+                    partial_thoughts = ""
+            if event_content:
+                if event.partial:
+                    partial_content = _merge_stream_fragment(
+                        partial_content,
+                        event_content,
+                    )
+                else:
+                    accumulated_content.append(
+                        _merge_stream_fragment(partial_content, event_content)
+                    )
+                    partial_content = ""
+
+            current_thoughts = "".join(accumulated_thoughts) + partial_thoughts
+            current_content = "".join(accumulated_content) + partial_content
+
+            if current_thoughts or current_content:
+                yield StreamChunk(
+                    thoughts=current_thoughts,
+                    content=current_content,
+                    is_partial=True,
+                )
+
+        final_thoughts = "".join(accumulated_thoughts) or partial_thoughts
+        final_content = "".join(accumulated_content) or partial_content
+
+        yield StreamChunk(
+            thoughts=final_thoughts,
+            content=final_content,
+            is_partial=False,
+        )
+
     async def close(self) -> None:
         """Close the underlying session service when supported."""
         close_method = getattr(self.session_service, "close", None)
@@ -304,6 +393,31 @@ def _extract_session_version(*, session_id: str, session_id_prefix: str) -> int:
     return int(version_text)
 
 
+_PUNCTUATION_START = frozenset(".,!?;:'\"-–—…)]}©®™")
+
+
+def _join_token(accumulated: str, token: str) -> str:
+    """Join a token to accumulated text with smart spacing.
+
+    Adds a space before the token unless it starts with punctuation.
+    """
+    if not token:
+        return accumulated
+    if not accumulated:
+        return token
+    if token[0] in _PUNCTUATION_START:
+        return accumulated + token
+    return accumulated + " " + token
+
+
+def _join_text_parts(parts: list[str]) -> str:
+    """Join text parts with smart spacing."""
+    result = ""
+    for part in parts:
+        result = _join_token(result, part)
+    return result
+
+
 def _extract_event_text(event: Event) -> str:
     """Extract all text from an event (backward compatibility helper)."""
     thoughts, content = _extract_turn_parts(event)
@@ -331,4 +445,45 @@ def _extract_turn_parts(event: Event) -> tuple[str, str]:
         else:
             content.append(part.text)
 
-    return "".join(thoughts).strip(), "".join(content).strip()
+    return _join_text_parts(thoughts).strip(), _join_text_parts(content).strip()
+
+
+def _extract_stream_turn_parts(event: Event) -> tuple[str, str]:
+    """Extract streaming thoughts/content while preserving exact token spacing."""
+    if event.content is None or not event.content.parts:
+        return "", ""
+
+    thoughts: list[str] = []
+    content: list[str] = []
+
+    for part in event.content.parts:
+        if not part.text:
+            continue
+        if part.thought:
+            thoughts.append(part.text)
+        else:
+            content.append(part.text)
+
+    return "".join(thoughts), "".join(content)
+
+
+def _merge_stream_fragment(existing_text: str, incoming_text: str) -> str:
+    """Merge streaming fragments that may be deltas or full snapshots."""
+    if not existing_text:
+        return incoming_text
+
+    if not incoming_text:
+        return existing_text
+
+    if incoming_text.startswith(existing_text):
+        return incoming_text
+
+    if existing_text.startswith(incoming_text):
+        return existing_text
+
+    max_overlap = min(len(existing_text), len(incoming_text))
+    for overlap_size in range(max_overlap, 0, -1):
+        if existing_text.endswith(incoming_text[:overlap_size]):
+            return existing_text + incoming_text[overlap_size:]
+
+    return existing_text + incoming_text
