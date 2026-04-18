@@ -14,24 +14,14 @@ from pydantic import BaseModel
 
 from blacki.tools import (
     _get_shared_browser_use_client,
-    _pending_schemas,
-    _pending_tasks,
     _poll_task_output,
     _serialize_browser_output,
-    browser_get_task_status,
     browser_list_profiles,
     browser_stop_session,
     browser_task,
     example_tool,
     reset_browser_use_client_cache,
 )
-
-
-@pytest.fixture(autouse=True)
-def clear_pending_tasks() -> None:
-    """Clear pending task state before each test."""
-    _pending_tasks.clear()
-    _pending_schemas.clear()
 
 
 class TestExampleTool:
@@ -456,10 +446,10 @@ class TestBrowserTask:
         assert "output_schema" in (result.get("error") or "")
 
     @pytest.mark.asyncio
-    async def test_browser_task_returns_pending_immediately(
+    async def test_browser_task_returns_finished_result(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """browser_task should return immediately with pending status."""
+        """browser_task should poll until completion and return final result."""
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
         tool_context = self._tool_context()
 
@@ -470,24 +460,38 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+        mock_task.output = '{"result": "success"}'
+
         mock_session = MagicMock()
         mock_session.live_url = "https://live.example/session"
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = '{"result": "success"}'
 
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=mock_session)
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._poll_task_output",
+                new=AsyncMock(return_value=mock_result),
+            ) as mock_poll,
+        ):
             result = await browser_task("open example.com", tool_context)
 
-        assert result["status"] == "pending"
+        assert result["status"] == "finished"
         assert result["task_id"] == str(tid)
         assert result["session_id"] == str(sid)
         assert result["live_preview_url"] == "https://live.example/session"
-        assert "browser_get_task_status" in result.get("message", "")
-
-        assert str(tid) in _pending_tasks
-        assert _pending_tasks[str(tid)]["session_id"] == str(sid)
+        assert result["is_success"] is True
+        assert result["output"] == {"result": "success"}
+        mock_poll.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_browser_task_passes_keep_alive(
@@ -504,11 +508,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task("open example.com", tool_context, keep_alive=True)
 
         _args, kwargs = mock_client.tasks.create.call_args
@@ -529,11 +544,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task("continue task", tool_context, session_id=str(sid))
 
         _args, kwargs = mock_client.tasks.create.call_args
@@ -555,11 +581,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task("login to site", tool_context, profile_id=profile_uuid)
 
         _args, kwargs = mock_client.tasks.create.call_args
@@ -582,11 +619,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task(
                 "open example.com", tool_context, model="claude-sonnet-4.6"
             )
@@ -610,11 +658,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task("extract x", tool_context, output_schema=schema)
 
         _args, kwargs = mock_client.tasks.create.call_args
@@ -622,10 +681,10 @@ class TestBrowserTask:
         assert "integer" in kwargs["structured_output"]
 
     @pytest.mark.asyncio
-    async def test_browser_task_stores_pydantic_schema(
+    async def test_browser_task_passes_pydantic_schema_to_poll(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Pydantic model should be stored in _pending_schemas for later polling."""
+        """Pydantic model should be passed to _poll_task_output for typed output."""
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
         tool_context = self._tool_context()
 
@@ -636,19 +695,33 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = _SampleOutputModel(title="test-title")
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._poll_task_output", return_value=mock_result
+            ) as mock_poll,
+        ):
             await browser_task(
                 "get title",
                 tool_context,
                 output_schema=_SampleOutputModel,
             )
 
-        assert str(tid) in _pending_schemas
-        assert _pending_schemas[str(tid)] == _SampleOutputModel
+        mock_poll.assert_awaited_once()
+        call_args = mock_poll.call_args
+        assert call_args[0][2] == _SampleOutputModel
 
     @pytest.mark.asyncio
     async def test_browser_task_passes_start_url(
@@ -665,11 +738,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task(
                 "open example.com",
                 tool_context,
@@ -694,11 +778,22 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             await browser_task("open example.com", tool_context, max_steps=10)
 
         _args, kwargs = mock_client.tasks.create.call_args
@@ -720,16 +815,60 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
+        mock_task = MagicMock()
+        mock_task.status.value = "finished"
+        mock_task.is_success = True
+
+        mock_result = MagicMock()
+        mock_result.task = mock_task
+        mock_result.output = None
+
         mock_client = MagicMock()
         mock_client.tasks.create = AsyncMock(return_value=mock_created)
         mock_client.sessions.get = AsyncMock(side_effect=RuntimeError("session error"))
 
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
+        ):
             result = await browser_task("open example.com", tool_context)
 
-        assert result["status"] == "pending"
+        assert result["status"] == "finished"
         assert result["live_preview_url"] is None
         assert "Failed to load Browser Use session" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_browser_task_handles_poll_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Timeout during polling should return timeout status."""
+        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
+        caplog.set_level(logging.DEBUG)
+        tool_context = self._tool_context()
+
+        sid = uuid.uuid4()
+        tid = uuid.uuid4()
+
+        mock_created = MagicMock()
+        mock_created.session_id = sid
+        mock_created.id = tid
+
+        mock_client = MagicMock()
+        mock_client.tasks.create = AsyncMock(return_value=mock_created)
+        mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
+
+        with (
+            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
+            patch(
+                "blacki.tools._poll_task_output",
+                side_effect=TimeoutError("poll timeout"),
+            ),
+        ):
+            result = await browser_task("open example.com", tool_context, timeout=10)
+
+        assert result["status"] == "timeout"
+        assert "timed out" in result.get("error", "")
+        assert "Browser task timed out" in caplog.text
 
     @pytest.mark.asyncio
     async def test_browser_task_handles_create_exception(
@@ -748,7 +887,7 @@ class TestBrowserTask:
 
         assert result["status"] == "error"
         assert "create error" in result.get("error", "")
-        assert "Browser Use Cloud task creation failed" in caplog.text
+        assert "Browser Use Cloud task failed" in caplog.text
 
     @pytest.mark.asyncio
     async def test_browser_task_passes_proxy_country(
@@ -765,243 +904,29 @@ class TestBrowserTask:
         mock_created.session_id = sid
         mock_created.id = tid
 
-        mock_client = MagicMock()
-        mock_client.tasks.create = AsyncMock(return_value=mock_created)
-        mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
-        mock_client.close = AsyncMock()
-
-        with patch("blacki.tools.AsyncBrowserUse", return_value=mock_client):
-            await browser_task("open example.com", tool_context, proxy_country="us")
-
-        _args, kwargs = mock_client.tasks.create.call_args
-        session_settings = kwargs.get("session_settings")
-        assert session_settings is not None
-        assert session_settings.proxy_country_code.value == "us"
-
-
-class TestBrowserGetTaskStatus:
-    """Tests for ``browser_get_task_status``."""
-
-    @staticmethod
-    def _tool_context() -> ToolContext:
-        return cast(ToolContext, MockToolContext(state=MockState({})))
-
-    @pytest.mark.asyncio
-    async def test_get_status_missing_api_key(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without API key, return error."""
-        monkeypatch.delenv("BROWSER_USE_API_KEY", raising=False)
-        tool_context = self._tool_context()
-
-        result = await browser_get_task_status("task-123", tool_context)
-
-        assert result["status"] == "error"
-        assert "BROWSER_USE_API_KEY" in (result.get("error") or "")
-
-    @pytest.mark.asyncio
-    async def test_get_status_unknown_task(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Unknown task_id should return error."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        tool_context = self._tool_context()
-
-        result = await browser_get_task_status("unknown-task-id", tool_context)
-
-        assert result["status"] == "error"
-        assert "Unknown task_id" in (result.get("error") or "")
-
-    @pytest.mark.asyncio
-    async def test_get_status_returns_running_on_timeout(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Timeout during poll should return running status."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        tool_context = self._tool_context()
-
-        tid = str(uuid.uuid4())
-        _pending_tasks[tid] = {
-            "api_key": "bu_test",
-            "session_id": "session-123",
-            "live_preview_url": "https://live.example/session",
-            "status": "pending",
-        }
-        _pending_schemas[tid] = None
-
-        mock_client = MagicMock()
-        mock_client.tasks.create = AsyncMock()
-
-        with (
-            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
-            patch(
-                "blacki.tools._poll_task_output",
-                side_effect=TimeoutError("poll timeout"),
-            ),
-        ):
-            result = await browser_get_task_status(tid, tool_context)
-
-        assert result["status"] == "running"
-        assert result["task_id"] == tid
-        assert result["output"] is None
-        assert "still running" in result.get("message", "").lower()
-
-    @pytest.mark.asyncio
-    async def test_get_status_returns_finished_result(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Finished task should return output and clean up pending state."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        tool_context = self._tool_context()
-
-        tid = str(uuid.uuid4())
-        _pending_tasks[tid] = {
-            "api_key": "bu_test",
-            "session_id": "session-123",
-            "live_preview_url": "https://live.example/session",
-            "status": "pending",
-        }
-        _pending_schemas[tid] = None
-
         mock_task = MagicMock()
         mock_task.status.value = "finished"
         mock_task.is_success = True
-
-        mock_result = MagicMock()
-        mock_result.task = mock_task
-        mock_result.output = '{"ok": true}'
-
-        mock_client = MagicMock()
-
-        with (
-            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
-            patch(
-                "blacki.tools._poll_task_output",
-                new=AsyncMock(return_value=mock_result),
-            ),
-        ):
-            result = await browser_get_task_status(tid, tool_context)
-
-        assert result["status"] == "finished"
-        assert result["output"] == {"ok": True}
-        assert result["is_success"] is True
-        assert tid not in _pending_tasks
-        assert tid not in _pending_schemas
-
-    @pytest.mark.asyncio
-    async def test_get_status_uses_stored_schema(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Poll should use stored Pydantic schema for typed output."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        tool_context = self._tool_context()
-
-        tid = str(uuid.uuid4())
-        _pending_tasks[tid] = {
-            "api_key": "bu_test",
-            "session_id": "session-123",
-            "live_preview_url": None,
-            "status": "pending",
-        }
-        _pending_schemas[tid] = _SampleOutputModel
-
-        mock_task = MagicMock()
-        mock_task.status.value = "finished"
-        mock_task.is_success = True
-
-        mock_result = MagicMock()
-        mock_result.task = mock_task
-        mock_result.output = _SampleOutputModel(title="test-title")
-
-        mock_client = MagicMock()
-
-        with (
-            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
-            patch(
-                "blacki.tools._poll_task_output",
-                new=AsyncMock(return_value=mock_result),
-            ) as mock_poll,
-        ):
-            result = await browser_get_task_status(tid, tool_context)
-
-        mock_poll.assert_awaited_once()
-        call_args = mock_poll.call_args
-        assert call_args[0][2] == _SampleOutputModel
-        assert result["output"] == {"title": "test-title"}
-
-    @pytest.mark.asyncio
-    async def test_get_status_returns_running_status_for_non_terminal(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Non-terminal status should return output as None with message."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        tool_context = self._tool_context()
-
-        tid = str(uuid.uuid4())
-        _pending_tasks[tid] = {
-            "api_key": "bu_test",
-            "session_id": "session-123",
-            "live_preview_url": None,
-            "status": "pending",
-        }
-        _pending_schemas[tid] = None
-
-        mock_task = MagicMock()
-        mock_task.status.value = "started"
-        mock_task.is_success = False
 
         mock_result = MagicMock()
         mock_result.task = mock_task
         mock_result.output = None
 
         mock_client = MagicMock()
+        mock_client.tasks.create = AsyncMock(return_value=mock_created)
+        mock_client.sessions.get = AsyncMock(return_value=MagicMock(live_url=None))
+        mock_client.close = AsyncMock()
 
         with (
             patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
-            patch(
-                "blacki.tools._poll_task_output",
-                new=AsyncMock(return_value=mock_result),
-            ),
+            patch("blacki.tools._poll_task_output", return_value=mock_result),
         ):
-            result = await browser_get_task_status(tid, tool_context)
+            await browser_task("open example.com", tool_context, proxy_country="us")
 
-        assert result["status"] == "started"
-        assert result["output"] is None
-        assert "Task is started" in result.get("message", "")
-        assert tid in _pending_tasks
-
-    @pytest.mark.asyncio
-    async def test_get_status_handles_poll_exception(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Exception during polling should return error payload."""
-        monkeypatch.setenv("BROWSER_USE_API_KEY", "bu_test")
-        caplog.set_level(logging.DEBUG)
-        tool_context = self._tool_context()
-
-        tid = str(uuid.uuid4())
-        _pending_tasks[tid] = {
-            "api_key": "bu_test",
-            "session_id": "session-123",
-            "live_preview_url": None,
-            "status": "pending",
-        }
-        _pending_schemas[tid] = None
-
-        mock_client = MagicMock()
-
-        with (
-            patch("blacki.tools.AsyncBrowserUse", return_value=mock_client),
-            patch(
-                "blacki.tools._poll_task_output",
-                new=AsyncMock(side_effect=RuntimeError("poll error")),
-            ),
-        ):
-            result = await browser_get_task_status(tid, tool_context)
-
-        assert result["status"] == "error"
-        assert "poll error" in result.get("error", "")
-        assert "Failed to get browser task status" in caplog.text
+        _args, kwargs = mock_client.tasks.create.call_args
+        session_settings = kwargs.get("session_settings")
+        assert session_settings is not None
+        assert session_settings.proxy_country_code.value == "us"
 
 
 class TestBrowserStopSession:

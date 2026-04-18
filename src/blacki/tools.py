@@ -25,9 +25,6 @@ _browser_use_api_key: str | None = None
 _brave_search_lock = asyncio.Lock()
 _brave_search_client: httpx.AsyncClient | None = None
 
-_pending_tasks: dict[str, dict[str, Any]] = {}
-_pending_schemas: dict[str, type[BaseModel] | None] = {}
-
 
 async def reset_browser_use_client_cache() -> None:
     """Close and clear the shared Browser Use client.
@@ -176,13 +173,11 @@ async def browser_task(
     start_url: str | None = None,
     max_steps: int | None = None,
     proxy_country: str | None = None,
+    timeout: int = 300,
 ) -> dict[str, Any]:
-    """Start a Browser Use Cloud agent task and return immediately.
+    """Execute a browser automation task on Browser Use Cloud.
 
-    This is a long-running tool. It creates the browser task and returns
-    immediately with a task_id. Use ``browser_get_task_status`` to poll for
-    completion and retrieve results.
-
+    Creates a browser task, polls until completion, and returns the result.
     The browser runs in the cloud with stealth features. Set
     ``BROWSER_USE_API_KEY`` (see ``.env.example``).
 
@@ -199,10 +194,11 @@ async def browser_task(
         start_url: Navigate to this URL before starting the task.
         max_steps: Maximum number of browser actions to take.
         proxy_country: Two-letter country code for geo-targeted proxy (e.g., "us").
+        timeout: Maximum time to wait for task completion in seconds (default 300).
 
     Returns:
-        Dictionary with ``status`` ("pending"), ``task_id``, ``session_id``,
-        ``live_preview_url``, and optional ``error`` field.
+        Dictionary with ``status``, ``output``, ``session_id``, ``live_preview_url``,
+        ``task_id``, ``is_success``, and optional ``error`` field.
     """
     _ = tool_context
     api_key = os.environ.get("BROWSER_USE_API_KEY", "").strip()
@@ -217,6 +213,7 @@ async def browser_task(
             "live_preview_url": None,
             "task_id": None,
             "session_id": None,
+            "is_success": False,
         }
 
     stripped_task = task.strip()
@@ -228,6 +225,7 @@ async def browser_task(
             "live_preview_url": None,
             "task_id": None,
             "session_id": None,
+            "is_success": False,
         }
 
     create_kwargs: dict[str, Any] = {
@@ -270,15 +268,19 @@ async def browser_task(
                 "live_preview_url": None,
                 "task_id": None,
                 "session_id": None,
+                "is_success": False,
             }
 
+    task_id_str: str | None = None
+    session_id_str: str | None = None
+    live_preview_url: str | None = None
     try:
         client = await _get_shared_browser_use_client(api_key)
         created = await client.tasks.create(stripped_task, **create_kwargs)
         session_id_str = str(created.session_id)
         task_id_str = str(created.id)
 
-        live_preview_url: str | None = None
+        live_preview_url = None
         try:
             session_view = await client.sessions.get(session_id_str)
             live_preview_url = session_view.live_url
@@ -288,124 +290,70 @@ async def browser_task(
                 session_id_str,
             )
 
-        _pending_tasks[task_id_str] = {
-            "api_key": api_key,
-            "session_id": session_id_str,
-            "live_preview_url": live_preview_url,
-            "status": "pending",
-        }
-        _pending_schemas[task_id_str] = pydantic_schema
+        logger.info(
+            "Browser task created: task_id=%s, session_id=%s, live_url=%s",
+            task_id_str,
+            session_id_str,
+            live_preview_url,
+        )
 
-        return {
-            "status": "pending",
+        task_result = await _poll_task_output(
+            client.tasks,
+            task_id_str,
+            pydantic_schema,
+            timeout=float(timeout),
+            interval=1.0,
+        )
+
+        terminal_status = task_result.task.status.value
+        result: dict[str, Any] = {
+            "status": terminal_status,
             "task_id": task_id_str,
             "session_id": session_id_str,
             "live_preview_url": live_preview_url,
-            "message": (
-                "Task started. Call browser_get_task_status with task_id to check "
-                "completion and get results."
-            ),
-        }
-    except Exception as exc:
-        logger.exception("Browser Use Cloud task creation failed")
-        return {
-            "status": "error",
-            "error": str(exc),
-            "output": None,
-            "live_preview_url": None,
-            "task_id": None,
-            "session_id": None,
-        }
-
-
-async def browser_get_task_status(
-    task_id: str,
-    tool_context: ToolContext,
-) -> dict[str, Any]:
-    """Check status of a browser task and get results if complete.
-
-    Call this after ``browser_task`` returns a task_id. Polls the Browser Use
-    Cloud API for task completion. Returns immediately with current status.
-
-    Args:
-        task_id: The task ID returned from ``browser_task``.
-        tool_context: ADK tool context.
-
-    Returns:
-        Dictionary with ``status`` ("pending", "running", "finished", "error"),
-        ``output`` (when finished), ``live_preview_url``, ``is_success``, and
-        optional ``error`` field.
-    """
-    _ = tool_context
-    api_key = os.environ.get("BROWSER_USE_API_KEY", "").strip()
-    if not api_key:
-        return {
-            "status": "error",
-            "error": "BROWSER_USE_API_KEY is not set.",
-            "task_id": task_id,
-        }
-
-    task_info = _pending_tasks.get(task_id)
-    if not task_info:
-        return {
-            "status": "error",
-            "error": (
-                f"Unknown task_id: {task_id}. Start a task with browser_task first."
-            ),
-            "task_id": task_id,
-        }
-
-    pydantic_schema = _pending_schemas.get(task_id)
-
-    try:
-        client = await _get_shared_browser_use_client(api_key)
-        task_result = await _poll_task_output(
-            client.tasks,
-            task_id,
-            pydantic_schema,
-            timeout=2.0,
-            interval=1.0,
-        )
-        terminal_status = task_result.task.status.value
-
-        result: dict[str, Any] = {
-            "status": terminal_status,
-            "task_id": task_id,
-            "session_id": task_info.get("session_id"),
-            "live_preview_url": task_info.get("live_preview_url"),
             "is_success": task_result.task.is_success,
+            "output": _serialize_browser_output(task_result.output),
         }
 
-        if terminal_status in ("finished", "error", "stopped"):
-            result["output"] = _serialize_browser_output(task_result.output)
-            _pending_tasks.pop(task_id, None)
-            _pending_schemas.pop(task_id, None)
-        else:
-            result["output"] = None
+        if keep_alive:
             result["message"] = (
-                f"Task is {terminal_status}. Call browser_get_task_status again to "
-                "check for completion."
+                f"Session kept alive. Use session_id={session_id_str} for follow-up "
+                f"tasks. Watch live at: {live_preview_url}"
             )
+
+        logger.info(
+            "Browser task completed: task_id=%s, status=%s, is_success=%s",
+            task_id_str,
+            terminal_status,
+            task_result.task.is_success,
+        )
 
         return result
     except TimeoutError:
+        logger.warning(
+            "Browser task timed out after %ss: task_id=%s",
+            timeout,
+            task_id_str,
+        )
         return {
-            "status": "running",
-            "task_id": task_id,
-            "session_id": task_info.get("session_id"),
-            "live_preview_url": task_info.get("live_preview_url"),
+            "status": "timeout",
+            "error": f"Task timed out after {timeout} seconds.",
             "output": None,
-            "message": (
-                "Task still running. Call browser_get_task_status again to check "
-                "for completion."
-            ),
+            "live_preview_url": live_preview_url,
+            "task_id": task_id_str,
+            "session_id": session_id_str,
+            "is_success": False,
         }
     except Exception as exc:
-        logger.exception("Failed to get browser task status")
+        logger.exception("Browser Use Cloud task failed")
         return {
             "status": "error",
             "error": str(exc),
-            "task_id": task_id,
+            "output": None,
+            "live_preview_url": live_preview_url,
+            "task_id": task_id_str,
+            "session_id": session_id_str,
+            "is_success": False,
         }
 
 
