@@ -22,7 +22,6 @@ from .prompt import (
     return_instruction_root,
 )
 from .tools import (
-    browser_get_task_status,
     browser_list_profiles,
     browser_stop_session,
     browser_task,
@@ -179,7 +178,6 @@ def _create_skill_tuples() -> list[tuple[Any, Any]]:
 agent_tools: list[Any] = [
     example_tool,
     browser_task,
-    browser_get_task_status,
     browser_stop_session,
     browser_list_profiles,
 ]
