@@ -1,5 +1,39 @@
 # Google ADK on Bare Metal
 
+## Philosophy
+
+**Blacki** is a personal assistant agent designed to run on cheap self-hosted infrastructure. The guiding principle: **keep the agent lightweight, delegate heavy lifting to managed services.**
+
+### Self-Hosted Agent, Managed Tools
+
+The agent itself runs on a $5-10/month VPS, but tools should use managed cloud services whenever possible:
+
+- **Browser automation** → Browser Use Cloud (not local Playwright/Puppeteer)
+- **Search** → Brave Search API (not self-hosted SearXNG)
+- **LLM** → OpenRouter/Google (not self-hosted Ollama)
+
+This architecture keeps the server footprint minimal while giving the agent powerful capabilities. Managed services handle:
+- Infrastructure maintenance
+- Scaling
+- Updates and security patches
+- Geographic distribution (e.g., Browser Use proxies)
+
+### Why This Matters
+
+Self-hosting everything sounds appealing, but for a personal assistant:
+- Browser automation requires headless Chrome, which consumes significant RAM/CPU
+- Search indices need constant crawling and updates
+- LLM inference needs GPU or is painfully slow
+
+By delegating to managed services, the agent stays fast, cheap, and reliable. The server can be a tiny VPS that costs less than a coffee per month.
+
+### Tool Design Principles
+
+1. **Cloud-first**: Default to managed service APIs
+2. **Minimal dependencies**: The server should run on minimal resources
+3. **Graceful degradation**: Tools should fail gracefully if API keys are missing
+4. **Stateless where possible**: Let managed services handle state
+
 ## Project Overview
 
 **Google ADK on Bare Metal** is a production-ready template designed for building and deploying AI agents using the Google Agent Development Kit (ADK) on self-hosted infrastructure. It removes cloud provider lock-in by providing a clean, performant, and observable foundation that runs on bare metal, VPS, or private clouds.
