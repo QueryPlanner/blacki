@@ -109,20 +109,29 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # Deploy script with secrets passed via environment
+          # Create .env file locally to avoid SSH quoting issues with special chars
+          # (DATABASE_URL contains & which breaks SSH command parsing)
+          cat > /tmp/deploy.env << ENVFILE
+          AGENT_NAME=${AGENT_NAME}
+          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+          ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
+          TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
+          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TELEGRAM_TOOL_NOTIFICATIONS=${TELEGRAM_TOOL_NOTIFICATIONS}
+          DATABASE_URL=${DATABASE_URL}
+          BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+          BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY}
+          NOTION_TOKEN=${NOTION_TOKEN}
+          GH_TOKEN=${GH_TOKEN}
+          ENVFILE
+          chmod 600 /tmp/deploy.env
+
+          # Copy env file to server
+          scp -o StrictHostKeyChecking=no /tmp/deploy.env "$SERVER_USER@$SERVER_HOST:/tmp/deploy.env"
+
+          # Deploy script - source env file on remote server
           ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
-            AGENT_NAME="$AGENT_NAME" \
-            OPENROUTER_API_KEY="$OPENROUTER_API_KEY" \
-            ROOT_AGENT_MODEL="$ROOT_AGENT_MODEL" \
-            TELEGRAM_ENABLED="$TELEGRAM_ENABLED" \
-            TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
-            TELEGRAM_TOOL_NOTIFICATIONS="$TELEGRAM_TOOL_NOTIFICATIONS" \
-            DATABASE_URL="$DATABASE_URL" \
-            BRAVE_SEARCH_API_KEY="$BRAVE_SEARCH_API_KEY" \
-            BROWSER_USE_API_KEY="$BROWSER_USE_API_KEY" \
-            NOTION_TOKEN="$NOTION_TOKEN" \
-            GH_TOKEN="$GH_TOKEN" \
-            bash -s << 'DEPLOY_SCRIPT'
+            "set -a && source /tmp/deploy.env && set +a && bash -s" << 'DEPLOY_SCRIPT'
           set -e
 
           # 1. Set dynamic project directory based on repository name
@@ -222,9 +231,12 @@ jobs:
           echo "=== Deployment Complete ==="
           docker compose ps
           df -h /
+
+          # 12. Cleanup temp env file
+          rm -f /tmp/deploy.env
           DEPLOY_SCRIPT
 
       - name: Cleanup SSH
         if: always()
         run: |
-          rm -f ~/.ssh/id_rsa
+          rm -f ~/.ssh/id_rsa /tmp/deploy.env
