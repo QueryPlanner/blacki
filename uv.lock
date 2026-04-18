@@ -571,6 +571,7 @@ dependencies = [
     { name = "httpx" },
     { name = "langfuse" },
     { name = "litellm" },
+    { name = "mcp" },
     { name = "openinference-instrumentation-google-adk" },
     { name = "opentelemetry-exporter-gcp-logging" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
@@ -578,6 +579,7 @@ dependencies = [
     { name = "opentelemetry-instrumentation-logging" },
     { name = "pydantic" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -589,6 +591,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
     { name = "types-grpcio" },
+    { name = "types-pyyaml" },
 ]
 
 [package.metadata]
@@ -602,6 +605,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "langfuse", specifier = ">=3.12.0" },
     { name = "litellm", specifier = ">=1.60.0" },
+    { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
     { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.8" },
     { name = "opentelemetry-exporter-gcp-logging", specifier = ">=1.9.0a0,<2.0.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.37.0" },
@@ -609,6 +613,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.58b0,<0.59" },
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -620,6 +625,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
     { name = "ruff", specifier = ">=0.12.7,<1.0.0" },
     { name = "types-grpcio", specifier = ">=1.0.0.20251009,<2.0.0.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.0,<7.0.0" },
 ]
 
 [[package]]
@@ -2834,6 +2840,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/de/93/78aa083216853c667c9412df4ef8284b2a68c6bcd2aef833f970b311f3c1/types_grpcio-1.0.0.20251009.tar.gz", hash = "sha256:a8f615ea7a47b31f10da028ab5258d4f1611fbd70719ca450fc0ab3fb9c62b63", size = 14479, upload-time = "2025-10-09T02:54:14.539Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d4/93/66d28f41b16bb4e6b611bd608ef28dffc740facec93250b30cf83138da21/types_grpcio-1.0.0.20251009-py3-none-any.whl", hash = "sha256:112ac4312a5b0a273a4c414f7f2c7668f342990d9c6ab0f647391c36331f95ed", size = 15208, upload-time = "2025-10-09T02:54:13.588Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20260408"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/73/b759b1e413c31034cc01ecdfb96b38115d0ab4db55a752a3929f0cd449fd/types_pyyaml-6.0.12.20260408.tar.gz", hash = "sha256:92a73f2b8d7f39ef392a38131f76b970f8c66e4c42b3125ae872b7c93b556307", size = 17735, upload-time = "2026-04-08T04:30:50.974Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/f0/c391068b86abb708882c6d75a08cd7d25b2c7227dab527b3a3685a3c635b/types_pyyaml-6.0.12.20260408-py3-none-any.whl", hash = "sha256:fbc42037d12159d9c801ebfcc79ebd28335a7c13b08a4cfbc6916df78fee9384", size = 20339, upload-time = "2026-04-08T04:30:50.113Z" },
 ]
 
 [[package]]
