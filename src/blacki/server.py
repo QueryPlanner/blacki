@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import asyncpg  # type: ignore[import-untyped]
 import uvicorn
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
@@ -46,6 +47,7 @@ setup_logging(log_level=env.log_level)
 
 # Telegram bot instance (initialized on startup)
 _telegram_bot = None
+_reminder_pool: asyncpg.Pool | None = None
 
 
 async def _start_telegram_bot() -> None:
@@ -76,9 +78,29 @@ async def _start_telegram_bot() -> None:
         logger.info("Telegram bot instance created")
 
         await _telegram_bot.start_polling()
+
+        await _start_reminder_scheduler()
     except Exception:
         logger.exception("Failed to start Telegram bot")
         raise
+
+
+async def _start_reminder_scheduler() -> None:
+    """Start the reminder scheduler if storage is initialized."""
+    if _reminder_pool is None:
+        logger.info("Reminder scheduler not started (no database pool)")
+        return
+
+    try:
+        from .reminders import get_scheduler
+
+        scheduler = get_scheduler()
+        if _telegram_bot is not None and _telegram_bot._api is not None:
+            scheduler.set_api(_telegram_bot._api)
+        await scheduler.start()
+        logger.info("Reminder scheduler started")
+    except Exception:
+        logger.exception("Failed to start reminder scheduler")
 
 
 async def _stop_telegram_bot() -> None:
@@ -90,6 +112,45 @@ async def _stop_telegram_bot() -> None:
             logger.info("Telegram bot stopped")
         except Exception:
             logger.exception("Error stopping Telegram bot")
+
+
+async def _init_reminder_pool(database_url: str) -> asyncpg.Pool:
+    """Initialize the Postgres pool for reminder storage."""
+    pool = await asyncpg.create_pool(
+        database_url,
+        min_size=1,
+        max_size=5,
+    )
+
+    from .reminders import init_reminder_storage
+
+    await init_reminder_storage(pool)
+    logger.info("Reminder storage initialized with Postgres pool")
+    return pool
+
+
+async def _stop_reminder_scheduler() -> None:
+    """Stop the reminder scheduler if running."""
+    try:
+        from .reminders import get_scheduler
+
+        scheduler = get_scheduler()
+        if scheduler._running:
+            await scheduler.stop()
+            logger.info("Reminder scheduler stopped")
+    except RuntimeError:
+        pass
+    except Exception:
+        logger.exception("Error stopping reminder scheduler")
+
+
+async def _close_reminder_pool() -> None:
+    """Close the reminder Postgres pool."""
+    global _reminder_pool
+    if _reminder_pool is not None:
+        await _reminder_pool.close()
+        _reminder_pool = None
+        logger.info("Reminder Postgres pool closed")
 
 
 # Use .resolve() to handle symlinks and ensure absolute path across environments
@@ -120,10 +181,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     explicitly during application teardown. Running this in the lifespan
     hook keeps the bot lifecycle aligned with the FastAPI app lifecycle.
     """
+    global _reminder_pool
+
+    if env.database_url:
+        _reminder_pool = await _init_reminder_pool(env.database_url)
+
     await _start_telegram_bot()
     try:
         yield
     finally:
+        await _stop_reminder_scheduler()
+        await _close_reminder_pool()
         await _stop_telegram_bot()
 
 

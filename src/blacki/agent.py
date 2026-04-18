@@ -193,6 +193,17 @@ if brave_search_api_key:
     except ImportError as e:
         logger.warning("Failed to load Brave Search tool: %s", e)
 
+# Add Reminder tools if database is configured
+database_url = os.getenv("DATABASE_URL", "").strip()
+if database_url:
+    try:
+        from .reminders import cancel_reminder, list_reminders, schedule_reminder
+
+        agent_tools.extend([schedule_reminder, list_reminders, cancel_reminder])
+        logger.info("Reminder tools enabled")
+    except ImportError as e:
+        logger.warning("Failed to load Reminder tools: %s", e)
+
 # Add MCP skills if available
 skill_tuples = _create_skill_tuples()
 if skill_tuples:
