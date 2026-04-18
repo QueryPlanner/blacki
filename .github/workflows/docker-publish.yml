@@ -96,6 +96,12 @@ jobs:
           ROOT_AGENT_MODEL: ${{ secrets.ROOT_AGENT_MODEL }}
           TELEGRAM_ENABLED: ${{ secrets.TELEGRAM_ENABLED }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_TOOL_NOTIFICATIONS: ${{ secrets.TELEGRAM_TOOL_NOTIFICATIONS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
+          BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -110,6 +116,12 @@ jobs:
             ROOT_AGENT_MODEL="$ROOT_AGENT_MODEL" \
             TELEGRAM_ENABLED="$TELEGRAM_ENABLED" \
             TELEGRAM_BOT_TOKEN="$TELEGRAM_BOT_TOKEN" \
+            TELEGRAM_TOOL_NOTIFICATIONS="$TELEGRAM_TOOL_NOTIFICATIONS" \
+            DATABASE_URL="$DATABASE_URL" \
+            BRAVE_SEARCH_API_KEY="$BRAVE_SEARCH_API_KEY" \
+            BROWSER_USE_API_KEY="$BROWSER_USE_API_KEY" \
+            NOTION_TOKEN="$NOTION_TOKEN" \
+            GH_TOKEN="$GH_TOKEN" \
             bash -s << 'DEPLOY_SCRIPT'
           set -e
 
@@ -163,6 +175,12 @@ jobs:
           ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
           TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
           TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+          TELEGRAM_TOOL_NOTIFICATIONS=${TELEGRAM_TOOL_NOTIFICATIONS}
+          DATABASE_URL=${DATABASE_URL}
+          BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
+          BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY}
+          NOTION_TOKEN=${NOTION_TOKEN}
+          GH_TOKEN=${GH_TOKEN}
           HOST_PORT=${HOST_PORT}
           ENVFILE
           chmod 600 .env

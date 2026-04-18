@@ -142,7 +142,7 @@ def _create_skill_tuples() -> list[tuple[Any, Any]]:
         except Exception as e:
             logger.warning("Failed to create Notion MCP skill: %s", e)
 
-    github_token = os.getenv("GITHUB_TOKEN", "").strip()
+    github_token = os.getenv("GH_TOKEN", "").strip()
     if github_token:
         try:
             from google.adk.tools.mcp_tool.mcp_session_manager import (
