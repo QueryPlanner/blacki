@@ -17,13 +17,16 @@ from blacki.utils.timezone import now_utc
 
 logger = logging.getLogger(__name__)
 
+DUE_REMINDERS_FETCH_LIMIT = 100
+
 
 class Reminder(BaseModel):
     """A scheduled reminder.
 
     Attributes:
         id: Unique identifier (auto-generated).
-        user_id: Telegram chat ID of the user who set the reminder.
+        user_id: Telegram chat key for the user who set the reminder (may use a
+            negative numeric segment for groups and supergroups).
         message: The reminder message to send.
         trigger_time: Next time to send the reminder (ISO format string).
         is_sent: Whether the reminder has been sent.
@@ -66,7 +69,7 @@ class BaseReminderStorage(abc.ABC):
 
     @abc.abstractmethod
     async def get_due_reminders(self) -> list[Reminder]:
-        """Return all unsent reminders whose trigger time has passed."""
+        """Return a batch of unsent reminders whose trigger time has passed."""
 
     @abc.abstractmethod
     async def mark_sent(self, reminder_id: int) -> None:
@@ -126,9 +129,11 @@ class PostgresReminderStorage(BaseReminderStorage):
                 created_at   TEXT    NOT NULL
             )
         """)
+        await conn.execute("DROP INDEX IF EXISTS idx_reminders_trigger_time_sent")
         await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reminders_trigger_time_sent
-            ON reminders (trigger_time, is_sent)
+            CREATE INDEX IF NOT EXISTS idx_reminders_due_reminders
+            ON reminders (trigger_time)
+            WHERE is_sent = FALSE
         """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_reminders_user_id
@@ -187,8 +192,10 @@ class PostgresReminderStorage(BaseReminderStorage):
             FROM reminders
             WHERE trigger_time <= $1 AND is_sent = FALSE
             ORDER BY trigger_time ASC
+            LIMIT $2
             """,
             now,
+            DUE_REMINDERS_FETCH_LIMIT,
         )
         return [self._row_to_reminder(r) for r in rows]
 

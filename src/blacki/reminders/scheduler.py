@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 CHECK_INTERVAL_SECONDS = 30
 MISFIRE_GRACE_PERIOD = timedelta(minutes=10)
 
-_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(\d+)(?:-thread-\d+)?$")
+_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-\d+)?$")
 
 
 class ReminderScheduler:
@@ -297,7 +297,8 @@ def _extract_telegram_chat_id(user_id: str) -> int | None:
     """Extract the numeric Telegram chat_id from a prefixed user_id.
 
     Args:
-        user_id: The user_id string (e.g., "telegram-chat-1399736563" or
+        user_id: The user_id string (e.g., "telegram-chat-1399736563",
+            "telegram-chat--1001234567890" for a supergroup, or
             "telegram-chat-1399736563-thread-42").
 
     Returns:

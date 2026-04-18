@@ -519,6 +519,18 @@ class TestExtractTelegramChatId:
 
         assert result == 1399736563
 
+    def test_extracts_negative_supergroup_chat_id(self) -> None:
+        """Should extract negative chat_id used by Telegram groups/supergroups."""
+        result = _extract_telegram_chat_id("telegram-chat--1001234567890")
+
+        assert result == -1001234567890
+
+    def test_extracts_negative_chat_id_with_thread(self) -> None:
+        """Should extract negative chat_id when a forum thread suffix is present."""
+        result = _extract_telegram_chat_id("telegram-chat--1001234567890-thread-42")
+
+        assert result == -1001234567890
+
     def test_returns_none_for_invalid_format(self) -> None:
         """Should return None for invalid user_id format."""
         result = _extract_telegram_chat_id("invalid-user-id")

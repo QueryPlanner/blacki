@@ -6,6 +6,7 @@ import asyncpg  # type: ignore[import-untyped]
 import pytest
 
 from blacki.reminders.storage import (
+    DUE_REMINDERS_FETCH_LIMIT,
     PostgresReminderStorage,
     Reminder,
     close_reminder_storage,
@@ -140,6 +141,9 @@ class TestPostgresReminderStorage:
         assert len(result) == 1
         assert result[0].id == 1
         assert result[0].message == "Test"
+        fetch_sql = mock_pool.fetch.call_args[0][0]
+        assert "LIMIT $2" in fetch_sql
+        assert mock_pool.fetch.call_args[0][2] == DUE_REMINDERS_FETCH_LIMIT
 
     @pytest.mark.asyncio
     async def test_mark_sent(self, mock_pool: MagicMock) -> None:
