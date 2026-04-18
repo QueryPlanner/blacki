@@ -103,6 +103,10 @@ warn_unreachable = true
 strict_equality = true
 show_error_codes = true
 
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
+
 [tool.coverage.run]
 source = ["src"]
 branch = true

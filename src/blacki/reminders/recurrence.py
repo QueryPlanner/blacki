@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
+from apscheduler.triggers.cron import CronTrigger
 
 from blacki.utils.timezone import now_utc
 

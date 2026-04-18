@@ -1,6 +1,6 @@
 """Unit tests for reminder scheduler."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -181,6 +181,262 @@ class TestReminderScheduler:
         await scheduler._send_reminder(reminder)
 
         mock_storage.reschedule_reminder.assert_called_once()
+
+    def test_api_raises_if_not_set(self, mock_storage: MagicMock) -> None:
+        """Should raise RuntimeError if API not set."""
+        scheduler = self._create_scheduler(mock_storage)
+
+        with pytest.raises(RuntimeError, match="API not set"):
+            _ = scheduler.api
+
+    @pytest.mark.asyncio
+    async def test_start_returns_early_if_already_running(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should return early if scheduler already running."""
+        scheduler = self._create_scheduler(mock_storage)
+
+        await scheduler.start()
+        await scheduler.start()
+
+        mock_storage.initialize.assert_called_once()
+
+        await scheduler.stop()
+
+    @pytest.mark.asyncio
+    async def test_stop_returns_early_if_not_running(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should return early if scheduler not running."""
+        scheduler = self._create_scheduler(mock_storage)
+
+        await scheduler.stop()
+
+        mock_storage.mark_sent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_skips_if_no_id(
+        self, mock_storage: MagicMock, mock_api: MagicMock
+    ) -> None:
+        """Should skip reminder if it has no ID."""
+        reminder = Reminder(
+            user_id="telegram-chat-123456",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+        scheduler.set_api(mock_api)
+
+        await scheduler._send_reminder(reminder)
+
+        mock_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_skips_if_invalid_user_id(
+        self, mock_storage: MagicMock, mock_api: MagicMock
+    ) -> None:
+        """Should skip reminder if user_id format is invalid."""
+        reminder = Reminder(
+            id=1,
+            user_id="invalid-user-id",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+        scheduler.set_api(mock_api)
+
+        await scheduler._send_reminder(reminder)
+
+        mock_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_reminder_handles_exception(
+        self, mock_storage: MagicMock, mock_api: MagicMock
+    ) -> None:
+        """Should handle exception during send."""
+        reminder = Reminder(
+            id=1,
+            user_id="telegram-chat-123456",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        mock_api.send_message.side_effect = Exception("API error")
+
+        scheduler = self._create_scheduler(mock_storage)
+        scheduler.set_api(mock_api)
+
+        await scheduler._send_reminder(reminder)
+
+        mock_storage.mark_sent.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_handle_stale_reminder_skips_if_no_id(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should skip stale reminder if it has no ID."""
+        reminder = Reminder(
+            user_id="telegram-chat-123456",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+        current_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
+
+        await scheduler._handle_stale_reminder(reminder, current_time)
+
+        mock_storage.mark_sent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_complete_reminder_raises_if_no_id(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should raise ValueError if reminder has no ID."""
+        reminder = Reminder(
+            user_id="telegram-chat-123456",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+
+        with pytest.raises(ValueError, match="must have an ID"):
+            await scheduler._complete_reminder_delivery(reminder)
+
+    @pytest.mark.asyncio
+    async def test_reschedule_reminder_raises_if_no_id(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should raise ValueError if reminder has no ID for reschedule."""
+        reminder = Reminder(
+            user_id="telegram-chat-123456",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            recurrence_rule="*/15 * * * *",
+            timezone_name="UTC",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+
+        with pytest.raises(ValueError, match="must have an ID"):
+            await scheduler._reschedule_recurring_reminder(reminder)
+
+    @pytest.mark.asyncio
+    async def test_check_and_send_handles_exception(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should handle exception during check."""
+        mock_storage.get_due_reminders.side_effect = Exception("DB error")
+
+        scheduler = self._create_scheduler(mock_storage)
+
+        await scheduler._check_and_send_reminders()
+
+    @pytest.mark.asyncio
+    async def test_check_and_send_handles_stale_reminders(
+        self, mock_storage: MagicMock, mock_api: MagicMock
+    ) -> None:
+        """Should handle stale reminders."""
+        stale_reminder = Reminder(
+            id=1,
+            user_id="telegram-chat-123456",
+            message="Stale",
+            trigger_time="2026-04-18T10:00:00+00:00",
+            created_at="2026-04-18T09:00:00+00:00",
+        )
+        fresh_reminder = Reminder(
+            id=2,
+            user_id="telegram-chat-123456",
+            message="Fresh",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T11:00:00+00:00",
+        )
+
+        mock_storage.get_due_reminders = AsyncMock(
+            return_value=[stale_reminder, fresh_reminder]
+        )
+
+        scheduler = self._create_scheduler(mock_storage)
+        scheduler.set_api(mock_api)
+
+        with patch(
+            "blacki.reminders.scheduler.now_utc",
+            return_value=datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC),
+        ):
+            await scheduler._check_and_send_reminders()
+
+        mock_api.send_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_check_and_send_no_reminders(self, mock_storage: MagicMock) -> None:
+        """Should handle case when no reminders are due."""
+        mock_storage.get_due_reminders = AsyncMock(return_value=[])
+
+        scheduler = self._create_scheduler(mock_storage)
+
+        await scheduler._check_and_send_reminders()
+
+        mock_storage.mark_sent.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_check_and_send_only_stale_reminders(
+        self, mock_storage: MagicMock
+    ) -> None:
+        """Should handle case when only stale reminders are due."""
+        stale_reminder = Reminder(
+            id=1,
+            user_id="telegram-chat-123456",
+            message="Stale",
+            trigger_time="2026-04-18T10:00:00+00:00",
+            created_at="2026-04-18T09:00:00+00:00",
+        )
+
+        mock_storage.get_due_reminders = AsyncMock(return_value=[stale_reminder])
+
+        scheduler = self._create_scheduler(mock_storage)
+
+        with patch(
+            "blacki.reminders.scheduler.now_utc",
+            return_value=datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC),
+        ):
+            await scheduler._check_and_send_reminders()
+
+        mock_storage.mark_sent.assert_called_once_with(1)
+
+    @pytest.mark.asyncio
+    async def test_check_and_send_only_fresh_reminders(
+        self, mock_storage: MagicMock, mock_api: MagicMock
+    ) -> None:
+        """Should handle case when only fresh reminders are due."""
+        fresh_reminder = Reminder(
+            id=1,
+            user_id="telegram-chat-123456",
+            message="Fresh",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T11:00:00+00:00",
+        )
+
+        mock_storage.get_due_reminders = AsyncMock(return_value=[fresh_reminder])
+
+        scheduler = self._create_scheduler(mock_storage)
+        scheduler.set_api(mock_api)
+
+        with patch(
+            "blacki.reminders.scheduler.now_utc",
+            return_value=datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC),
+        ):
+            await scheduler._check_and_send_reminders()
+
+        mock_api.send_message.assert_called_once()
 
 
 class TestParseStoredTriggerTime:

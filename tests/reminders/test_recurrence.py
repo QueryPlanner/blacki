@@ -1,7 +1,6 @@
 """Unit tests for reminder recurrence utilities."""
 
 from datetime import UTC, datetime
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -101,6 +100,61 @@ class TestGetNextTriggerTime:
                 "UTC",
                 reference_time=reference_time,
             )
+
+    def test_handles_naive_reference_time(self) -> None:
+        """Should handle reference time without timezone."""
+        naive_reference_time = datetime(2026, 4, 18, 12, 0, 30)
+        result = get_next_trigger_time(
+            "* * * * *",
+            "UTC",
+            reference_time=naive_reference_time,
+        )
+
+        assert result.tzinfo == UTC
+        assert result == datetime(2026, 4, 18, 12, 1, 0, tzinfo=UTC)
+
+
+class TestGetNextTriggerTimeEdgeCases:
+    """Edge case tests for get_next_trigger_time function."""
+
+    def test_handles_naive_next_fire_time(self) -> None:
+        """Should handle next_fire_time without timezone."""
+        from datetime import datetime
+        from unittest.mock import MagicMock, patch
+
+        reference_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
+        naive_next_time = datetime(2026, 4, 18, 12, 1, 0)
+
+        with patch("blacki.reminders.recurrence.CronTrigger") as mock_cron_trigger_cls:
+            mock_trigger = MagicMock()
+            mock_trigger.get_next_fire_time.return_value = naive_next_time
+            mock_cron_trigger_cls.from_crontab.return_value = mock_trigger
+
+            result = get_next_trigger_time(
+                "* * * * *",
+                "UTC",
+                reference_time=reference_time,
+            )
+
+            assert result.tzinfo == UTC
+
+    def test_raises_when_no_future_fire_time(self) -> None:
+        """Should raise ValueError when cron has no future fire time."""
+        from unittest.mock import MagicMock, patch
+
+        reference_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
+
+        with patch("blacki.reminders.recurrence.CronTrigger") as mock_cron_trigger_cls:
+            mock_trigger = MagicMock()
+            mock_trigger.get_next_fire_time.return_value = None
+            mock_cron_trigger_cls.from_crontab.return_value = mock_trigger
+
+            with pytest.raises(ValueError, match="no future fire time"):
+                get_next_trigger_time(
+                    "* * * * *",
+                    "UTC",
+                    reference_time=reference_time,
+                )
 
 
 class TestRecurringSchedule:

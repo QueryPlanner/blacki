@@ -5,6 +5,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from conftest import MockState, MockToolContext
 
 from blacki.reminders.storage import Reminder
 from blacki.reminders.tools import (
@@ -15,7 +16,6 @@ from blacki.reminders.tools import (
     list_reminders,
     schedule_reminder,
 )
-from conftest import MockState, MockToolContext
 
 
 class TestScheduleReminder:
@@ -36,16 +36,18 @@ class TestScheduleReminder:
     @pytest.mark.asyncio
     async def test_schedule_one_time_reminder(self, mock_scheduler: MagicMock) -> None:
         """Should schedule a one-time reminder."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
-            with patch(
+        with (
+            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
                 "blacki.reminders.tools.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
-            ):
-                result = await schedule_reminder(
-                    tool_context=self._tool_context(),
-                    message="Test reminder",
-                    reminder_datetime="2026-04-18 12:00",
-                )
+            ),
+        ):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                reminder_datetime="2026-04-18 12:00",
+            )
 
         assert result["status"] == "success"
         assert result["reminder_id"] == 42
@@ -84,19 +86,111 @@ class TestScheduleReminder:
     @pytest.mark.asyncio
     async def test_schedule_reminder_in_past(self, mock_scheduler: MagicMock) -> None:
         """Should return error if reminder time is in the past."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
-            with patch(
+        with (
+            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
                 "blacki.reminders.tools.now_utc",
                 return_value=datetime(2026, 4, 18, 15, 0, 0, tzinfo=UTC),
-            ):
-                result = await schedule_reminder(
-                    tool_context=self._tool_context(),
-                    message="Test reminder",
-                    reminder_datetime="2026-04-18 12:00",
-                )
+            ),
+        ):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                reminder_datetime="2026-04-18 12:00",
+            )
 
         assert result["status"] == "error"
         assert "must be in the future" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_reminder_invalid_datetime(
+        self, mock_scheduler: MagicMock
+    ) -> None:
+        """Should return error if datetime cannot be parsed."""
+        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                reminder_datetime="invalid datetime string",
+            )
+
+        assert result["status"] == "error"
+        assert "Could not understand the time" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_reminder_invalid_recurrence(
+        self, mock_scheduler: MagicMock
+    ) -> None:
+        """Should return error if recurrence is invalid."""
+        with (
+            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
+                "blacki.reminders.tools._parse_recurring_schedule",
+                side_effect=ValueError("Invalid cron"),
+            ),
+        ):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                recurrence="invalid cron",
+            )
+
+        assert result["status"] == "error"
+        assert "Invalid cron" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_reminder_exception(self, mock_scheduler: MagicMock) -> None:
+        """Should handle exception during schedule."""
+        mock_scheduler.schedule_reminder.side_effect = Exception("DB error")
+
+        with (
+            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
+                "blacki.reminders.tools.now_utc",
+                return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
+            ),
+        ):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                reminder_datetime="2026-04-18 12:00",
+            )
+
+        assert result["status"] == "error"
+        assert "Failed to schedule" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_schedule_recurring_reminder(self, mock_scheduler: MagicMock) -> None:
+        """Should schedule a recurring reminder."""
+        mock_next_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
+
+        with (
+            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=MagicMock(key="UTC"),
+            ),
+            patch(
+                "blacki.reminders.tools.validate_cron_expression",
+                return_value="*/15 * * * *",
+            ),
+            patch(
+                "blacki.reminders.tools.get_next_trigger_time",
+                return_value=mock_next_time,
+            ),
+            patch(
+                "blacki.reminders.tools.now_utc",
+                return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
+            ),
+        ):
+            result = await schedule_reminder(
+                tool_context=self._tool_context(),
+                message="Test reminder",
+                recurrence="*/15 * * * *",
+            )
+
+        assert result["status"] == "success"
+        assert "Recurring reminder scheduled" in result["message"]
 
 
 class TestListReminders:
@@ -147,6 +241,30 @@ class TestListReminders:
         assert result["count"] == 1
         assert len(result["reminders"]) == 1
 
+    @pytest.mark.asyncio
+    async def test_list_reminders_no_user_id(self) -> None:
+        """Should return error if user_id not in context."""
+        state = MockState({})
+        tool_context = cast(MagicMock, MockToolContext(state=state))
+
+        result = await list_reminders(tool_context=tool_context)
+
+        assert result["status"] == "error"
+        assert "user not identified" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_list_reminders_exception(self, mock_scheduler: MagicMock) -> None:
+        """Should handle exception during list."""
+        mock_scheduler.get_user_reminders.side_effect = Exception("DB error")
+
+        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+            result = await list_reminders(
+                tool_context=self._tool_context(),
+            )
+
+        assert result["status"] == "error"
+        assert "Failed to list" in result["message"]
+
 
 class TestCancelReminder:
     """Tests for cancel_reminder tool."""
@@ -189,6 +307,34 @@ class TestCancelReminder:
         assert result["status"] == "error"
         assert "not found" in result["message"]
 
+    @pytest.mark.asyncio
+    async def test_cancel_reminder_no_user_id(self) -> None:
+        """Should return error if user_id not in context."""
+        state = MockState({})
+        tool_context = cast(MagicMock, MockToolContext(state=state))
+
+        result = await cancel_reminder(
+            tool_context=tool_context,
+            reminder_id=42,
+        )
+
+        assert result["status"] == "error"
+        assert "user not identified" in result["message"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_reminder_exception(self, mock_scheduler: MagicMock) -> None:
+        """Should handle exception during cancel."""
+        mock_scheduler.delete_reminder.side_effect = Exception("DB error")
+
+        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+            result = await cancel_reminder(
+                tool_context=self._tool_context(),
+                reminder_id=42,
+            )
+
+        assert result["status"] == "error"
+        assert "Failed to cancel" in result["message"]
+
 
 class TestParseReminderDatetime:
     """Tests for _parse_reminder_datetime function."""
@@ -197,15 +343,17 @@ class TestParseReminderDatetime:
         """Should parse absolute datetime string."""
         from zoneinfo import ZoneInfo
 
-        with patch(
-            "blacki.reminders.tools.get_app_timezone",
-            return_value=ZoneInfo("UTC"),
-        ):
-            with patch(
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=ZoneInfo("UTC"),
+            ),
+            patch(
                 "blacki.reminders.tools.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
-            ):
-                result = _parse_reminder_datetime("2026-04-18 12:00")
+            ),
+        ):
+            result = _parse_reminder_datetime("2026-04-18 12:00")
 
         assert result.year == 2026
         assert result.month == 4
@@ -217,15 +365,17 @@ class TestParseReminderDatetime:
         """Should parse relative datetime string."""
         from zoneinfo import ZoneInfo
 
-        with patch(
-            "blacki.reminders.tools.get_app_timezone",
-            return_value=ZoneInfo("UTC"),
-        ):
-            with patch(
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=ZoneInfo("UTC"),
+            ),
+            patch(
                 "blacki.reminders.tools.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
-            ):
-                result = _parse_reminder_datetime("in 1 hour")
+            ),
+        ):
+            result = _parse_reminder_datetime("in 1 hour")
 
         assert result.hour == 11
 
@@ -233,16 +383,40 @@ class TestParseReminderDatetime:
         """Should raise ValueError for invalid datetime."""
         from zoneinfo import ZoneInfo
 
-        with patch(
-            "blacki.reminders.tools.get_app_timezone",
-            return_value=ZoneInfo("UTC"),
-        ):
-            with patch(
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=ZoneInfo("UTC"),
+            ),
+            patch(
                 "blacki.reminders.tools.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
-            ):
-                with pytest.raises(ValueError, match="Could not parse"):
-                    _parse_reminder_datetime("invalid datetime")
+            ),
+            pytest.raises(ValueError, match="Could not parse"),
+        ):
+            _parse_reminder_datetime("invalid datetime")
+
+    def test_parse_with_timezone_aware_result(self) -> None:
+        """Should handle timezone-aware parsed result."""
+        from zoneinfo import ZoneInfo
+
+        mock_tz = ZoneInfo("UTC")
+        mock_dt = datetime(2026, 4, 18, 12, 0, 0, tzinfo=ZoneInfo("America/New_York"))
+
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=mock_tz,
+            ),
+            patch(
+                "blacki.reminders.tools.naive_local_now",
+                return_value=datetime(2026, 4, 18, 10, 0, 0),
+            ),
+            patch("blacki.reminders.tools.dateparser.parse", return_value=mock_dt),
+        ):
+            result = _parse_reminder_datetime("2026-04-18 12:00")
+
+        assert result.tzinfo == UTC
 
 
 class TestBuildReminderSchedule:
@@ -267,22 +441,24 @@ class TestBuildReminderSchedule:
         """Should build schedule for recurring reminder."""
         mock_next_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
 
-        with patch(
-            "blacki.reminders.tools.get_app_timezone",
-            return_value=MagicMock(key="UTC"),
-        ):
-            with patch(
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=MagicMock(key="UTC"),
+            ),
+            patch(
                 "blacki.reminders.tools.validate_cron_expression",
                 return_value="*/15 * * * *",
-            ):
-                with patch(
-                    "blacki.reminders.tools.get_next_trigger_time",
-                    return_value=mock_next_time,
-                ):
-                    result = _build_reminder_schedule(
-                        reminder_datetime=None,
-                        recurrence="*/15 * * * *",
-                    )
+            ),
+            patch(
+                "blacki.reminders.tools.get_next_trigger_time",
+                return_value=mock_next_time,
+            ),
+        ):
+            result = _build_reminder_schedule(
+                reminder_datetime=None,
+                recurrence="*/15 * * * *",
+            )
 
         assert result["recurrence_rule"] == "*/15 * * * *"
         assert "cron" in result["recurrence_text"]
@@ -301,6 +477,24 @@ class TestBuildReminderSchedule:
             _build_reminder_schedule(
                 reminder_datetime=None,
                 recurrence=None,
+            )
+
+    def test_raises_on_invalid_cron_expression(self) -> None:
+        """Should raise ValueError for invalid cron expression."""
+        with (
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=MagicMock(key="UTC"),
+            ),
+            patch(
+                "blacki.reminders.tools.validate_cron_expression",
+                side_effect=ValueError("Invalid cron"),
+            ),
+            pytest.raises(ValueError, match="Could not understand"),
+        ):
+            _build_reminder_schedule(
+                reminder_datetime=None,
+                recurrence="invalid cron",
             )
 
 
