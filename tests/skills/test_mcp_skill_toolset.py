@@ -274,6 +274,7 @@ class TestLoadSkillTool:
 
         assert declaration is not None
         assert declaration.name == "load_skill"
+        assert declaration.parameters_json_schema is not None
         props = declaration.parameters_json_schema.get("properties", {})
         assert "name" in props
         assert "required" in declaration.parameters_json_schema
@@ -713,7 +714,7 @@ class TestMcpSkillToolset:
         await toolset.close()
 
         mock_mcp_toolset.close.assert_awaited_once()  # type: ignore[attr-defined]
-        mock_mcp_toolset_2.close.assert_awaited_once()  # type: ignore[attr-defined]
+        mock_mcp_toolset_2.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_multiple_skills_activation(

@@ -8,6 +8,7 @@ import logging
 import os
 from typing import Any, Literal
 
+import httpx
 from browser_use_sdk import AsyncBrowserUse  # type: ignore[import-untyped]
 from browser_use_sdk.v2.client import SessionSettings  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
@@ -20,6 +21,9 @@ _BROWSER_USE_DEFAULT_MODEL: Literal["browser-use-llm"] = "browser-use-llm"
 _browser_use_lock = asyncio.Lock()
 _browser_use_client: AsyncBrowserUse | None = None
 _browser_use_api_key: str | None = None
+
+_brave_search_lock = asyncio.Lock()
+_brave_search_client: httpx.AsyncClient | None = None
 
 _pending_tasks: dict[str, dict[str, Any]] = {}
 _pending_schemas: dict[str, type[BaseModel] | None] = {}
@@ -58,6 +62,31 @@ async def _get_shared_browser_use_client(api_key: str) -> AsyncBrowserUse:
         _browser_use_client = AsyncBrowserUse(api_key=api_key)
         _browser_use_api_key = api_key
         return _browser_use_client
+
+
+async def reset_brave_search_client_cache() -> None:
+    """Close and clear the shared Brave Search httpx client.
+
+    Used between tests to ensure connection pools are not leaked.
+    """
+    global _brave_search_client
+    async with _brave_search_lock:
+        if _brave_search_client is not None:
+            try:
+                await _brave_search_client.aclose()
+            except Exception:
+                logger.exception("Error while closing shared Brave Search client")
+        _brave_search_client = None
+
+
+async def _get_shared_brave_search_client() -> httpx.AsyncClient:
+    """Return a process-wide ``httpx.AsyncClient`` for Brave Search API."""
+    global _brave_search_client
+    async with _brave_search_lock:
+        if _brave_search_client is not None:
+            return _brave_search_client
+        _brave_search_client = httpx.AsyncClient(timeout=30.0)
+        return _brave_search_client
 
 
 def _serialize_browser_output(output: Any) -> Any:
@@ -536,14 +565,12 @@ async def brave_search(
     }
 
     try:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(
-                BRAVE_SEARCH_API_URL,
-                headers=headers,
-                params=params,
-            )
+        client = await _get_shared_brave_search_client()
+        response = await client.get(
+            BRAVE_SEARCH_API_URL,
+            headers=headers,
+            params=params,
+        )
 
         if response.status_code == 401:
             return {
@@ -582,13 +609,6 @@ async def brave_search(
             "results": results,
         }
 
-    except ImportError:
-        return {
-            "status": "error",
-            "error": "httpx required for Brave Search. Run: pip install httpx",
-            "query": query,
-            "results": [],
-        }
     except Exception:
         logger.exception("Brave Search API error")
         return {

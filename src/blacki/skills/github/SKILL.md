@@ -28,46 +28,17 @@ Set the `GITHUB_TOKEN` environment variable with a GitHub Personal Access Token.
    - `read:user` - Read user profile data
 5. Click "Generate token" and copy it immediately
 
-## Pre-Discovered Resources
+## Discovering Resources
 
-### Account Info
+Use `github_list_repositories` to find repositories you have access to. Repository names follow the `owner/repo` format.
 
-- **Username:** QueryPlanner
-- **Name:** VectorQL
+### Common Operations
 
-### Active Repositories (by recent activity)
-
-| Repository | Description | Visibility |
-|------------|-------------|------------|
-| `QueryPlanner/blacki` | - | public |
-| `QueryPlanner/upgraded-garbanzo` | Personal AI assistant (Telegram) | private |
-| `QueryPlanner/biodata` | biodata | private |
-| `QueryPlanner/latex-resume-ai` | Create resumes from Job description | private |
-| `QueryPlanner/Binge-Docs` | Turn docs into personal podcast | public |
-| `QueryPlanner/google-adk-on-bare-metal` | Deploy google adk on bare metal | public |
-| `QueryPlanner/qwentts-fastapi` | FastAPI server for Qwen3-TTS | public |
-| `QueryPlanner/Chatter-Fast-Chatter-Box` | FastAPI for Chatterbox TTS with voice cloning | public |
-| `QueryPlanner/adk-samples` | Sample agents built with ADK | public |
-| `QueryPlanner/blogs` | - | private |
-| `QueryPlanner/open-recite` | Recite anything - learn fast | public |
-| `QueryPlanner/browser-text-api` | FastAPI wrapper for article text extraction | private |
-| `QueryPlanner/ThreadX` | YouTube to X thread automation | private |
-| `QueryPlanner/valuation-pro` | - | public |
-| `QueryPlanner/blog-agent` | - | public |
-| `QueryPlanner/medical-agents` | Production ready medical agents | public |
-| `QueryPlanner/adk-extra-services` | Additional services for Google ADK | public |
-| `QueryPlanner/GenAI` | All GenAI explorations | public |
-| `QueryPlanner/research-paper-finder` | Find top research papers on any topic | public |
-
-### Project Repositories
-
-| Project | Repository | Notes |
-|---------|------------|-------|
-| Current Project | `QueryPlanner/blacki` | ADK on bare metal template |
-| Garbanzo | `QueryPlanner/upgraded-garbanzo` | Personal AI assistant |
-| Resume AI | `QueryPlanner/latex-resume-ai` | Resume from JD |
-| Binge Docs | `QueryPlanner/Binge-Docs` | Docs to podcast |
-| ThreadX | `QueryPlanner/ThreadX` | YouTube to X thread |
+- `github_list_issues` - List issues in a repository
+- `github_create_issue` - Create a new issue
+- `github_create_pull_request` - Create a pull request
+- `github_get_file_contents` - Read file contents
+- `github_create_or_update_file` - Create or modify files
 
 ## Usage Patterns
 
@@ -95,4 +66,3 @@ Set the `GITHUB_TOKEN` environment variable with a GitHub Personal Access Token.
 - Use branch names like `main` or `master` for the default branch
 - Reference issues with `#123` syntax in commit messages and PR descriptions
 - Use markdown formatting in issue and PR descriptions
-- Use the pre-discovered repository names above to avoid listing/searching

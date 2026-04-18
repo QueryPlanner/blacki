@@ -26,6 +26,7 @@ dependencies = [
     "httpx>=0.27.0,<1.0.0",
     "browser-use-sdk>=0.1.0",
     "pyyaml>=6.0.0,<7.0.0",
+    "mcp>=1.0.0,<2.0.0",
 ]
 
 [project.scripts]
@@ -41,7 +42,6 @@ dev = [
     "ipykernel>=7.0.0,<8.0.0",
     "types-grpcio>=1.0.0.20251009,<2.0.0.0",
     "types-pyyaml>=6.0.0,<7.0.0",
-    "openpyxl>=3.1.5",
 ]
 
 [build-system]

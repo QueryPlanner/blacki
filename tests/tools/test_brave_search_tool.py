@@ -10,9 +10,78 @@ from conftest import MockState, MockToolContext
 from google.adk.tools import ToolContext
 
 from blacki.tools import (
+    _get_shared_brave_search_client,
     brave_search,
     brave_search_api_key_available,
+    reset_brave_search_client_cache,
 )
+
+
+class TestGetSharedBraveSearchClient:
+    """Tests for _get_shared_brave_search_client function."""
+
+    @pytest.mark.asyncio
+    async def test_creates_new_client(self) -> None:
+        """Should create a new client when none exists."""
+        await reset_brave_search_client_cache()
+
+        client = await _get_shared_brave_search_client()
+
+        assert client is not None
+
+        await reset_brave_search_client_cache()
+
+    @pytest.mark.asyncio
+    async def test_returns_existing_client(self) -> None:
+        """Should return the existing client."""
+        await reset_brave_search_client_cache()
+
+        client1 = await _get_shared_brave_search_client()
+        client2 = await _get_shared_brave_search_client()
+
+        assert client1 is client2
+
+        await reset_brave_search_client_cache()
+
+
+class TestResetBraveSearchClientCache:
+    """Tests for reset_brave_search_client_cache function."""
+
+    @pytest.mark.asyncio
+    async def test_resets_client_to_none(self) -> None:
+        """Should reset the shared client to None."""
+        from blacki import tools
+
+        tools._brave_search_client = httpx.AsyncClient()
+        assert tools._brave_search_client is not None
+
+        await reset_brave_search_client_cache()
+
+        assert tools._brave_search_client is None
+
+    @pytest.mark.asyncio
+    async def test_handles_none_client(self) -> None:
+        """Should handle already None client gracefully."""
+        from blacki import tools
+
+        tools._brave_search_client = None
+
+        await reset_brave_search_client_cache()
+
+        assert tools._brave_search_client is None
+
+    @pytest.mark.asyncio
+    async def test_handles_close_exception(self) -> None:
+        """Should handle exception during close gracefully."""
+        from blacki import tools
+
+        mock_client = AsyncMock()
+        mock_client.aclose = AsyncMock(side_effect=RuntimeError("close failed"))
+        tools._brave_search_client = mock_client
+
+        await reset_brave_search_client_cache()
+
+        assert tools._brave_search_client is None
 
 
 class TestBraveSearch:
@@ -21,6 +90,11 @@ class TestBraveSearch:
     @staticmethod
     def _tool_context() -> ToolContext:
         return cast(ToolContext, MockToolContext(state=MockState({})))
+
+    @pytest.fixture(autouse=True)
+    async def reset_client(self) -> None:
+        """Reset the shared client before each test."""
+        await reset_brave_search_client_cache()
 
     @pytest.mark.asyncio
     async def test_brave_search_missing_api_key(
@@ -77,10 +151,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context)
 
         assert result["status"] == "success"
@@ -115,10 +190,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context, count=5)
 
         assert result["status"] == "success"
@@ -137,10 +213,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context)
 
         assert result["status"] == "error"
@@ -159,10 +236,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context)
 
         assert result["status"] == "error"
@@ -179,10 +257,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context)
 
         assert result["status"] == "error"
@@ -205,10 +284,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("test query", tool_context)
 
         assert result["status"] == "error"
@@ -228,10 +308,11 @@ class TestBraveSearch:
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch(
+            "blacki.tools._get_shared_brave_search_client",
+            return_value=mock_client,
+        ):
             result = await brave_search("obscure query", tool_context)
 
         assert result["status"] == "success"

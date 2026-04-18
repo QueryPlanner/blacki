@@ -890,7 +890,7 @@ class TestFormatForTelegram:
     """Tests for format_for_telegram function."""
 
     def test_format_for_telegram_preserves_bold_markers(self) -> None:
-        """Test that bold formatting markers are not escaped."""
+        """Test that bold formatting markers are converted to Telegram format."""
         text = "This is **bold** text"
         formatted = format_for_telegram(text)
 
@@ -930,6 +930,87 @@ class TestFormatForTelegram:
         formatted = format_for_telegram(text)
 
         assert formatted == r"*bold* and `code_with_underscore`"
+
+    def test_format_for_telegram_converts_headings_to_bold(self) -> None:
+        """Test that markdown headings are converted to bold."""
+        text = "### Model Configuration"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*Model Configuration*"
+
+    def test_format_for_telegram_converts_h1_heading(self) -> None:
+        """Test that h1 heading is converted to bold."""
+        text = "# Title"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*Title*"
+
+    def test_format_for_telegram_converts_h2_heading(self) -> None:
+        """Test that h2 heading is converted to bold."""
+        text = "## Subtitle"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*Subtitle*"
+
+    def test_format_for_telegram_converts_bullet_asterisk(self) -> None:
+        """Test that asterisk bullets are converted to Telegram bullet."""
+        text = "* First item\n* Second item"
+        formatted = format_for_telegram(text)
+
+        assert formatted == "• First item\n• Second item"
+
+    def test_format_for_telegram_converts_bullet_dash(self) -> None:
+        """Test that dash bullets are converted to Telegram bullet."""
+        text = "- First item\n- Second item"
+        formatted = format_for_telegram(text)
+
+        assert formatted == "• First item\n• Second item"
+
+    def test_format_for_telegram_converts_bullet_plus(self) -> None:
+        """Test that plus bullets are converted to Telegram bullet."""
+        text = "+ First item\n+ Second item"
+        formatted = format_for_telegram(text)
+
+        assert formatted == "• First item\n• Second item"
+
+    def test_format_for_telegram_preserves_bullet_indent(self) -> None:
+        """Test that bullet indentation is preserved."""
+        text = "  * Nested item"
+        formatted = format_for_telegram(text)
+
+        assert formatted == "  • Nested item"
+
+    def test_format_for_telegram_combined_heading_and_bullets(self) -> None:
+        """Test combined heading and bullet list."""
+        text = "### Features\n* Feature one\n* Feature two"
+        formatted = format_for_telegram(text)
+
+        assert formatted == "*Features*\n• Feature one\n• Feature two"
+
+    def test_format_for_telegram_heading_with_special_chars(self) -> None:
+        """Test heading with special characters is escaped."""
+        text = "### Model_Config"
+        formatted = format_for_telegram(text)
+
+        assert formatted == r"*Model\_Config*"
+
+    def test_format_for_telegram_complex_document(self) -> None:
+        """Test a complex markdown document."""
+        text = """### 1. Model Configuration
+
+The file handles model selection dynamically:
+
+* Dynamic Routing: It supports both native Google Gemini and OpenRouter.
+* LiteLLM Integration: If an OPENROUTER_API_KEY is present."""
+        formatted = format_for_telegram(text)
+
+        expected = r"""*1\. Model Configuration*
+
+The file handles model selection dynamically:
+
+• Dynamic Routing: It supports both native Google Gemini and OpenRouter\.
+• LiteLLM Integration: If an OPENROUTER\_API\_KEY is present\."""
+        assert formatted == expected
 
 
 class TestTelegramBotCommands:
@@ -2052,22 +2133,6 @@ class TestFormattingSpecialChars:
         text = "**Bold with `inline` and ```code block```**"
         formatted = format_for_telegram(text)
         assert "*Bold with `inline` and ```code block```*" in formatted
-
-    def test_escape_text_only_with_code(self) -> None:
-        """Test internal _escape_text_only with code markers."""
-        from blacki.telegram.formatting import _escape_text_only
-
-        text = "Text with `inline` and ```block```"
-        result = _escape_text_only(text)
-        assert result == "Text with `inline` and ```block```"
-
-    def test_escape_text_only_non_code(self) -> None:
-        """Test internal _escape_text_only with special chars."""
-        from blacki.telegram.formatting import _escape_text_only
-
-        text = "Special _ chars"
-        result = _escape_text_only(text)
-        assert result == r"Special \_ chars"
 
 
 class TestStreamSessionEdgeCases:
