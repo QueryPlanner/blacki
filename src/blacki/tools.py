@@ -271,13 +271,16 @@ async def browser_task(
                 "is_success": False,
             }
 
+    task_id_str: str | None = None
+    session_id_str: str | None = None
+    live_preview_url: str | None = None
     try:
         client = await _get_shared_browser_use_client(api_key)
         created = await client.tasks.create(stripped_task, **create_kwargs)
         session_id_str = str(created.session_id)
         task_id_str = str(created.id)
 
-        live_preview_url: str | None = None
+        live_preview_url = None
         try:
             session_view = await client.sessions.get(session_id_str)
             live_preview_url = session_view.live_url
@@ -299,7 +302,7 @@ async def browser_task(
             task_id_str,
             pydantic_schema,
             timeout=float(timeout),
-            interval=5.0,
+            interval=1.0,
         )
 
         terminal_status = task_result.task.status.value
@@ -347,9 +350,9 @@ async def browser_task(
             "status": "error",
             "error": str(exc),
             "output": None,
-            "live_preview_url": None,
-            "task_id": None,
-            "session_id": None,
+            "live_preview_url": live_preview_url,
+            "task_id": task_id_str,
+            "session_id": session_id_str,
             "is_success": False,
         }
 
