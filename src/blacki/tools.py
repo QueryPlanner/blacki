@@ -473,3 +473,132 @@ def example_tool(
     message = "Successfully used example_tool."
     logger.info(message)
     return {"status": "success", "message": message}
+
+
+BRAVE_SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
+
+
+async def brave_search(
+    query: str,
+    tool_context: ToolContext,
+    count: int = 10,
+) -> dict[str, Any]:
+    """Search the web using Brave Search API.
+
+    This is a model-agnostic alternative to Google Search that works with
+    any LLM provider via LiteLLM/OpenRouter. Set BRAVE_SEARCH_API_KEY
+    in your environment.
+
+    Args:
+        query: The search query string.
+        tool_context: ADK tool context.
+        count: Maximum number of results to return (default 10, max 20).
+
+    Returns:
+        Dictionary with status, query, and results list. Each result has
+        title, url, and description fields.
+    """
+    _ = tool_context
+
+    api_key = os.environ.get("BRAVE_SEARCH_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "status": "error",
+            "error": (
+                "BRAVE_SEARCH_API_KEY is not set. Get a free API key at "
+                "https://brave.com/search/api/ and add it to your environment."
+            ),
+            "query": query,
+            "results": [],
+        }
+
+    if not query.strip():
+        return {
+            "status": "error",
+            "error": "Search query must be a non-empty string.",
+            "query": query,
+            "results": [],
+        }
+
+    count = min(max(1, count), 20)
+
+    headers = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "X-Subscription-Token": api_key,
+    }
+
+    params: dict[str, str | int] = {
+        "q": query.strip(),
+        "count": count,
+        "search_lang": "en",
+        "country": "us",
+    }
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                BRAVE_SEARCH_API_URL,
+                headers=headers,
+                params=params,
+            )
+
+        if response.status_code == 401:
+            return {
+                "status": "error",
+                "error": "Invalid BRAVE_SEARCH_API_KEY. Check your API key.",
+                "query": query,
+                "results": [],
+            }
+
+        if response.status_code == 429:
+            return {
+                "status": "error",
+                "error": "Brave Search API rate limit exceeded. Try again later.",
+                "query": query,
+                "results": [],
+            }
+
+        response.raise_for_status()
+
+        data = response.json()
+        web_results = data.get("web", {}).get("results", [])
+
+        results: list[dict[str, str]] = []
+        for item in web_results[:count]:
+            results.append(
+                {
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "description": item.get("description", ""),
+                }
+            )
+
+        return {
+            "status": "success",
+            "query": query,
+            "results": results,
+        }
+
+    except ImportError:
+        return {
+            "status": "error",
+            "error": "httpx required for Brave Search. Run: pip install httpx",
+            "query": query,
+            "results": [],
+        }
+    except Exception:
+        logger.exception("Brave Search API error")
+        return {
+            "status": "error",
+            "error": "Brave Search API request failed.",
+            "query": query,
+            "results": [],
+        }
+
+
+def brave_search_api_key_available() -> bool:
+    """Check if BRAVE_SEARCH_API_KEY is set in environment."""
+    return bool(os.environ.get("BRAVE_SEARCH_API_KEY", "").strip())

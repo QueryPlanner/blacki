@@ -102,6 +102,79 @@ if use_litellm:
             "OpenRouter models may not work."
         )
 
+skills_dir = Path(__file__).parent / "skills"
+
+
+def _create_skill_tuples() -> list[tuple[Any, Any]]:
+    """Create skill tuples for McpSkillToolset.
+
+    Returns a list of (Skill, McpToolset | None) tuples for all available
+    skills with their optional MCP toolsets.
+    """
+    skills_list: list[tuple[Any, Any]] = []
+
+    notion_token = os.getenv("NOTION_TOKEN", "").strip()
+    if notion_token:
+        try:
+            from google.adk.tools.mcp_tool.mcp_session_manager import (
+                StdioConnectionParams,
+            )
+            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+            from mcp import StdioServerParameters
+
+            from .skills import load_skill_from_dir
+
+            skill = load_skill_from_dir(skills_dir / "notion")
+            if skill:
+                notion_mcp = McpToolset(
+                    connection_params=StdioConnectionParams(
+                        server_params=StdioServerParameters(
+                            command="npx",
+                            args=["-y", "@notionhq/notion-mcp-server"],
+                            env={"NOTION_TOKEN": notion_token},
+                        ),
+                        timeout=30.0,
+                    ),
+                )
+                skills_list.append((skill, notion_mcp))
+                logger.info("Notion MCP skill enabled")
+        except ImportError as e:
+            logger.warning("MCP dependencies not available for Notion skill: %s", e)
+        except Exception as e:
+            logger.warning("Failed to create Notion MCP skill: %s", e)
+
+    github_token = os.getenv("GITHUB_TOKEN", "").strip()
+    if github_token:
+        try:
+            from google.adk.tools.mcp_tool.mcp_session_manager import (
+                StreamableHTTPConnectionParams,
+            )
+            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+
+            from .skills import load_skill_from_dir
+
+            skill = load_skill_from_dir(skills_dir / "github")
+            if skill:
+                github_mcp = McpToolset(
+                    connection_params=StreamableHTTPConnectionParams(
+                        url="https://api.githubcopilot.com/mcp/",
+                        headers={
+                            "Authorization": f"Bearer {github_token}",
+                            "Content-Type": "application/json",
+                        },
+                        timeout=30.0,
+                    ),
+                )
+                skills_list.append((skill, github_mcp))
+                logger.info("GitHub MCP skill enabled")
+        except ImportError as e:
+            logger.warning("MCP dependencies not available for GitHub skill: %s", e)
+        except Exception as e:
+            logger.warning("Failed to create GitHub MCP skill: %s", e)
+
+    return skills_list
+
+
 # Build the list of tools
 agent_tools: list[Any] = [
     example_tool,
@@ -110,6 +183,24 @@ agent_tools: list[Any] = [
     browser_stop_session,
     browser_list_profiles,
 ]
+
+# Add Brave Search tool if API key is available
+brave_search_api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+if brave_search_api_key:
+    try:
+        from .tools import brave_search
+
+        agent_tools.append(brave_search)
+        logger.info("Brave Search tool enabled")
+    except ImportError as e:
+        logger.warning("Failed to load Brave Search tool: %s", e)
+
+# Add MCP skills if available
+skill_tuples = _create_skill_tuples()
+if skill_tuples:
+    from .skills.mcp_skill_toolset import McpSkillToolset
+
+    agent_tools.append(McpSkillToolset(skills=skill_tuples))
 
 # Build before_tool_callback with optional telegram notifications
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
