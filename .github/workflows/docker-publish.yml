@@ -111,18 +111,20 @@ jobs:
 
           # Create .env file locally to avoid SSH quoting issues with special chars
           # (DATABASE_URL contains & which breaks SSH command parsing)
+          # Values are double-quoted so shell metacharacters (& ? @ =) are treated literally
+          # when this file is sourced on the remote server.
           cat > /tmp/deploy.env << ENVFILE
-          AGENT_NAME=${AGENT_NAME}
-          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-          ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
-          TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
-          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-          TELEGRAM_TOOL_NOTIFICATIONS=${TELEGRAM_TOOL_NOTIFICATIONS}
-          DATABASE_URL=${DATABASE_URL}
-          BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
-          BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY}
-          NOTION_TOKEN=${NOTION_TOKEN}
-          GH_TOKEN=${GH_TOKEN}
+          AGENT_NAME="${AGENT_NAME}"
+          OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
+          ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
+          TELEGRAM_ENABLED="${TELEGRAM_ENABLED}"
+          TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+          TELEGRAM_TOOL_NOTIFICATIONS="${TELEGRAM_TOOL_NOTIFICATIONS}"
+          DATABASE_URL="${DATABASE_URL}"
+          BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
+          BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
+          NOTION_TOKEN="${NOTION_TOKEN}"
+          GH_TOKEN="${GH_TOKEN}"
           ENVFILE
           chmod 600 /tmp/deploy.env
 
@@ -177,20 +179,22 @@ jobs:
           echo "Using port: $HOST_PORT"
 
           # 7. Generate .env file from GitHub secrets
+          # Values are double-quoted so URLs with & ? @ are preserved verbatim.
+          # Docker Compose dotenv parser strips surrounding quotes correctly.
           echo "Generating .env from secrets..."
           cat > .env << ENVFILE
-          AGENT_NAME=${AGENT_NAME}
-          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-          ROOT_AGENT_MODEL=${ROOT_AGENT_MODEL}
-          TELEGRAM_ENABLED=${TELEGRAM_ENABLED}
-          TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
-          TELEGRAM_TOOL_NOTIFICATIONS=${TELEGRAM_TOOL_NOTIFICATIONS}
-          DATABASE_URL=${DATABASE_URL}
-          BRAVE_SEARCH_API_KEY=${BRAVE_SEARCH_API_KEY}
-          BROWSER_USE_API_KEY=${BROWSER_USE_API_KEY}
-          NOTION_TOKEN=${NOTION_TOKEN}
-          GH_TOKEN=${GH_TOKEN}
-          HOST_PORT=${HOST_PORT}
+          AGENT_NAME="${AGENT_NAME}"
+          OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
+          ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
+          TELEGRAM_ENABLED="${TELEGRAM_ENABLED}"
+          TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
+          TELEGRAM_TOOL_NOTIFICATIONS="${TELEGRAM_TOOL_NOTIFICATIONS}"
+          DATABASE_URL="${DATABASE_URL}"
+          BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
+          BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
+          NOTION_TOKEN="${NOTION_TOKEN}"
+          GH_TOKEN="${GH_TOKEN}"
+          HOST_PORT="${HOST_PORT}"
           ENVFILE
           chmod 600 .env
 
