@@ -211,6 +211,33 @@ if skill_tuples:
 
     agent_tools.append(McpSkillToolset(skills=skill_tuples))
 
+# Add Sandbox tools if enabled
+sandbox_enabled = os.getenv("SANDBOX_ENABLED", "false").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+if sandbox_enabled:
+    try:
+        from .sandbox import (
+            sandbox_list_files,
+            sandbox_read_file,
+            sandbox_run_command,
+            sandbox_write_file,
+        )
+
+        agent_tools.extend(
+            [
+                sandbox_run_command,
+                sandbox_write_file,
+                sandbox_read_file,
+                sandbox_list_files,
+            ]
+        )
+        logger.info("Sandbox tools enabled")
+    except ImportError as e:
+        logger.warning("Failed to load Sandbox tools: %s", e)
+
 # Build before_tool_callback with optional telegram notifications
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
 if telegram_tool_notifications_enabled():
@@ -218,7 +245,7 @@ if telegram_tool_notifications_enabled():
     before_tool_callbacks.append(notify_telegram_before_tool)
 
 root_agent = LlmAgent(
-    name="root_agent",
+    name="blacki",
     description=return_description_root(),
     before_agent_callback=logging_callbacks.before_agent,
     after_agent_callback=logging_callbacks.after_agent,
@@ -233,7 +260,7 @@ root_agent = LlmAgent(
 
 # Optional App configs explicitly set to None for template documentation
 app = App(
-    name="agent",
+    name="blacki",
     root_agent=root_agent,
     plugins=[
         GlobalInstructionPlugin(return_global_instruction),

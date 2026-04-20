@@ -602,6 +602,7 @@ dependencies = [
     { name = "litellm" },
     { name = "mcp" },
     { name = "openinference-instrumentation-google-adk" },
+    { name = "opensandbox" },
     { name = "opentelemetry-exporter-gcp-logging" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-instrumentation-google-genai" },
@@ -638,6 +639,7 @@ requires-dist = [
     { name = "litellm", specifier = ">=1.60.0" },
     { name = "mcp", specifier = ">=1.0.0,<2.0.0" },
     { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.8" },
+    { name = "opensandbox", specifier = ">=0.1.7" },
     { name = "opentelemetry-exporter-gcp-logging", specifier = ">=1.9.0a0,<2.0.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.37.0" },
     { name = "opentelemetry-instrumentation-google-genai", specifier = ">=0.4b0,<0.5" },
@@ -1817,6 +1819,21 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0b/68/81c8a0b90334ff11e4f285e4934c57f30bea3ef0c0b9f99b65e7b80fae3b/openinference_semantic_conventions-0.1.25.tar.gz", hash = "sha256:f0a8c2cfbd00195d1f362b4803518341e80867d446c2959bf1743f1894fce31d", size = 12767, upload-time = "2025-11-05T01:37:45.89Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fd/3d/dd14ee2eb8a3f3054249562e76b253a1545c76adbbfd43a294f71acde5c3/openinference_semantic_conventions-0.1.25-py3-none-any.whl", hash = "sha256:3814240f3bd61f05d9562b761de70ee793d55b03bca1634edf57d7a2735af238", size = 10395, upload-time = "2025-11-05T01:37:43.697Z" },
+]
+
+[[package]]
+name = "opensandbox"
+version = "0.1.7"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2a/3a/32da0c0501394e88dcd51e80e158a990d29d10fc5702918ac9ce34eac7f4/opensandbox-0.1.7.tar.gz", hash = "sha256:f347a3fdf676b867161a2a99d2174b49c1ea5b01c25ae4f088d92fd541a754b5", size = 112721, upload-time = "2026-04-07T06:36:43.548Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/04/b8/db1390c7fee7d74d818805a1c6a6a04d99f0b1128c0964e1f82853a3e078/opensandbox-0.1.7-py3-none-any.whl", hash = "sha256:1b617d2d15b7ae58257ea074f764d47a798b1b9c3e7e3488eeda64feafa4905d", size = 281837, upload-time = "2026-04-07T06:36:42.132Z" },
 ]
 
 [[package]]

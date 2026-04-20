@@ -29,6 +29,7 @@ dependencies = [
     "mcp>=1.0.0,<2.0.0",
     "apscheduler>=3.11.0,<4.0.0",
     "dateparser>=1.2.0,<2.0.0",
+    "opensandbox>=0.1.7",
 ]
 
 [project.scripts]
@@ -82,7 +83,7 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101"]  # Allow assert statements in tests
+"tests/**/*.py" = ["S101", "S108"]  # Allow assert statements and tmp paths in tests
 
 [tool.mypy]
 python_version = "3.13"
@@ -104,7 +105,7 @@ strict_equality = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*"]
+module = ["apscheduler.*", "opensandbox.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
