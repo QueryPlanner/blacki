@@ -102,6 +102,8 @@ jobs:
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
+          SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -125,6 +127,8 @@ jobs:
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
           NOTION_TOKEN="${NOTION_TOKEN}"
           GH_TOKEN="${GH_TOKEN}"
+          SANDBOX_ENABLED="${SANDBOX_ENABLED}"
+          SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
           ENVFILE
           chmod 600 /tmp/deploy.env
 
@@ -195,6 +199,8 @@ jobs:
           NOTION_TOKEN="${NOTION_TOKEN}"
           GH_TOKEN="${GH_TOKEN}"
           HOST_PORT="${HOST_PORT}"
+          SANDBOX_ENABLED="${SANDBOX_ENABLED}"
+          SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
           ENVFILE
           chmod 600 .env
 
