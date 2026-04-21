@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Any
 
 from google.adk.tools import ToolContext
 from opensandbox.exceptions import SandboxException
+from opensandbox.models.execd import RunCommandOpts
 from opensandbox.models.filesystem import SearchEntry
 
 from .manager import get_sandbox_manager
@@ -60,7 +62,8 @@ async def sandbox_run_command(
         return {"status": "error", "error": error, "output": None}
 
     try:
-        execution = await sandbox.commands.run(command)
+        opts = RunCommandOpts(timeout=timedelta(seconds=timeout))
+        execution = await sandbox.commands.run(command, opts=opts)
         output = _format_command_output(execution)
 
         if execution.error:

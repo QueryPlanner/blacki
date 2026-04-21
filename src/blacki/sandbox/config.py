@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import timedelta
 from typing import Final
 
@@ -42,8 +43,8 @@ class SandboxConfig(BaseModel):
     @field_validator("memory_limit")
     @classmethod
     def validate_memory_limit(cls, v: str) -> str:
-        if not v or not any(v.endswith(suffix) for suffix in ("Mi", "Gi", "M", "G")):
-            raise ValueError("memory_limit must end with Mi, Gi, M, or G (e.g., 512Mi)")
+        if not re.match(r"^\d+(Mi|Gi|M|G)$", v):
+            raise ValueError("memory_limit must be like 512Mi, 1Gi, 256M, or 1G")
         return v
 
     @field_validator("cpu_limit")

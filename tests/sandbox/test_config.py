@@ -49,8 +49,18 @@ class TestSandboxConfig:
 
     def test_validate_memory_limit_invalid(self) -> None:
         """Test invalid memory limit raises error."""
-        with pytest.raises(ValueError, match="memory_limit must end with"):
+        with pytest.raises(ValueError, match="memory_limit must be like"):
             SandboxConfig(memory_limit="invalid")
+
+    def test_validate_memory_limit_suffix_only(self) -> None:
+        """Test suffix-only values are rejected."""
+        with pytest.raises(ValueError, match="memory_limit must be like"):
+            SandboxConfig(memory_limit="Mi")
+
+    def test_validate_memory_limit_non_numeric(self) -> None:
+        """Test non-numeric prefix is rejected."""
+        with pytest.raises(ValueError, match="memory_limit must be like"):
+            SandboxConfig(memory_limit="abcMi")
 
     def test_validate_cpu_limit_valid(self) -> None:
         """Test valid CPU limit values."""
