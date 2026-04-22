@@ -51,6 +51,7 @@ class SandboxManager:
         self._connection_config = ConnectionConfig(
             domain=config.domain,
             api_key=config.api_key,
+            use_server_proxy=True,
         )
 
     @property
