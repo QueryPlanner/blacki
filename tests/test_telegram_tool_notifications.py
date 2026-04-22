@@ -421,7 +421,7 @@ async def test_notify_rate_limits_per_chat(
 async def test_notify_after_model_rate_limits_per_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two intermediate responses within the throttle window only produce one Telegram send."""
+    """Rate limit ensures only one Telegram send per throttle window."""
     monkeypatch.setenv("TELEGRAM_ENABLED", "true")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
