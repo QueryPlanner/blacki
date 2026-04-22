@@ -39,6 +39,10 @@ class SandboxConfig(BaseModel):
         default="opensandbox/code-interpreter:v1.0.2",
         description="Docker image for sandboxes",
     )
+    entrypoint: list[str] = Field(
+        default=["/opt/opensandbox/code-interpreter.sh"],
+        description="Entrypoint command for code interpreter sandbox",
+    )
 
     @field_validator("memory_limit")
     @classmethod
