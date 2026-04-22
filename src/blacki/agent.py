@@ -13,6 +13,7 @@ from google.adk.plugins.logging_plugin import LoggingPlugin
 
 from .callbacks import (
     LoggingCallbacks,
+    notify_telegram_after_model,
     notify_telegram_before_tool,
     telegram_tool_notifications_enabled,
 )
@@ -240,9 +241,14 @@ if sandbox_enabled:
 
 # Build before_tool_callback with optional telegram notifications
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
+after_model_callbacks: list[Any] = [logging_callbacks.after_model]
 if telegram_tool_notifications_enabled():
-    logger.info("Telegram tool notifications enabled; registering before_tool callback")
+    logger.info(
+        "Telegram tool notifications enabled; "
+        "registering before_tool and after_model callbacks"
+    )
     before_tool_callbacks.append(notify_telegram_before_tool)
+    after_model_callbacks.append(notify_telegram_after_model)
 
 root_agent = LlmAgent(
     name="blacki",
@@ -253,7 +259,7 @@ root_agent = LlmAgent(
     instruction=return_instruction_root(),
     tools=agent_tools,
     before_model_callback=logging_callbacks.before_model,
-    after_model_callback=logging_callbacks.after_model,
+    after_model_callback=after_model_callbacks,
     before_tool_callback=before_tool_callbacks,
     after_tool_callback=logging_callbacks.after_tool,
 )

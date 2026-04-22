@@ -34,7 +34,7 @@ SUPPORTED_RECURRENCE_MESSAGE = (
 async def schedule_reminder(
     tool_context: ToolContext,
     message: str,
-    reminder_datetime: str | None = None,
+    reminder_datetime: str | int | float | None = None,
     recurrence: str | None = None,
 ) -> dict[str, Any]:
     """Schedule a reminder to be sent at a specific time.
@@ -241,10 +241,11 @@ async def cancel_reminder(
         }
 
 
-def _parse_reminder_datetime(datetime_str: str) -> datetime:
+def _parse_reminder_datetime(datetime_val: str | int | float) -> datetime:
     """Parse natural-language or absolute datetimes in the app timezone, return UTC."""
     tz = get_app_timezone()
     tz_name = tz.key if tz.key else "UTC"
+    datetime_str = str(datetime_val)
     parsed_time = dateparser.parse(
         datetime_str,
         settings={
@@ -281,7 +282,7 @@ def _format_reminder(reminder: Reminder) -> dict[str, Any]:
 
 
 def _build_reminder_schedule(
-    reminder_datetime: str | None,
+    reminder_datetime: str | int | float | None,
     recurrence: str | None,
 ) -> dict[str, Any]:
     """Build the normalized schedule for one-shot or recurring reminders."""

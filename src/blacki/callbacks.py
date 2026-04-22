@@ -9,6 +9,7 @@ import asyncio
 import functools
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -20,7 +21,7 @@ from google.adk.tools.base_tool import BaseTool
 
 from .telegram import TelegramConfig
 from .telegram.api import TelegramApiClient, TelegramApiError
-from .telegram.formatting import escape_markdown
+from .telegram.formatting import escape_markdown, format_for_telegram
 from .telegram.types import ParseMode
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,11 @@ def _schedule_shared_notify_client_close_for_tests() -> None:
                 exc_info=True,
             )
 
+    coro = _close_wrapper()
     try:
-        loop.create_task(_close_wrapper())
+        loop.create_task(coro)
     except RuntimeError:
+        coro.close()
         return
 
 
@@ -214,6 +217,86 @@ async def notify_telegram_before_tool(
             "Unexpected error sending Telegram tool notification tool=%s",
             tool.name,
         )
+
+    return None
+
+
+async def notify_telegram_after_model(
+    callback_context: CallbackContext,
+    llm_response: LlmResponse,
+) -> None:
+    """Send intermediate text responses to Telegram before tool execution."""
+    if not telegram_tool_notifications_enabled():
+        return None
+
+    if not llm_response.content or not llm_response.content.parts:
+        return None
+
+    has_function_call = any(
+        getattr(part, "function_call", None) for part in llm_response.content.parts
+    )
+    if not has_function_call:
+        return None
+
+    text_parts = [
+        re.sub(r"<think>.*?</think>", "", part.text, flags=re.DOTALL).strip()
+        for part in llm_response.content.parts
+        if not getattr(part, "thought", False) and part.text
+    ]
+    text = "".join(p for p in text_parts if p).strip()
+    if not text:
+        return None
+
+    chat_id_raw = callback_context.state.get("telegram_chat_id")
+    if not chat_id_raw:
+        return None
+
+    chat_id = _parse_optional_int(chat_id_raw)
+    if chat_id is None:
+        return None
+
+    chat_key = str(chat_id)
+    now = time.monotonic()
+    if not _rate_limit_allows_notification(chat_key, now):
+        logger.debug(
+            "Skipping Telegram intermediate notify (rate limit) chat_id=%s",
+            chat_id,
+        )
+        return None
+
+    thread_id = _parse_optional_int(callback_context.state.get("telegram_thread_id"))
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return None
+
+    formatted_text = format_for_telegram(text)
+
+    # Use streaming's split_long_message if it exceeds limits, or just send
+    # For intermediate thoughts, we can just truncate or chunk it.
+    from .telegram.streaming import split_long_message
+
+    chunks = split_long_message(formatted_text)
+    if not chunks:
+        return None
+
+    try:
+        client = await _shared_telegram_notify_client(token)
+        for chunk in chunks:
+            await client.send_message(
+                chat_id=chat_id,
+                text=chunk,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                message_thread_id=thread_id,
+                disable_notification=True,
+            )
+    except TelegramApiError as exc:
+        logger.warning(
+            "Telegram intermediate notification failed: %s",
+            exc,
+        )
+    except Exception:
+        logger.exception("Unexpected error sending Telegram intermediate notification")
 
     return None
 
