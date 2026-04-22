@@ -9,6 +9,7 @@ import asyncio
 import functools
 import logging
 import os
+import re
 import time
 from typing import Any
 
@@ -238,12 +239,19 @@ async def notify_telegram_after_model(
     if not has_function_call:
         return None
 
-    # Extract all text parts (thoughts and content)
+    # Extract all text parts, ignoring thoughts
     text_parts = []
     # We already know content and parts exist if has_function_call is True
     for part in llm_response.content.parts:  # type: ignore[union-attr]
+        # Skip explicitly marked thought blocks
+        if getattr(part, "thought", False):
+            continue
+
         if part.text:
-            text_parts.append(part.text)
+            # Also strip embedded <think>...</think> tags which some models use
+            text = re.sub(r"<think>.*?</think>", "", part.text, flags=re.DOTALL)
+            if text.strip():
+                text_parts.append(text)
 
     text = "".join(text_parts).strip()
     if not text:

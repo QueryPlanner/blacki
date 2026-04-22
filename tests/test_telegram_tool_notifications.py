@@ -123,6 +123,44 @@ async def test_notify_after_model_sends_intermediate_text(
 
 
 @pytest.mark.asyncio
+async def test_notify_after_model_skips_thoughts_and_think_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not send thought parts or <think> tag contents as intermediate messages."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MagicMock(spec=CallbackContext)
+        ctx.state = MockState({"telegram_chat_id": "1"})
+
+        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
+
+        # This part should be ignored because thought=True
+        explicit_thought = Part(text="I am thinking...", thought=True)
+
+        # This part has text with a <think> block that should be stripped
+        think_tag_part = Part.from_text(
+            text="<think>internal monologue</think>Actual message"
+        )
+
+        response = LlmResponse(
+            content=Content(parts=[explicit_thought, think_tag_part, tool_call_part])
+        )
+        await callbacks_module.notify_telegram_after_model(ctx, response)
+
+    mock_client.send_message.assert_awaited_once()
+    sent_text = mock_client.send_message.await_args.kwargs["text"]
+    assert "internal monologue" not in sent_text
+    assert "I am thinking..." not in sent_text
+    assert "Actual message" in sent_text
+
+
+@pytest.mark.asyncio
 async def test_notify_after_model_skips_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
