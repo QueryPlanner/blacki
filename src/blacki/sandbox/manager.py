@@ -51,6 +51,7 @@ class SandboxManager:
         self._connection_config = ConnectionConfig(
             domain=config.domain,
             api_key=config.api_key,
+            use_server_proxy=True,
         )
 
     @property
@@ -94,6 +95,7 @@ class SandboxManager:
             sandbox = await Sandbox.create(
                 self._config.image,
                 connection_config=self._connection_config,
+                entrypoint=self._config.entrypoint,
                 timeout=self._config.timeout,
                 resource=self._config.resource,
             )
