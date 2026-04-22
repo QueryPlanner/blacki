@@ -82,9 +82,11 @@ def _schedule_shared_notify_client_close_for_tests() -> None:
                 exc_info=True,
             )
 
+    coro = _close_wrapper()
     try:
-        loop.create_task(_close_wrapper())
+        loop.create_task(coro)
     except RuntimeError:
+        coro.close()
         return
 
 
@@ -227,33 +229,21 @@ async def notify_telegram_after_model(
     if not telegram_tool_notifications_enabled():
         return None
 
-    # Check if there is a function call in the response parts
-    has_function_call = False
-    if llm_response.content and llm_response.content.parts:
-        for part in llm_response.content.parts:
-            if part.function_call:
-                has_function_call = True
-                break
+    if not llm_response.content or not llm_response.content.parts:
+        return None
 
-    # Only send intermediate responses (those that also have tool calls)
+    has_function_call = any(
+        getattr(part, "function_call", None) for part in llm_response.content.parts
+    )
     if not has_function_call:
         return None
 
-    # Extract all text parts, ignoring thoughts
-    text_parts = []
-    # We already know content and parts exist if has_function_call is True
-    for part in llm_response.content.parts:  # type: ignore[union-attr]
-        # Skip explicitly marked thought blocks
-        if getattr(part, "thought", False):
-            continue
-
-        if part.text:
-            # Also strip embedded <think>...</think> tags which some models use
-            text = re.sub(r"<think>.*?</think>", "", part.text, flags=re.DOTALL)
-            if text.strip():
-                text_parts.append(text)
-
-    text = "".join(text_parts).strip()
+    text_parts = [
+        re.sub(r"<think>.*?</think>", "", part.text, flags=re.DOTALL).strip()
+        for part in llm_response.content.parts
+        if not getattr(part, "thought", False) and part.text
+    ]
+    text = "".join(p for p in text_parts if p).strip()
     if not text:
         return None
 
@@ -263,6 +253,15 @@ async def notify_telegram_after_model(
 
     chat_id = _parse_optional_int(chat_id_raw)
     if chat_id is None:
+        return None
+
+    chat_key = str(chat_id)
+    now = time.monotonic()
+    if not _rate_limit_allows_notification(chat_key, now):
+        logger.debug(
+            "Skipping Telegram intermediate notify (rate limit) chat_id=%s",
+            chat_id,
+        )
         return None
 
     thread_id = _parse_optional_int(callback_context.state.get("telegram_thread_id"))

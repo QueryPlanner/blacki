@@ -417,6 +417,37 @@ async def test_notify_rate_limits_per_chat(
     assert len(mock_client.send_message.await_args_list) == 1
 
 
+@pytest.mark.asyncio
+async def test_notify_after_model_rate_limits_per_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two intermediate responses within the throttle window only produce one Telegram send."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+
+    ctx = MagicMock(spec=CallbackContext)
+    ctx.state = MockState({"telegram_chat_id": "100"})
+
+    response = LlmResponse(
+        content=Content(
+            parts=[
+                Part(function_call=FunctionCall(name="foo", args={})),
+                Part.from_text(text="thinking..."),
+            ]
+        )
+    )
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        await callbacks_module.notify_telegram_after_model(ctx, response)
+        await callbacks_module.notify_telegram_after_model(ctx, response)
+
+    assert len(mock_client.send_message.await_args_list) == 1
+
+
 def test_evict_oldest_rate_limit_entries_noop() -> None:
     """Eviction helper returns early for non-positive count or empty map."""
     callbacks_module._TOOL_NOTIFY_LAST.clear()
