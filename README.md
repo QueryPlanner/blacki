@@ -12,24 +12,26 @@ We believe you should own your agents. This template is designed to strip away t
 - 🔄 **CI/CD Included**: GitHub Actions workflow builds multi-arch images (AMD64/ARM64) and pushes to GHCR automatically.
 - 🔭 **Open Observability**: Built-in OpenTelemetry (OTel) instrumentation. Pre-configured for **Langfuse**, but easily adaptable to Jaeger, Prometheus, or any OTel-compatible backend.
 - 🚀 **Modern Stack**: Python 3.13, `uv`, `fastapi`, `asyncpg`.
-- 💾 **Production Persistence**: Postgres-backed sessions out of the box.
+- ⚡ **Fast Response Times**: In-memory sessions for low-latency agent responses.
 
 ## Quickstart
 
 ### Prerequisites
 - Python **3.13+**
 - [`uv`](https://github.com/astral-sh/uv)
-- A Postgres connection string
 - An LLM API Key (OpenRouter or Google)
+
+Optional:
+- A Postgres connection string (for Reminders system)
 
 ### 1) Configure Environment
 
 Copy `.env.example` to `.env`:
 
 - **`AGENT_NAME`**: Unique ID for your agent.
-- **`DATABASE_URL`**: Postgres connection string.
 - **`OPENROUTER_API_KEY`**: Recommended for accessing varied models.
 - **`GOOGLE_API_KEY`**: Optional. Required only if using Gemini models directly.
+- **`DATABASE_URL`**: Optional. Postgres for Reminders system only.
 
 ### 2) Install Dependencies
 

@@ -12,7 +12,7 @@ Google ADK is useful even without Google Cloud:
 
 - **Entry point**: `python -m blacki.server`
   - Wraps `google.adk.cli.fast_api.get_fast_api_app(...)`
-  - Forces a Postgres-backed session store via `DATABASE_URL`
+  - Uses in-memory sessions by default for fast response times
   - Configures OpenTelemetry for vendor-neutral tracing (Langfuse auto-config included)
 - **Agents directory**: `src/`
   - ADK Dev UI lists *directories* under `agents_dir`.
@@ -21,12 +21,27 @@ Google ADK is useful even without Google Cloud:
 - **DB URL normalization**: Handled in `server.py`
   - Converts standard Postgres URLs (e.g. `postgresql://`) to asyncpg-compatible ones (`postgresql+asyncpg://`)
 
-### What ADK uses the database for
+### Session Architecture (Performance-First)
 
-ADK session persistence stores:
+ADK uses **in-memory sessions by default** for maximum performance:
+
+- In-memory sessions: ~5ms load time
+- Postgres sessions: ~2-4.6 seconds load time (40% of total response time)
+
+**Why in-memory?** Each ADK turn loads the entire conversation history synchronously. On a cheap VPS, the network round-trip to Postgres adds unacceptable latency before the LLM can even start thinking.
+
+**Postgres is reserved for:**
+- Reminders system (persistent scheduled tasks)
+- Any other application-level persistence needs
+
+To enable persistent ADK sessions (not recommended for most use cases), set `AGENT_ENGINE` to use Google Agent Engine.
+
+### What ADK uses sessions for
+
+ADK session state stores:
 
 - session rows (IDs + state)
 - events (conversation history / tool calls)
 - app/user state snapshots
 
-This is what makes the Dev UI “remember” conversations across restarts and allows for persistent agent memory.
+In-memory sessions are lost on restart, but the trade-off is worth it for the latency improvement. The agent remains functional and responsive without the database overhead.
