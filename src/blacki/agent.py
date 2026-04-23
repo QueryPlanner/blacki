@@ -105,76 +105,6 @@ if use_litellm:
 skills_dir = Path(__file__).parent / "skills"
 
 
-def _create_skill_tuples() -> list[tuple[Any, Any]]:
-    """Create skill tuples for McpSkillToolset.
-
-    Returns a list of (Skill, McpToolset | None) tuples for all available
-    skills with their optional MCP toolsets.
-    """
-    skills_list: list[tuple[Any, Any]] = []
-
-    notion_token = os.getenv("NOTION_TOKEN", "").strip()
-    if notion_token:
-        try:
-            from google.adk.tools.mcp_tool.mcp_session_manager import (
-                StdioConnectionParams,
-            )
-            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-            from mcp import StdioServerParameters
-
-            from .skills import load_skill_from_dir
-
-            skill = load_skill_from_dir(skills_dir / "notion")
-            if skill:
-                notion_mcp = McpToolset(
-                    connection_params=StdioConnectionParams(
-                        server_params=StdioServerParameters(
-                            command="npx",
-                            args=["-y", "@notionhq/notion-mcp-server"],
-                            env={"NOTION_TOKEN": notion_token},
-                        ),
-                        timeout=30.0,
-                    ),
-                )
-                skills_list.append((skill, notion_mcp))
-                logger.info("Notion MCP skill enabled")
-        except ImportError as e:
-            logger.warning("MCP dependencies not available for Notion skill: %s", e)
-        except Exception as e:
-            logger.warning("Failed to create Notion MCP skill: %s", e)
-
-    github_token = os.getenv("GH_TOKEN", "").strip()
-    if github_token:
-        try:
-            from google.adk.tools.mcp_tool.mcp_session_manager import (
-                StreamableHTTPConnectionParams,
-            )
-            from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-
-            from .skills import load_skill_from_dir
-
-            skill = load_skill_from_dir(skills_dir / "github")
-            if skill:
-                github_mcp = McpToolset(
-                    connection_params=StreamableHTTPConnectionParams(
-                        url="https://api.githubcopilot.com/mcp/",
-                        headers={
-                            "Authorization": f"Bearer {github_token}",
-                            "Content-Type": "application/json",
-                        },
-                        timeout=30.0,
-                    ),
-                )
-                skills_list.append((skill, github_mcp))
-                logger.info("GitHub MCP skill enabled")
-        except ImportError as e:
-            logger.warning("MCP dependencies not available for GitHub skill: %s", e)
-        except Exception as e:
-            logger.warning("Failed to create GitHub MCP skill: %s", e)
-
-    return skills_list
-
-
 # Build the list of tools
 agent_tools: list[Any] = [
     example_tool,
@@ -205,12 +135,17 @@ if database_url:
     except ImportError as e:
         logger.warning("Failed to load Reminder tools: %s", e)
 
-# Add MCP skills if available
-skill_tuples = _create_skill_tuples()
-if skill_tuples:
+# Add Skills toolset (explore_repo skill)
+try:
+    from .skills import load_skill_from_dir
     from .skills.mcp_skill_toolset import McpSkillToolset
 
-    agent_tools.append(McpSkillToolset(skills=skill_tuples))
+    explore_repo_skill = load_skill_from_dir(skills_dir / "explore_repo")
+    if explore_repo_skill:
+        agent_tools.append(McpSkillToolset(skills=[(explore_repo_skill, None)]))
+        logger.info("Explore repo skill enabled")
+except ImportError as e:
+    logger.warning("Failed to load skills toolset: %s", e)
 
 # Add Sandbox tools if enabled
 sandbox_enabled = os.getenv("SANDBOX_ENABLED", "false").strip().lower() in (

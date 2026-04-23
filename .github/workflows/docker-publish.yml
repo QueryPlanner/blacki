@@ -100,7 +100,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
           SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
@@ -125,7 +124,6 @@ jobs:
           DATABASE_URL="${DATABASE_URL}"
           BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          NOTION_TOKEN="${NOTION_TOKEN}"
           GH_TOKEN="${GH_TOKEN}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
@@ -196,7 +194,6 @@ jobs:
           DATABASE_URL="${DATABASE_URL}"
           BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          NOTION_TOKEN="${NOTION_TOKEN}"
           GH_TOKEN="${GH_TOKEN}"
           HOST_PORT="${HOST_PORT}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
