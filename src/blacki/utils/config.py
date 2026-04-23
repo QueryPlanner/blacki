@@ -234,14 +234,11 @@ class ServerEnv(BaseModel):
 
     @property
     def session_uri(self) -> str | None:
-        """Session service URI (Database or Agent Engine)."""
-        if self.database_url:
-            # asyncpg requires 'ssl=require' instead of 'sslmode=require'
-            # Also removing channel_binding as it causes TypeError with current
-            # sqlalchemy/asyncpg setup
-            return self.database_url.replace("sslmode=require", "ssl=require").replace(
-                "&channel_binding=require", ""
-            )
+        """Session service URI (Agent Engine or in-memory).
+
+        Returns agent_engine_uri for ADK sessions, defaulting to None for
+        in-memory sessions. DATABASE_URL is reserved for the Reminders system.
+        """
         return self.agent_engine_uri
 
     @property

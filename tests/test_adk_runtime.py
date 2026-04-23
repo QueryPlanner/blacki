@@ -36,13 +36,11 @@ def _build_server_env(**overrides: str) -> ServerEnv:
     return ServerEnv.model_validate(environment)
 
 
-def test_build_session_service_uri_converts_postgres_scheme() -> None:
-    """Test that postgres URIs are normalized for asyncpg."""
+def test_build_session_service_uri_ignores_database_url() -> None:
+    """Test that DATABASE_URL is ignored for session URIs (reserved for Reminders)."""
     env = _build_server_env(DATABASE_URL="postgresql://user:pass@localhost/db")
 
-    assert (
-        build_session_service_uri(env) == "postgresql+asyncpg://user:pass@localhost/db"
-    )
+    assert build_session_service_uri(env) is None
 
 
 def test_build_session_service_uri_returns_none_without_config() -> None:
