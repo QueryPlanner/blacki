@@ -102,6 +102,7 @@ jobs:
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
           SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
           SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -125,6 +126,7 @@ jobs:
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
+          GH_TOKEN="${GH_TOKEN}"
           ENVFILE
           chmod 600 /tmp/deploy.env
 
@@ -198,17 +200,19 @@ jobs:
           ENVFILE
           chmod 600 .env
 
-          # 8. Deploy with dynamic image
+          # 8. Authenticate to GHCR for pulling private packages
+          echo "$GH_TOKEN" | docker login ghcr.io -u queryplanner --password-stdin
+          # 9. Pull and start containers
           echo "Pulling and starting containers..."
           export IMAGE="$IMAGE_NAME"
           docker compose pull
           docker compose up -d
 
-          # 9. Final cleanup of unused images
+          # 10. Final cleanup of unused images
           echo "Final cleanup..."
           docker image prune -af 2>/dev/null || true
 
-          # 10. Health check with retries
+          # 11. Health check with retries
           echo "Waiting for health check..."
           MAX_RETRIES=12
           RETRY_COUNT=0
@@ -231,12 +235,12 @@ jobs:
             exit 1
           fi
 
-          # 11. Show status
+          # 12. Show status
           echo "=== Deployment Complete ==="
           docker compose ps
           df -h /
 
-          # 12. Cleanup temp env file
+          # 13. Cleanup temp env file
           rm -f /tmp/deploy.env
           DEPLOY_SCRIPT
 
