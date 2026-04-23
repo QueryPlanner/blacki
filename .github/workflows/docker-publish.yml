@@ -100,7 +100,6 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
           SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
         run: |
@@ -124,7 +123,6 @@ jobs:
           DATABASE_URL="${DATABASE_URL}"
           BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          GH_TOKEN="${GH_TOKEN}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
           ENVFILE
@@ -194,28 +192,23 @@ jobs:
           DATABASE_URL="${DATABASE_URL}"
           BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          GH_TOKEN="${GH_TOKEN}"
           HOST_PORT="${HOST_PORT}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
           ENVFILE
           chmod 600 .env
 
-          # 8. Authenticate with GHCR so the server can pull private images
-          # GH_TOKEN is available from the sourced deploy.env
-          echo "$GH_TOKEN" | docker login ghcr.io -u queryplanner --password-stdin
-
-          # 9. Deploy with dynamic image
+          # 8. Deploy with dynamic image
           echo "Pulling and starting containers..."
           export IMAGE="$IMAGE_NAME"
           docker compose pull
           docker compose up -d
 
-          # 10. Final cleanup of unused images
+          # 9. Final cleanup of unused images
           echo "Final cleanup..."
           docker image prune -af 2>/dev/null || true
 
-          # 11. Health check with retries
+          # 10. Health check with retries
           echo "Waiting for health check..."
           MAX_RETRIES=12
           RETRY_COUNT=0
@@ -238,12 +231,12 @@ jobs:
             exit 1
           fi
 
-          # 12. Show status
+          # 11. Show status
           echo "=== Deployment Complete ==="
           docker compose ps
           df -h /
 
-          # 13. Cleanup temp env file
+          # 12. Cleanup temp env file
           rm -f /tmp/deploy.env
           DEPLOY_SCRIPT
 
