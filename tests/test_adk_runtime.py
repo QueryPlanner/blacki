@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Tests for shared ADK runtime helpers."""
 
 from collections.abc import AsyncIterator

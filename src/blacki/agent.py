@@ -135,6 +135,58 @@ if database_url:
     except ImportError as e:
         logger.warning("Failed to load Reminder tools: %s", e)
 
+# Add Calorie tools if database is configured
+if database_url:
+    try:
+        from .calories import (
+            delete_meal,
+            edit_meal,
+            get_calorie_summary,
+            log_meal,
+            set_calorie_goal,
+        )
+
+        agent_tools.extend(
+            [
+                log_meal,
+                get_calorie_summary,
+                edit_meal,
+                delete_meal,
+                set_calorie_goal,
+            ]
+        )
+        logger.info("Calorie tracking tools enabled")
+    except ImportError as e:
+        logger.warning("Failed to load Calorie tools: %s", e)
+
+# Add Workout tools if database is configured
+if database_url:
+    try:
+        from .workouts import (
+            delete_workout,
+            get_exercise_progress,
+            get_last_workout,
+            get_todays_workout,
+            list_recent_workouts,
+            log_workout,
+            set_workout_split,
+        )
+
+        agent_tools.extend(
+            [
+                log_workout,
+                get_last_workout,
+                get_exercise_progress,
+                list_recent_workouts,
+                delete_workout,
+                set_workout_split,
+                get_todays_workout,
+            ]
+        )
+        logger.info("Workout tracking tools enabled")
+    except ImportError as e:
+        logger.warning("Failed to load Workout tools: %s", e)
+
 # Add Skills toolset (explore_repo skill)
 try:
     from .skills import load_skill_from_dir

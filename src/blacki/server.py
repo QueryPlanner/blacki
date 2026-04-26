@@ -125,7 +125,20 @@ async def _init_reminder_pool(database_url: str) -> asyncpg.Pool:
     from .reminders import init_reminder_storage
 
     await init_reminder_storage(pool)
-    logger.info("Reminder storage initialized with Postgres pool")
+
+    from .utils.preferences import init_preferences_storage
+
+    await init_preferences_storage(pool)
+
+    from .calories import init_calorie_storage
+
+    await init_calorie_storage(pool)
+
+    from .workouts import init_workout_storage
+
+    await init_workout_storage(pool)
+
+    logger.info("All storage modules initialized with Postgres pool")
     return pool
 
 
@@ -191,6 +204,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await _stop_reminder_scheduler()
+
+        # Close additional storages
+        from .calories import close_calorie_storage
+        from .utils.preferences import close_preferences_storage
+        from .workouts import close_workout_storage
+
+        await close_preferences_storage()
+        await close_calorie_storage()
+        await close_workout_storage()
+
         await _close_reminder_pool()
         await _stop_telegram_bot()
 
