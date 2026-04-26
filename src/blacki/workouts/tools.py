@@ -50,18 +50,42 @@ async def log_workout(
                 "message": "Each exercise must have 'name' and 'sets' keys",
             }
 
+        sets_data = ex_dict["sets"]
+        sets_list: list[dict[str, Any]] = []
+
+        if isinstance(sets_data, int):
+            # Shorthand: sets=3, reps=8, weight=100
+            reps = ex_dict.get("reps", 0)
+            weight = ex_dict.get("weight_kg") or ex_dict.get("weight", 0)
+            sets_list = [{"weight_kg": weight, "reps": reps} for _ in range(sets_data)]
+        elif isinstance(sets_data, dict):
+            sets_list = [sets_data]
+        elif isinstance(sets_data, list):
+            sets_list = sets_data
+        else:
+            return {
+                "status": "error",
+                "message": "'sets' must be a list of dictionaries or an integer",
+            }
+
         sets: list[SetDetail] = []
-        for set_dict in ex_dict["sets"]:
-            if "weight_kg" not in set_dict or "reps" not in set_dict:
+        for set_dict in sets_list:
+            if "weight_kg" not in set_dict and "weight" not in set_dict:
                 return {
                     "status": "error",
-                    "message": "Each set must have 'weight_kg' and 'reps'",
+                    "message": "Each set must have 'weight_kg' (or 'weight')",
+                }
+            if "reps" not in set_dict:
+                return {
+                    "status": "error",
+                    "message": "Each set must have 'reps'",
                 }
 
+            weight_val = set_dict.get("weight_kg") or set_dict.get("weight", 0)
             sets.append(
                 SetDetail(
                     set_num=set_dict.get("set_num", len(sets) + 1),
-                    weight_kg=float(set_dict["weight_kg"]),
+                    weight_kg=float(weight_val),
                     reps=int(set_dict["reps"]),
                     is_warmup=bool(set_dict.get("is_warmup", False)),
                 )
@@ -90,13 +114,35 @@ async def log_workout(
     # Check if we have a previous session for comparison BEFORE saving the new one
     last_session = await storage.get_latest_split_session(user_id, split_name)
 
-    session_id = await storage.create_session(session)
+    if last_session and last_session.workout_date == parsed_date:
+        # User is logging more exercises for today's session, append them
+        session_id = last_session.id
+        for exercise in parsed_exercises:
+            # Update order to be after existing exercises
+            exercise.exercise_order += len(last_session.exercises)
+            await storage.add_exercise(session_id, exercise)
 
-    result = {
-        "status": "success",
-        "session_id": session_id,
-        "message": f"Logged '{split_name}' workout with {len(exercises)} exercises.",
-    }
+        result = {
+            "status": "success",
+            "session_id": session_id,
+            "message": (
+                f"Added {len(exercises)} exercises "
+                f"to today's '{split_name}' workout."
+            ),
+        }
+        # For comparison, we want the session *before* today's, but since we
+        # don't fetch that easily, we skip comparison for appends.
+        last_session = None
+    else:
+        session_id = await storage.create_session(session)
+        result = {
+            "status": "success",
+            "session_id": session_id,
+            "message": (
+                f"Logged '{split_name}' workout "
+                f"with {len(exercises)} exercises."
+            ),
+        }
 
     if last_session:
         result["comparison"] = {
