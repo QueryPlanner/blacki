@@ -114,9 +114,11 @@ async def log_workout(
     # Check if we have a previous session for comparison BEFORE saving the new one
     last_session = await storage.get_latest_split_session(user_id, split_name)
 
+    result: dict[str, Any]
     if last_session and last_session.workout_date == parsed_date:
         # User is logging more exercises for today's session, append them
         session_id = last_session.id
+        assert session_id is not None
         for exercise in parsed_exercises:
             # Update order to be after existing exercises
             exercise.exercise_order += len(last_session.exercises)
@@ -126,8 +128,7 @@ async def log_workout(
             "status": "success",
             "session_id": session_id,
             "message": (
-                f"Added {len(exercises)} exercises "
-                f"to today's '{split_name}' workout."
+                f"Added {len(exercises)} exercises to today's '{split_name}' workout."
             ),
         }
         # For comparison, we want the session *before* today's, but since we
@@ -139,8 +140,7 @@ async def log_workout(
             "status": "success",
             "session_id": session_id,
             "message": (
-                f"Logged '{split_name}' workout "
-                f"with {len(exercises)} exercises."
+                f"Logged '{split_name}' workout with {len(exercises)} exercises."
             ),
         }
 

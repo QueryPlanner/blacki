@@ -90,10 +90,10 @@ class PostgresWorkoutStorage:
             CREATE TABLE IF NOT EXISTS workout_sessions (
                 id            BIGSERIAL PRIMARY KEY,
                 user_id       TEXT      NOT NULL,
-                workout_date  TEXT      NOT NULL,
+                workout_date  DATE      NOT NULL,
                 split_name    TEXT      NOT NULL,
                 notes         TEXT,
-                created_at    TEXT      NOT NULL
+                created_at    TIMESTAMPTZ NOT NULL
             )
         """)
         await conn.execute("""
@@ -363,10 +363,14 @@ class PostgresWorkoutStorage:
         return WorkoutSession(
             id=int(row["id"]),
             user_id=row["user_id"],
-            workout_date=row["workout_date"],
+            workout_date=str(row["workout_date"]),
             split_name=row["split_name"],
             notes=row["notes"],
-            created_at=row["created_at"],
+            created_at=(
+                row["created_at"].isoformat()
+                if hasattr(row["created_at"], "isoformat")
+                else str(row["created_at"])
+            ),
             exercises=[],
         )
 

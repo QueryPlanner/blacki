@@ -53,9 +53,8 @@ class PostgresPreferencesStorage:
         )
         if row is None:
             return default
-        # asyncpg returns JSONB as a JSON string when fetched normally
-        # but we can parse it
-        return json.loads(row["value"])
+        value = row["value"]
+        return json.loads(value) if isinstance(value, str) else value
 
     async def set(self, user_id: str, key: str, value: Any) -> None:
         """Set a preference value."""

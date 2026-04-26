@@ -70,8 +70,8 @@ class PostgresCalorieStorage:
                 carbs_g       INTEGER,
                 fat_g         INTEGER,
                 meal_type     TEXT,
-                logged_at     TEXT      NOT NULL,
-                logged_date   TEXT      NOT NULL
+                logged_at     TIMESTAMPTZ NOT NULL,
+                logged_date   DATE      NOT NULL
             )
         """)
         await conn.execute("""
@@ -111,7 +111,6 @@ class PostgresCalorieStorage:
             SELECT * FROM calorie_logs
             WHERE user_id = $1 AND logged_date = $2
             ORDER BY logged_at ASC
-            LIMIT 50
             """,
             user_id,
             date_str,
@@ -178,7 +177,7 @@ class PostgresCalorieStorage:
         for r in rows:
             summaries.append(
                 DailySummary(
-                    date=r["logged_date"],
+                    date=str(r["logged_date"]),
                     total_calories=int(r["total_calories"])
                     if r["total_calories"] is not None
                     else 0,
@@ -234,8 +233,12 @@ class PostgresCalorieStorage:
             carbs_g=int(row["carbs_g"]) if row["carbs_g"] is not None else None,
             fat_g=int(row["fat_g"]) if row["fat_g"] is not None else None,
             meal_type=row["meal_type"],
-            logged_at=row["logged_at"],
-            logged_date=row["logged_date"],
+            logged_at=(
+                row["logged_at"].isoformat()
+                if hasattr(row["logged_at"], "isoformat")
+                else str(row["logged_at"])
+            ),
+            logged_date=str(row["logged_date"]),
         )
 
 
