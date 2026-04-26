@@ -225,6 +225,7 @@ async def test_get_todays_workout_rest_day(
     assert result["status"] == "rest_day"
     assert "rest" in result["message"].lower()
 
+
 @pytest.mark.asyncio
 @patch("blacki.workouts.tools.get_storage")
 async def test_log_workout_shorthand_sets(mock_get_storage, mock_tool_context):
@@ -245,10 +246,24 @@ async def test_log_workout_shorthand_sets(mock_get_storage, mock_tool_context):
     assert result["status"] == "success"
     session_arg = mock_storage.create_session.call_args[0][0]
     assert len(session_arg.exercises) == 1
-    
+
     bench = session_arg.exercises[0]
     assert bench.exercise_name == "bench press"
     assert len(bench.sets) == 3
     for s in bench.sets:
         assert s.weight_kg == 100
         assert s.reps == 8
+
+
+@pytest.mark.asyncio
+async def test_missing_user_id() -> None:
+    mock_context = create_autospec(ToolContext, spec_set=True, instance=True)
+    mock_context.user_id = None
+
+    assert (await log_workout(mock_context, "push", []))["status"] == "error"
+    assert (await get_last_workout(mock_context, "push"))["status"] == "error"
+    assert (await get_exercise_progress(mock_context, "bench"))["status"] == "error"
+    assert (await list_recent_workouts(mock_context))["status"] == "error"
+    assert (await delete_workout(mock_context, 1))["status"] == "error"
+    assert (await set_workout_split(mock_context, {}))["status"] == "error"
+    assert (await get_todays_workout(mock_context))["status"] == "error"

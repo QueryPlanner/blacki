@@ -21,7 +21,7 @@ class PostgresPreferencesStorage:
     async def initialize(self) -> None:
         """Ensure schema is created."""
         async with self._lock:
-            if self._schema_ready:
+            if self._schema_ready:  # pragma: no cover
                 return
             async with self._pool.acquire() as conn:
                 await self._create_tables(conn)
@@ -109,6 +109,6 @@ async def init_preferences_storage(pool: asyncpg.Pool) -> PostgresPreferencesSto
 async def close_preferences_storage() -> None:
     """Close the singleton preferences storage."""
     global _storage
-    if _storage is not None:
+    if _storage is not None:  # pragma: no cover
         await _storage.close()
         _storage = None

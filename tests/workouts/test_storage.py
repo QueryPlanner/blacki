@@ -210,3 +210,20 @@ async def test_singleton(mock_pool) -> None:
     await close_workout_storage()
     with pytest.raises(RuntimeError):
         get_storage()
+
+
+@pytest.mark.asyncio
+async def test_get_latest_split_session(workout_storage, mock_pool) -> None:
+    mock_pool.fetchrow.return_value = {
+        "id": 1,
+        "user_id": "user1",
+        "workout_date": "2026-04-26",
+        "split_name": "push",
+        "notes": None,
+        "created_at": "2026-04-26T10:00:00",
+    }
+    mock_pool.fetch.return_value = []
+
+    session = await workout_storage.get_latest_split_session("user1", "push")
+    assert session is not None
+    assert session.id == 1
