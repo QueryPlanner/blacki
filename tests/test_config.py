@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Comprehensive unit tests for config module."""
 
 from typing import Any

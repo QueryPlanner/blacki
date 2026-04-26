@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Integration tests for agent configuration and component wiring.
 
 This module validates the basic structure and wiring of ADK app components.

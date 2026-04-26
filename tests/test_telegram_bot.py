@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Unit tests for Telegram bot module."""
 
 import asyncio

@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Unit tests for timezone utilities."""
 
 from datetime import UTC, datetime

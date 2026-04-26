@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Unit tests for the LoggingCallbacks class in the blacki.logging_callbacks module."""
 
 import logging

@@ -1,0 +1,268 @@
+import asyncio
+import logging
+from collections.abc import Mapping
+from typing import Any
+
+import asyncpg  # type: ignore[import-untyped]
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+
+class CalorieEntry(BaseModel):
+    """A single calorie log entry."""
+
+    id: int | None = None
+    user_id: str
+    description: str
+    calories: int
+    protein_g: int | None = None
+    carbs_g: int | None = None
+    fat_g: int | None = None
+    meal_type: str | None = None  # breakfast/lunch/dinner/snack
+    logged_at: str  # UTC ISO
+    logged_date: str  # YYYY-MM-DD local
+
+
+class DailySummary(BaseModel):
+    """Summary of calorie intake for a specific date."""
+
+    date: str  # YYYY-MM-DD
+    total_calories: int = 0
+    total_protein_g: int | None = None
+    total_carbs_g: int | None = None
+    total_fat_g: int | None = None
+    entry_count: int = 0
+    entries: list[CalorieEntry] = []  # populated only in single-day queries
+
+
+class PostgresCalorieStorage:
+    """Storage for calorie tracking using Postgres via asyncpg."""
+
+    def __init__(self, pool: asyncpg.Pool) -> None:
+        self._pool = pool
+        self._lock = asyncio.Lock()
+        self._schema_ready = False
+
+    async def initialize(self) -> None:
+        """Ensure schema is created."""
+        async with self._lock:
+            if self._schema_ready:
+                return
+            async with self._pool.acquire() as conn:
+                await self._create_tables(conn)
+            self._schema_ready = True
+            logger.info("Calorie storage schema ready (Postgres)")
+
+    async def close(self) -> None:
+        """Mark uninitialized."""
+        async with self._lock:
+            self._schema_ready = False
+
+    async def _create_tables(self, conn: asyncpg.Connection) -> None:
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS calorie_logs (
+                id            BIGSERIAL PRIMARY KEY,
+                user_id       TEXT      NOT NULL,
+                description   TEXT      NOT NULL,
+                calories      INTEGER   NOT NULL,
+                protein_g     INTEGER,
+                carbs_g       INTEGER,
+                fat_g         INTEGER,
+                meal_type     TEXT,
+                logged_at     TEXT      NOT NULL,
+                logged_date   TEXT      NOT NULL
+            )
+        """)
+        await conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_calorie_logs_user_date
+                ON calorie_logs (user_id, logged_date)
+        """)
+
+    async def add_entry(self, entry: CalorieEntry) -> int:
+        """Insert a calorie entry and return its new row ID."""
+        rid = await self._pool.fetchval(
+            """
+            INSERT INTO calorie_logs
+                (
+                    user_id, description, calories, protein_g, carbs_g, fat_g,
+                    meal_type, logged_at, logged_date
+                )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+
+            """,
+            entry.user_id,
+            entry.description,
+            entry.calories,
+            entry.protein_g,
+            entry.carbs_g,
+            entry.fat_g,
+            entry.meal_type,
+            entry.logged_at,
+            entry.logged_date,
+        )
+        return int(rid)
+
+    async def get_daily_summary(self, user_id: str, date_str: str) -> DailySummary:
+        """Get summary and up to 50 entries for a specific day."""
+        rows = await self._pool.fetch(
+            """
+            SELECT * FROM calorie_logs
+            WHERE user_id = $1 AND logged_date = $2
+            ORDER BY logged_at ASC
+            LIMIT 50
+            """,
+            user_id,
+            date_str,
+        )
+
+        entries = [self._row_to_entry(r) for r in rows]
+
+        summary = DailySummary(date=date_str, entry_count=len(entries), entries=entries)
+
+        has_protein = False
+        has_carbs = False
+        has_fat = False
+
+        summary.total_protein_g = 0
+        summary.total_carbs_g = 0
+        summary.total_fat_g = 0
+
+        for e in entries:
+            summary.total_calories += e.calories
+            if e.protein_g is not None:
+                has_protein = True
+                summary.total_protein_g += e.protein_g
+            if e.carbs_g is not None:
+                has_carbs = True
+                summary.total_carbs_g += e.carbs_g
+            if e.fat_g is not None:
+                has_fat = True
+                summary.total_fat_g += e.fat_g
+
+        if not has_protein:
+            summary.total_protein_g = None
+        if not has_carbs:
+            summary.total_carbs_g = None
+        if not has_fat:
+            summary.total_fat_g = None
+
+        return summary
+
+    async def get_date_range_summary(
+        self, user_id: str, start_date: str, end_date: str
+    ) -> list[DailySummary]:
+        """Get summaries for a date range, capped at 30 days (no individual entries)."""
+        rows = await self._pool.fetch(
+            """
+            SELECT
+                logged_date,
+                COUNT(*) as entry_count,
+                SUM(calories) as total_calories,
+                SUM(protein_g) as total_protein_g,
+                SUM(carbs_g) as total_carbs_g,
+                SUM(fat_g) as total_fat_g
+            FROM calorie_logs
+            WHERE user_id = $1 AND logged_date >= $2 AND logged_date <= $3
+            GROUP BY logged_date
+            ORDER BY logged_date DESC
+            LIMIT 30
+            """,
+            user_id,
+            start_date,
+            end_date,
+        )
+
+        summaries = []
+        for r in rows:
+            summaries.append(
+                DailySummary(
+                    date=r["logged_date"],
+                    total_calories=int(r["total_calories"])
+                    if r["total_calories"] is not None
+                    else 0,
+                    total_protein_g=int(r["total_protein_g"])
+                    if r["total_protein_g"] is not None
+                    else None,
+                    total_carbs_g=int(r["total_carbs_g"])
+                    if r["total_carbs_g"] is not None
+                    else None,
+                    total_fat_g=int(r["total_fat_g"])
+                    if r["total_fat_g"] is not None
+                    else None,
+                    entry_count=int(r["entry_count"]),
+                    entries=[],
+                )
+            )
+        return summaries
+
+    async def update_entry(self, entry_id: int, user_id: str, **fields: Any) -> bool:
+        """Update a specific calorie entry."""
+        if not fields:
+            return False
+
+        set_clauses = []
+        values = [entry_id, user_id]
+
+        for i, (key, value) in enumerate(fields.items(), start=3):
+            set_clauses.append(f"{key} = ${i}")
+            values.append(value)
+
+        updates_str = ", ".join(set_clauses)
+        query = f"UPDATE calorie_logs SET {updates_str} WHERE id = $1 AND user_id = $2"  # noqa: S608
+
+        result = await self._pool.execute(query, *values)
+        return bool(result == "UPDATE 1")
+
+    async def delete_entry(self, entry_id: int, user_id: str) -> bool:
+        """Delete a calorie entry."""
+        result = await self._pool.execute(
+            "DELETE FROM calorie_logs WHERE id = $1 AND user_id = $2",
+            entry_id,
+            user_id,
+        )
+        return bool(result == "DELETE 1")
+
+    def _row_to_entry(self, row: Mapping[str, Any]) -> CalorieEntry:
+        return CalorieEntry(
+            id=int(row["id"]),
+            user_id=row["user_id"],
+            description=row["description"],
+            calories=int(row["calories"]),
+            protein_g=int(row["protein_g"]) if row["protein_g"] is not None else None,
+            carbs_g=int(row["carbs_g"]) if row["carbs_g"] is not None else None,
+            fat_g=int(row["fat_g"]) if row["fat_g"] is not None else None,
+            meal_type=row["meal_type"],
+            logged_at=row["logged_at"],
+            logged_date=row["logged_date"],
+        )
+
+
+_storage: PostgresCalorieStorage | None = None
+
+
+def get_storage() -> PostgresCalorieStorage:
+    """Return the process-wide singleton PostgresCalorieStorage instance."""
+    global _storage
+    if _storage is None:
+        raise RuntimeError(
+            "Calorie storage not initialized. Call init_calorie_storage() first."
+        )
+    return _storage
+
+
+async def init_calorie_storage(pool: asyncpg.Pool) -> PostgresCalorieStorage:
+    """Initialize the calorie storage with a Postgres pool."""
+    global _storage
+    _storage = PostgresCalorieStorage(pool)
+    await _storage.initialize()
+    return _storage
+
+
+async def close_calorie_storage() -> None:
+    """Close the singleton calorie storage."""
+    global _storage
+    if _storage is not None:
+        await _storage.close()
+        _storage = None

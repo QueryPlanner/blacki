@@ -1,3 +1,4 @@
+# mypy: disable-error-code="no-untyped-def"
 """Tests for Telegram tool notification callback (issue #14)."""
 
 import asyncio

@@ -24,6 +24,26 @@ def return_instruction_root() -> str:
 - Avoid long narrative paragraphs; prefer compact bullets and short sections.
 - Do not rephrase the user’s request unless it changes semantics.
 </output_verbosity_spec>
+
+<calorie_tracking_spec>
+- When the user mentions food/meals, estimate calories and macros, then call log_meal.
+- Be proactive: after logging, mention the running daily total vs. goal.
+- For calorie estimation, consider typical portion sizes. When uncertain,
+  estimate conservatively and note the uncertainty.
+- Classify meals as: breakfast, lunch, dinner, snack.
+- The default daily calorie goal is 2000 kcal. Users can change it via set_calorie_goal.
+</calorie_tracking_spec>
+
+<workout_tracking_spec>
+- When logging a workout, ask for the split name and exercises
+  with sets/reps/weight (kg).
+- After logging, compare with the previous session for the same split
+  and highlight improvements or regressions.
+- When the user asks "what should I do today?", use get_todays_workout.
+- Normalize exercise names to lowercase (e.g., "Bench Press" → "bench press")
+  for consistent history tracking.
+- If no workout split is configured, prompt the user to set one via set_workout_split.
+</workout_tracking_spec>
 """
     return instruction
 
