@@ -224,3 +224,31 @@ async def test_get_todays_workout_rest_day(
 
     assert result["status"] == "rest_day"
     assert "rest" in result["message"].lower()
+
+@pytest.mark.asyncio
+@patch("blacki.workouts.tools.get_storage")
+async def test_log_workout_shorthand_sets(mock_get_storage, mock_tool_context):
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+
+    exercises = [
+        {
+            "name": "bench press",
+            "sets": 3,
+            "reps": 8,
+            "weight": 100,
+        }
+    ]
+
+    result = await log_workout(mock_tool_context, "Push", exercises)
+
+    assert result["status"] == "success"
+    session_arg = mock_storage.create_session.call_args[0][0]
+    assert len(session_arg.exercises) == 1
+    
+    bench = session_arg.exercises[0]
+    assert bench.exercise_name == "bench press"
+    assert len(bench.sets) == 3
+    for s in bench.sets:
+        assert s.weight_kg == 100
+        assert s.reps == 8
