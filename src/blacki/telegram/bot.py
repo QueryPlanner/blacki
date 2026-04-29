@@ -124,7 +124,7 @@ class TelegramBot:
                 raise
             except TelegramApiError as exc:
                 consecutive_errors += 1
-                status = getattr(exc, "status_code", None)
+                status = exc.error_code
                 if status in _FATAL_ERROR_CODES:
                     logger.critical(
                         "Fatal Telegram API error (status=%s), stopping polling: %s",

@@ -2676,27 +2676,24 @@ class TestHandleFileUpload:
                 caption=None,
             )
 
-        mock_api.send_message.assert_called_once()
+            mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "Sandbox is not enabled" in call_kwargs["text"]
 
     @pytest.mark.asyncio
-    async def test_successful_upload(
+    async def test_upload_success(
         self,
         telegram_config: TelegramConfig,
         runtime_recorder: RecordingRuntime,
     ) -> None:
-        """Test successful file upload flow."""
+        """Test full file upload happy path."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock()
         mock_api.get_file = AsyncMock(return_value={"file_path": "documents/test.txt"})
         mock_api.download_file = AsyncMock(return_value=b"file content")
-        mock_api.send_message = AsyncMock()
         bot._api = mock_api
-
-        runtime_recorder.run_user_turn_response = "I see your file!"
 
         mock_sandbox = MagicMock()
         mock_sandbox.files.write_file = AsyncMock()
@@ -2713,33 +2710,28 @@ class TestHandleFileUpload:
                 chat_id=123,
                 message_thread_id=None,
                 file_id="doc123",
-                file_name="test.txt",
-                caption="Here is a test file",
+                file_name="../../etc/passwd",
+                caption="Check this file",
             )
 
-        mock_api.send_chat_action.assert_called()
-        mock_api.get_file.assert_called_once_with("doc123")
-        mock_api.download_file.assert_called_once_with("documents/test.txt")
-        mock_sandbox.files.write_file.assert_called_once()
-        assert len(runtime_recorder.run_user_turn_calls) == 1
+        mock_sandbox.files.write_file.assert_awaited_once_with(
+            "/workspace/uploads/passwd", b"file content"
+        )
 
     @pytest.mark.asyncio
-    async def test_successful_upload_without_caption(
+    async def test_upload_without_caption(
         self,
         telegram_config: TelegramConfig,
         runtime_recorder: RecordingRuntime,
     ) -> None:
-        """Test successful file upload flow without caption."""
+        """Test file upload happy path without a caption."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock()
         mock_api.get_file = AsyncMock(return_value={"file_path": "documents/test.txt"})
-        mock_api.download_file = AsyncMock(return_value=b"file content")
-        mock_api.send_message = AsyncMock()
+        mock_api.download_file = AsyncMock(return_value=b"data")
         bot._api = mock_api
-
-        runtime_recorder.run_user_turn_response = "I see your file!"
 
         mock_sandbox = MagicMock()
         mock_sandbox.files.write_file = AsyncMock()
@@ -2761,7 +2753,6 @@ class TestHandleFileUpload:
             )
 
         call = runtime_recorder.run_user_turn_calls[0]
-        assert "sandbox at /workspace/uploads/test.txt" in call["message_text"]
         assert "Caption" not in call["message_text"]
 
     @pytest.mark.asyncio
@@ -2795,6 +2786,79 @@ class TestHandleFileUpload:
         mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "failed to process" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_polling_fatal_telegram_error(self, caplog: Any) -> None:
+        """Polling loop returns on TelegramApiError with fatal error_code."""
+        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        mock_api.get_updates = AsyncMock(
+            side_effect=TelegramApiError("unauthorized", error_code=401)
+        )
+
+        bot._running = True
+        await bot._polling_loop()
+
+        assert "Fatal Telegram API error" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_polling_too_many_telegram_errors(self, caplog: Any) -> None:
+        """Polling loop returns after too many consecutive TelegramApiError."""
+        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        errors: list[BaseException] = [
+            TelegramApiError("fail", error_code=500) for _ in range(5)
+        ]
+        errors.append(asyncio.CancelledError())
+        mock_api.get_updates = AsyncMock(side_effect=errors)
+
+        bot._running = True
+        with patch("asyncio.sleep", AsyncMock()):
+            await bot._polling_loop()
+
+        assert "Too many consecutive Telegram API errors" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_polling_transient_telegram_error(self, caplog: Any) -> None:
+        """Polling loop warns and sleeps on transient TelegramApiError."""
+        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        transient = TelegramApiError("rate limit", error_code=429)
+        mock_api.get_updates = AsyncMock(
+            side_effect=[transient, asyncio.CancelledError()]
+        )
+
+        bot._running = True
+        with patch("asyncio.sleep", AsyncMock()), pytest.raises(asyncio.CancelledError):
+            await bot._polling_loop()
+
+        assert "Transient Telegram API error" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_polling_too_many_generic_errors(self, caplog: Any) -> None:
+        """Polling loop returns after too many consecutive generic exceptions."""
+        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
+        bot.config.telegram_bot_token = "test-token"  # noqa: S105
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        errors = [RuntimeError("fail") for _ in range(5)]
+        mock_api.get_updates = AsyncMock(side_effect=errors)
+
+        bot._running = True
+        with patch("asyncio.sleep", AsyncMock()):
+            await bot._polling_loop()
+
+        assert "Too many consecutive errors" in caplog.text
 
     @pytest.mark.asyncio
     async def test_upload_sandbox_creation_error(

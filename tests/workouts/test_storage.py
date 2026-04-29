@@ -213,6 +213,23 @@ async def test_singleton(mock_pool) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reinit_workout_storage_closes_existing(mock_pool) -> None:
+    """init_workout_storage closes existing storage before replacing."""
+    import blacki.workouts.storage as storage
+
+    existing = PostgresWorkoutStorage(mock_pool)
+    existing.close = AsyncMock()  # type: ignore[method-assign]
+    storage._storage = existing
+
+    new = await init_workout_storage(mock_pool)
+
+    existing.close.assert_awaited_once()
+    assert storage._storage is new
+
+    storage._storage = None
+
+
+@pytest.mark.asyncio
 async def test_get_latest_split_session(workout_storage, mock_pool) -> None:
     mock_pool.fetchrow.return_value = {
         "id": 1,

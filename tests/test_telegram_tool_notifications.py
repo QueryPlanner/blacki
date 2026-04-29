@@ -806,3 +806,69 @@ async def test_notify_after_model_handles_empty_chunks(
             await callbacks_module.notify_telegram_after_model(ctx, response)
 
     mock_client.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reset_handles_get_running_loop_runtime_error() -> None:
+    """RuntimeError from get_running_loop is caught silently before closing."""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
+    monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")  # noqa: S105
+
+    with patch("asyncio.get_running_loop", side_effect=RuntimeError("no loop")):
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
+
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_happy_path() -> None:
+    """close_shared_notify_client closes client and clears state."""
+    from blacki.callbacks import close_shared_notify_client
+
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock()
+
+    callbacks_module._shared_notify_client = mock_client
+    callbacks_module._shared_notify_token = "tok"  # noqa: S105
+
+    await close_shared_notify_client()
+
+    mock_client.close.assert_awaited_once()
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_handles_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """close_shared_notify_client logs and clears on close error."""
+    from blacki.callbacks import close_shared_notify_client
+
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+
+    callbacks_module._shared_notify_client = mock_client
+    callbacks_module._shared_notify_token = "tok"  # noqa: S105
+
+    await close_shared_notify_client()
+
+    assert "Error closing shared Telegram notify client" in caplog.text
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_when_none() -> None:
+    """close_shared_notify_client does nothing when client is already None."""
+    from blacki.callbacks import close_shared_notify_client
+
+    callbacks_module._shared_notify_client = None
+    callbacks_module._shared_notify_token = None
+
+    await close_shared_notify_client()
+
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None
