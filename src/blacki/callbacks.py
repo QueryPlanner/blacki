@@ -201,7 +201,7 @@ def _format_tool_args(args: dict[str, Any]) -> str:
         escaped_key = escape_markdown(key)
         escaped_value = escape_markdown(value_str)
         suffix = "..." if truncated else ""
-        parts.append(f"{escaped_key}=`{escaped_value}{suffix}`")
+        parts.append(f"{escaped_key}\\=`{escaped_value}{suffix}`")
 
     formatted = ", ".join(parts)
     if len(formatted) > 400:

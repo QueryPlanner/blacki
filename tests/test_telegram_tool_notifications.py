@@ -913,9 +913,10 @@ def test_format_tool_args_overall_truncated() -> None:
 
 
 def test_format_tool_args_special_chars_escaped() -> None:
-    """Special Markdown characters in keys and values are escaped."""
+    """Special Markdown characters are escaped, including = separator."""
     result = _format_tool_args({"file_path": "/home/user_1/file.txt"})
-    assert r"\=" in result or "=" in result
+    assert r"\=" in result
+    assert "file\\_path" in result or "/home" in result
 
 
 @pytest.mark.asyncio
