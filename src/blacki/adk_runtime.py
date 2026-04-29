@@ -64,6 +64,8 @@ class DeepSeekReasoningPlugin(BasePlugin):
 
                     # Remove thought=True so ADK LiteLlm treats it as normal text
                     content.parts = other_parts
+
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."
@@ -163,12 +165,17 @@ class AdkRuntime:
     ) -> Session:
         """Return the latest session for a locator, or create version 1.
 
-        Note: The `state` parameter is only used when creating a new session.
-        If a session already exists, the provided state is ignored and the
-        existing session's state is preserved.
+        When an existing session is found, any new keys from the ``state``
+        parameter are merged in (existing values take precedence). This
+        ensures callbacks relying on session state (e.g. Telegram tool
+        notifications) receive the expected keys even when their transport
+        was not the one that originally created the session.
         """
         existing_session = await self._get_latest_session(locator=locator)
         if existing_session is not None:
+            if state:
+                for key, value in state.items():
+                    existing_session.state.setdefault(key, value)
             return existing_session
 
         return await self._create_versioned_session(

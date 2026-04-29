@@ -45,7 +45,7 @@ def test_deepseek_reasoning_plugin_preserves_thoughts(monkeypatch: Any) -> None:
         parts=[
             _create_part(text="I am thinking...", thought=True),
             _create_part(text="This is my final answer.", thought=False),
-        ]
+        ],
     )
     request = LlmRequest(contents=[content])
 
@@ -82,7 +82,7 @@ def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
         parts=[
             _create_part(text="I am thinking...", thought=True),
             _create_part(text="This is my final answer.", thought=False),
-        ]
+        ],
     )
     request = LlmRequest(contents=[content])
 
@@ -95,4 +95,3 @@ def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
     assert request.contents[0].parts is not None
     assert len(request.contents[0].parts) == 2
     assert getattr(request.contents[0].parts[0], "thought", False) is True
-

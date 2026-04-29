@@ -416,6 +416,3 @@ def mock_print_config() -> Callable[[type], AbstractContextManager[MagicMock]]:
             yield mock
 
     return _mock_print_config
-
-
-

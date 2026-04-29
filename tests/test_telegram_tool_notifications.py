@@ -451,30 +451,29 @@ async def test_notify_after_model_rate_limits_per_chat(
 
 def test_evict_oldest_rate_limit_entries_noop() -> None:
     """Eviction helper returns early for non-positive count or empty map."""
-    callbacks_module._TOOL_NOTIFY_LAST.clear()
-    callbacks_module._evict_oldest_rate_limit_entries(0)
-    callbacks_module._evict_oldest_rate_limit_entries(3)
-    assert callbacks_module._TOOL_NOTIFY_LAST == {}
+    storage: dict[str, float] = {}
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 3)
+    assert storage == {}
 
-    callbacks_module._TOOL_NOTIFY_LAST["a"] = 1.0
-    callbacks_module._evict_oldest_rate_limit_entries(0)
-    assert "a" in callbacks_module._TOOL_NOTIFY_LAST
+    storage["a"] = 1.0
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
+    assert "a" in storage
 
 
-def test_rate_limit_evicts_oldest_when_map_full(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_rate_limit_evicts_oldest_when_map_full() -> None:
     """New chat keys trigger eviction when the rate-limit map is at capacity."""
-    monkeypatch.setattr(callbacks_module, "_MAX_TOOL_NOTIFY_RATE_ENTRIES", 4)
-    callbacks_module._TOOL_NOTIFY_LAST.clear()
+    storage: dict[str, float] = {}
     base = 1000.0
     for index in range(4):
-        callbacks_module._TOOL_NOTIFY_LAST[str(index)] = base + index * 0.01
-    assert len(callbacks_module._TOOL_NOTIFY_LAST) == 4
+        storage[str(index)] = base + index * 0.01
+    assert len(storage) == 4
 
-    assert callbacks_module._rate_limit_allows_notification("new", base + 100.0) is True
-    assert "new" in callbacks_module._TOOL_NOTIFY_LAST
-    assert len(callbacks_module._TOOL_NOTIFY_LAST) == 4
+    assert callbacks_module._rate_limit_allows_notification(
+        "new", base + 100.0, storage=storage, min_interval=0.35, max_entries=4
+    )
+    assert "new" in storage
+    assert len(storage) == 4
 
 
 @pytest.mark.asyncio

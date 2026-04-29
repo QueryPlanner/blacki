@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator
 
@@ -128,6 +129,7 @@ class TelegramBot:
         message = update.message
 
         if message.text is None:
+            await self._route_non_text_message(message)
             return
 
         chat_id = message.chat.id
@@ -142,6 +144,38 @@ class TelegramBot:
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             user_message=user_message,
+        )
+
+    async def _route_non_text_message(self, message: Message) -> None:
+        """Route a non-text message to the appropriate handler."""
+        chat_id = message.chat.id
+        message_thread_id = message.message_thread_id
+
+        if message.document:
+            file_id = message.document.file_id
+            file_name = message.document.file_name or "document"
+        elif message.photo:
+            file_id = message.photo[-1].file_id
+            file_name = "photo.jpg"
+        elif message.audio:
+            file_id = message.audio.file_id
+            file_name = message.audio.file_name or "audio.mp3"
+        elif message.video:
+            file_id = message.video.file_id
+            file_name = message.video.file_name or "video.mp4"
+        elif message.voice:
+            file_id = message.voice.file_id
+            file_name = "voice.ogg"
+        else:
+            logger.debug("Unsupported non-text message from chat %s", chat_id)
+            return
+
+        await self._handle_file_upload(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            file_id=file_id,
+            file_name=file_name,
+            caption=message.caption,
         )
 
     async def _handle_command(self, message: Message, command: str) -> None:
@@ -283,7 +317,8 @@ class TelegramBot:
             if error or not sandbox:
                 raise Exception(f"Failed to access sandbox: {error}")
 
-            sandbox_path = f"/workspace/uploads/{file_name}"
+            safe_name = Path(file_name).name
+            sandbox_path = f"/workspace/uploads/{safe_name}"
             await sandbox.files.write_file(sandbox_path, file_bytes)
 
             user_message = (

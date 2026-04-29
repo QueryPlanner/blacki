@@ -131,6 +131,11 @@ class Message(BaseModel):
     text: str | None = None
     entities: list[MessageEntity] | None = None
     caption: str | None = None
+    document: Document | None = None
+    photo: list[PhotoSize] | None = None
+    audio: Audio | None = None
+    video: Video | None = None
+    voice: Voice | None = None
 
     model_config = {"populate_by_name": True}
 

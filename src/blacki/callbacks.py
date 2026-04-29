@@ -31,32 +31,40 @@ _TOOL_NOTIFY_LAST: dict[str, float] = {}
 _TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.35
 _MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
 
+_INTERMEDIATE_NOTIFY_LAST: dict[str, float] = {}
+_INTERMEDIATE_NOTIFY_MIN_INTERVAL_SEC = 0.35
+_MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES = 8192
+
 # Reuse one HTTP client per bot token (narrow lock only for swap / teardown).
 _NOTIFY_CLIENT_LOCK = asyncio.Lock()
 _shared_notify_client: TelegramApiClient | None = None
 _shared_notify_token: str | None = None
 
 
-def _evict_oldest_rate_limit_entries(count: int) -> None:
-    if count <= 0 or not _TOOL_NOTIFY_LAST:
+def _evict_oldest_rate_limit_entries(storage: dict[str, float], count: int) -> None:
+    if count <= 0 or not storage:
         return
-    sorted_keys = sorted(_TOOL_NOTIFY_LAST, key=lambda key: _TOOL_NOTIFY_LAST[key])
+    sorted_keys = sorted(storage, key=lambda key: storage[key])
     for key in sorted_keys[:count]:
-        del _TOOL_NOTIFY_LAST[key]
+        del storage[key]
 
 
-def _rate_limit_allows_notification(chat_key: str, now: float) -> bool:
-    last_sent = _TOOL_NOTIFY_LAST.get(chat_key, 0.0)
-    if now - last_sent < _TOOL_NOTIFY_MIN_INTERVAL_SEC:
+def _rate_limit_allows_notification(
+    chat_key: str,
+    now: float,
+    *,
+    storage: dict[str, float],
+    min_interval: float,
+    max_entries: int,
+) -> bool:
+    last_sent = storage.get(chat_key, 0.0)
+    if now - last_sent < min_interval:
         return False
-    map_is_full = (
-        len(_TOOL_NOTIFY_LAST) >= _MAX_TOOL_NOTIFY_RATE_ENTRIES
-        and chat_key not in _TOOL_NOTIFY_LAST
-    )
+    map_is_full = len(storage) >= max_entries and chat_key not in storage
     if map_is_full:
-        evict_count = max(1, _MAX_TOOL_NOTIFY_RATE_ENTRIES // 8)
-        _evict_oldest_rate_limit_entries(evict_count)
-    _TOOL_NOTIFY_LAST[chat_key] = now
+        evict_count = max(1, max_entries // 8)
+        _evict_oldest_rate_limit_entries(storage, evict_count)
+    storage[chat_key] = now
     return True
 
 
@@ -106,6 +114,7 @@ async def _shared_telegram_notify_client(token: str) -> TelegramApiClient:
 def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
     """Clear per-chat rate limit state and env lookup cache (tests only)."""
     _TOOL_NOTIFY_LAST.clear()
+    _INTERMEDIATE_NOTIFY_LAST.clear()
     _telegram_tool_notifications_enabled_impl.cache_clear()
     _schedule_shared_notify_client_close_for_tests()
 
@@ -182,7 +191,13 @@ async def notify_telegram_before_tool(
 
     chat_key = str(chat_id)
     now = time.monotonic()
-    if not _rate_limit_allows_notification(chat_key, now):
+    if not _rate_limit_allows_notification(
+        chat_key,
+        now,
+        storage=_TOOL_NOTIFY_LAST,
+        min_interval=_TOOL_NOTIFY_MIN_INTERVAL_SEC,
+        max_entries=_MAX_TOOL_NOTIFY_RATE_ENTRIES,
+    ):
         logger.debug(
             "Skipping Telegram tool notify (rate limit) chat_id=%s tool=%s",
             chat_id,
@@ -257,7 +272,13 @@ async def notify_telegram_after_model(
 
     chat_key = str(chat_id)
     now = time.monotonic()
-    if not _rate_limit_allows_notification(chat_key, now):
+    if not _rate_limit_allows_notification(
+        chat_key,
+        now,
+        storage=_INTERMEDIATE_NOTIFY_LAST,
+        min_interval=_INTERMEDIATE_NOTIFY_MIN_INTERVAL_SEC,
+        max_entries=_MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES,
+    ):
         logger.debug(
             "Skipping Telegram intermediate notify (rate limit) chat_id=%s",
             chat_id,
