@@ -122,3 +122,20 @@ async def test_singleton(mock_pool) -> None:
     await close_preferences_storage()
     with pytest.raises(RuntimeError):
         get_preferences_storage()
+
+
+@pytest.mark.asyncio
+async def test_reinit_preferences_storage_closes_existing(mock_pool) -> None:
+    """init_preferences_storage closes existing storage before replacing."""
+    import blacki.utils.preferences as prefs
+
+    existing = PostgresPreferencesStorage(mock_pool)
+    existing.close = AsyncMock()  # type: ignore[method-assign]
+    prefs._storage = existing
+
+    new = await init_preferences_storage(mock_pool)
+
+    existing.close.assert_awaited_once()
+    assert prefs._storage is new
+
+    prefs._storage = None

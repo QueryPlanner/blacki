@@ -180,7 +180,6 @@ class PostgresWorkoutStorage:
         notes: str | None = None,
     ) -> bool:
         """Update sets/notes for an exercise. Needs user_id for authorization."""
-        # Verify ownership by joining with session
         owner = await self._pool.fetchval(
             """
             SELECT s.user_id FROM workout_sessions s
@@ -404,6 +403,8 @@ def get_storage() -> PostgresWorkoutStorage:
 async def init_workout_storage(pool: asyncpg.Pool) -> PostgresWorkoutStorage:
     """Initialize the workout storage with a Postgres pool."""
     global _storage
+    if _storage is not None:
+        await _storage.close()
     _storage = PostgresWorkoutStorage(pool)
     await _storage.initialize()
     return _storage

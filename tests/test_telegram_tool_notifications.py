@@ -3,7 +3,7 @@
 
 import asyncio
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,6 +17,7 @@ from google.genai.types import Content, FunctionCall, Part
 
 import blacki.callbacks as callbacks_module
 from blacki.callbacks import (
+    _format_tool_args,
     notify_telegram_before_tool,
     reset_telegram_tool_notify_rate_limiter_for_tests,
     telegram_tool_notifications_enabled,
@@ -25,11 +26,11 @@ from blacki.telegram.api import TelegramApiError
 
 
 @pytest.fixture(autouse=True)
-def _clear_tool_notify_rate_limiter() -> Iterator[None]:
+async def _clear_tool_notify_rate_limiter() -> AsyncIterator[None]:
     """Isolate rate limiter state between tests."""
-    reset_telegram_tool_notify_rate_limiter_for_tests()
+    await reset_telegram_tool_notify_rate_limiter_for_tests()
     yield None
-    reset_telegram_tool_notify_rate_limiter_for_tests()
+    await reset_telegram_tool_notify_rate_limiter_for_tests()
 
 
 def test_telegram_tool_notifications_enabled_requires_all_flags(
@@ -451,30 +452,36 @@ async def test_notify_after_model_rate_limits_per_chat(
 
 def test_evict_oldest_rate_limit_entries_noop() -> None:
     """Eviction helper returns early for non-positive count or empty map."""
-    callbacks_module._TOOL_NOTIFY_LAST.clear()
-    callbacks_module._evict_oldest_rate_limit_entries(0)
-    callbacks_module._evict_oldest_rate_limit_entries(3)
-    assert callbacks_module._TOOL_NOTIFY_LAST == {}
+    storage: dict[str, float] = {}
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 3)
+    assert storage == {}
 
-    callbacks_module._TOOL_NOTIFY_LAST["a"] = 1.0
-    callbacks_module._evict_oldest_rate_limit_entries(0)
-    assert "a" in callbacks_module._TOOL_NOTIFY_LAST
+    storage["a"] = 1.0
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
+    assert "a" in storage
 
 
-def test_rate_limit_evicts_oldest_when_map_full(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.asyncio
+async def test_rate_limit_evicts_oldest_when_map_full() -> None:
     """New chat keys trigger eviction when the rate-limit map is at capacity."""
-    monkeypatch.setattr(callbacks_module, "_MAX_TOOL_NOTIFY_RATE_ENTRIES", 4)
-    callbacks_module._TOOL_NOTIFY_LAST.clear()
+    storage: dict[str, float] = {}
     base = 1000.0
     for index in range(4):
-        callbacks_module._TOOL_NOTIFY_LAST[str(index)] = base + index * 0.01
-    assert len(callbacks_module._TOOL_NOTIFY_LAST) == 4
+        storage[str(index)] = base + index * 0.01
+    assert len(storage) == 4
 
-    assert callbacks_module._rate_limit_allows_notification("new", base + 100.0) is True
-    assert "new" in callbacks_module._TOOL_NOTIFY_LAST
-    assert len(callbacks_module._TOOL_NOTIFY_LAST) == 4
+    lock = asyncio.Lock()
+    assert await callbacks_module._rate_limit_allows_notification(
+        "new",
+        base + 100.0,
+        storage=storage,
+        min_interval=0.35,
+        max_entries=4,
+        lock=lock,
+    )
+    assert "new" in storage
+    assert len(storage) == 4
 
 
 @pytest.mark.asyncio
@@ -673,7 +680,7 @@ async def test_reset_schedules_async_close_when_loop_running(
             {},
             cast(ToolContext, ctx),
         )
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
         await asyncio.sleep(0)
 
     mock_client.close.assert_awaited()
@@ -701,13 +708,13 @@ async def test_reset_handles_close_exception(
             {},
             cast(ToolContext, ctx),
         )
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
         await asyncio.sleep(0)
 
     assert "Telegram notify client close failed" in caplog.text
 
 
-def test_reset_handles_loop_create_task_runtime_error(
+async def test_reset_handles_loop_create_task_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RuntimeError from loop.create_task is caught silently."""
@@ -719,7 +726,7 @@ def test_reset_handles_loop_create_task_runtime_error(
     mock_loop.create_task = MagicMock(side_effect=RuntimeError("loop closed"))
 
     with patch("asyncio.get_running_loop", return_value=mock_loop):
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
 
     assert callbacks_module._shared_notify_client is None
     assert callbacks_module._shared_notify_token is None
@@ -800,3 +807,145 @@ async def test_notify_after_model_handles_empty_chunks(
             await callbacks_module.notify_telegram_after_model(ctx, response)
 
     mock_client.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reset_handles_get_running_loop_runtime_error() -> None:
+    """RuntimeError from get_running_loop is caught silently before closing."""
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
+    monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")  # noqa: S105
+
+    with patch("asyncio.get_running_loop", side_effect=RuntimeError("no loop")):
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
+
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_happy_path() -> None:
+    """close_shared_notify_client closes client and clears state."""
+    from blacki.callbacks import close_shared_notify_client
+
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock()
+
+    callbacks_module._shared_notify_client = mock_client
+    callbacks_module._shared_notify_token = "tok"  # noqa: S105
+
+    await close_shared_notify_client()
+
+    mock_client.close.assert_awaited_once()
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_handles_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """close_shared_notify_client logs and clears on close error."""
+    from blacki.callbacks import close_shared_notify_client
+
+    mock_client = MagicMock()
+    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+
+    callbacks_module._shared_notify_client = mock_client
+    callbacks_module._shared_notify_token = "tok"  # noqa: S105
+
+    await close_shared_notify_client()
+
+    assert "Error closing shared Telegram notify client" in caplog.text
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
+
+
+@pytest.mark.asyncio
+async def test_close_shared_notify_client_when_none() -> None:
+    """close_shared_notify_client does nothing when client is already None."""
+    from blacki.callbacks import close_shared_notify_client
+
+    callbacks_module._shared_notify_client = None
+    callbacks_module._shared_notify_token = None
+
+    await close_shared_notify_client()
+
+    assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._shared_notify_token is None
+
+
+def test_format_tool_args_empty_args() -> None:
+    """Empty args dict returns empty string."""
+    assert _format_tool_args({}) == ""
+
+
+def test_format_tool_args_single_arg() -> None:
+    """Single arg formatted as key=value pair."""
+    result = _format_tool_args({"query": "hello"})
+    assert "query" in result
+    assert "hello" in result
+
+
+def test_format_tool_args_multiple_args() -> None:
+    """Multiple args are comma-separated."""
+    result = _format_tool_args({"query": "hello", "count": "5"})
+    assert "query" in result
+    assert "hello" in result
+    assert "count" in result
+    assert "5" in result
+    assert ", " in result
+
+
+def test_format_tool_args_long_value_truncated() -> None:
+    """Long values are truncated with '...'."""
+    long_value = "a" * 120
+    result = _format_tool_args({"text": long_value})
+    assert "..." in result
+    assert "aaaaaa" in result
+
+
+def test_format_tool_args_overall_truncated() -> None:
+    """Very many args result in an overall truncated string."""
+    many_args = {f"k{i}": f"v{i}" for i in range(50)}
+    result = _format_tool_args(many_args)
+    assert result.endswith("...")
+
+
+def test_format_tool_args_special_chars_escaped() -> None:
+    """Special Markdown characters are escaped, including = separator."""
+    result = _format_tool_args({"file_path": "/home/user_1/file.txt"})
+    assert r"\=" in result
+    assert "file\\_path" in result or "/home" in result
+
+
+@pytest.mark.asyncio
+async def test_notify_sends_args_in_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Telegram notification includes tool arguments in the message text."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MockToolContext(
+            state=MockState({"telegram_chat_id": "4242"}),
+        )
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("search_memory")),
+            {"query": "capital of France", "limit": 5},
+            cast(ToolContext, ctx),
+        )
+
+    kwargs = mock_client.send_message.await_args.kwargs
+    assert "Using tool" in kwargs["text"]
+    assert "query" in kwargs["text"]
+    assert "capital of France" in kwargs["text"]
+    assert "limit" in kwargs["text"]
+    assert "5" in kwargs["text"]

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator
 
@@ -16,6 +17,8 @@ from .types import BotCommand, Message, ParseMode, Update
 logger = logging.getLogger(__name__)
 
 POLLING_TIMEOUT = 30
+_MAX_CONSECUTIVE_ERRORS = 5
+_FATAL_ERROR_CODES = {401, 403}
 
 
 @dataclass(slots=True, frozen=True)
@@ -101,6 +104,7 @@ class TelegramBot:
     async def _polling_loop(self) -> None:
         """Long polling loop for updates."""
         offset = 0
+        consecutive_errors = 0
 
         while self._running:
             try:
@@ -110,15 +114,48 @@ class TelegramBot:
                     allowed_updates=["message"],
                 )
 
+                consecutive_errors = 0
+
                 for update in updates:
                     offset = update.update_id + 1
                     await self._handle_update(update)
 
             except asyncio.CancelledError:
                 raise
+            except TelegramApiError as exc:
+                consecutive_errors += 1
+                status = exc.error_code
+                if status in _FATAL_ERROR_CODES:
+                    logger.critical(
+                        "Fatal Telegram API error (status=%s), stopping polling: %s",
+                        status,
+                        exc,
+                    )
+                    return
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Too many consecutive Telegram API errors (%d), stopping: %s",
+                        consecutive_errors,
+                        exc,
+                    )
+                    return
+                logger.warning(
+                    "Transient Telegram API error in polling loop (%d/%d): %s",
+                    consecutive_errors,
+                    _MAX_CONSECUTIVE_ERRORS,
+                    exc,
+                )
+                await asyncio.sleep(min(5 * consecutive_errors, 60))
             except Exception:
+                consecutive_errors += 1
                 logger.exception("Error in polling loop")
-                await asyncio.sleep(5)
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Too many consecutive errors (%d), stopping polling",
+                        consecutive_errors,
+                    )
+                    return
+                await asyncio.sleep(min(5 * consecutive_errors, 60))
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""
@@ -128,6 +165,7 @@ class TelegramBot:
         message = update.message
 
         if message.text is None:
+            await self._route_non_text_message(message)
             return
 
         chat_id = message.chat.id
@@ -142,6 +180,38 @@ class TelegramBot:
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             user_message=user_message,
+        )
+
+    async def _route_non_text_message(self, message: Message) -> None:
+        """Route a non-text message to the appropriate handler."""
+        chat_id = message.chat.id
+        message_thread_id = message.message_thread_id
+
+        if message.document:
+            file_id = message.document.file_id
+            file_name = message.document.file_name or "document"
+        elif message.photo:
+            file_id = message.photo[-1].file_id
+            file_name = "photo.jpg"
+        elif message.audio:
+            file_id = message.audio.file_id
+            file_name = message.audio.file_name or "audio.mp3"
+        elif message.video:
+            file_id = message.video.file_id
+            file_name = message.video.file_name or "video.mp4"
+        elif message.voice:
+            file_id = message.voice.file_id
+            file_name = "voice.ogg"
+        else:
+            logger.debug("Unsupported non-text message from chat %s", chat_id)
+            return
+
+        await self._handle_file_upload(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            file_id=file_id,
+            file_name=file_name,
+            caption=message.caption,
         )
 
     async def _handle_command(self, message: Message, command: str) -> None:
@@ -231,6 +301,94 @@ class TelegramBot:
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
+    async def _handle_file_upload(
+        self,
+        chat_id: int,
+        message_thread_id: int | None,
+        file_id: str,
+        file_name: str,
+        caption: str | None,
+    ) -> None:
+        """Handle incoming file uploads, save to sandbox, and message agent."""
+        from blacki.sandbox.manager import get_sandbox_manager
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+        )
+
+        manager = get_sandbox_manager()
+
+        if not manager.config.enabled:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sandbox is not enabled. Cannot process file uploads\\.",
+                message_thread_id=message_thread_id,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        try:
+            await self.api.send_chat_action(chat_id=chat_id, action="upload_document")
+
+            file_info = await self.api.get_file(file_id)
+            file_path_api = file_info.get("file_path")
+            if not file_path_api:
+                raise Exception("Failed to get file_path from Telegram API")
+
+            file_bytes = await self.api.download_file(file_path_api)
+
+            result = await manager.get_or_create_sandbox(state)
+            sandbox = result.get("sandbox")
+            error = result.get("error")
+
+            if error or not sandbox:
+                raise Exception(f"Failed to access sandbox: {error}")
+
+            safe_name = Path(file_name).name
+            sandbox_path = f"/workspace/uploads/{safe_name}"
+            await sandbox.files.write_file(sandbox_path, file_bytes)
+
+            user_message = (
+                f"User uploaded a file which has been saved to "
+                f"the sandbox at {sandbox_path}"
+            )
+            if caption:
+                user_message += f"\nCaption provided by user: {caption}"
+
+            logger.info("File %s saved to sandbox for chat %s", file_name, chat_id)
+
+            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+
+            final_response = await self.runtime.run_user_turn(
+                locator=SessionLocator(
+                    user_id=session_identity.user_id,
+                    session_id_prefix=session_identity.session_id_prefix,
+                ),
+                message_text=user_message,
+                state=state,
+            )
+
+            await self._send_final_response(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                response_text=final_response,
+            )
+
+        except Exception:
+            logger.exception("Failed to handle file upload")
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sorry, I failed to process the uploaded file\\.",
+                message_thread_id=message_thread_id,
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 

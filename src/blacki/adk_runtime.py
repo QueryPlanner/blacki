@@ -2,19 +2,68 @@
 
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
+from google.adk.models.llm_request import LlmRequest
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService, Session
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
-from .utils import ServerEnv
+from .utils.config import ServerEnv
+
+
+class DeepSeekReasoningPlugin(BasePlugin):
+    """Preserves reasoning_content for DeepSeek models by nesting it in content.
+
+    Prevents 400 Bad Request crashes by explicitly moving ADK thought parts
+    into the standard content block with <think> tags, which OpenRouter supports.
+    """
+
+    def before_model(
+        self,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+    ) -> None:
+        m1 = os.getenv("OPENROUTER_MODEL", "").lower()
+        m2 = os.getenv("MODEL_ID", "").lower()
+        if "deepseek" not in m1 and "deepseek" not in m2:
+            return
+
+        if not llm_request.contents:
+            return
+
+        for content in llm_request.contents:
+            if content.role in ("model", "assistant") and content.parts:
+                thought_parts: list[str] = []
+                other_parts: list[types.Part] = []
+
+                for p in content.parts:
+                    if getattr(p, "thought", False) and p.text:
+                        thought_parts.append(p.text)
+                    else:
+                        other_parts.append(p)
+
+                if thought_parts:
+                    thoughts = "\n".join(thought_parts)
+                    think_text = f"<think>\n{thoughts}\n</think>\n"
+
+                    if other_parts and other_parts[0].text:
+                        other_parts[0].text = think_text + other_parts[0].text
+                    else:
+                        other_parts.insert(0, types.Part.from_text(text=think_text))
+
+                    # Remove thought=True so ADK LiteLlm treats it as normal text
+                    content.parts = other_parts
+
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +164,17 @@ class AdkRuntime:
     ) -> Session:
         """Return the latest session for a locator, or create version 1.
 
-        Note: The `state` parameter is only used when creating a new session.
-        If a session already exists, the provided state is ignored and the
-        existing session's state is preserved.
+        When an existing session is found, any new keys from the ``state``
+        parameter are merged in (existing values take precedence). This
+        ensures callbacks relying on session state (e.g. Telegram tool
+        notifications) receive the expected keys even when their transport
+        was not the one that originally created the session.
         """
         existing_session = await self._get_latest_session(locator=locator)
         if existing_session is not None:
+            if state:
+                for key, value in state.items():
+                    existing_session.state.setdefault(key, value)
             return existing_session
 
         return await self._create_versioned_session(
@@ -193,6 +247,14 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
+            has_function_call = (
+                event.content is not None
+                and event.content.parts
+                and any(
+                    getattr(part, "function_call", None) for part in event.content.parts
+                )
+            )
+
             event_thoughts, event_content = _extract_turn_parts(event)
             if event_thoughts:
                 if event.partial:
@@ -203,7 +265,8 @@ class AdkRuntime:
                 if event.partial:
                     partial_content = event_content
                 else:
-                    content_parts.append(event_content)
+                    if not has_function_call:
+                        content_parts.append(event_content)
 
         final_thoughts = "".join(thoughts_parts) or partial_thoughts
         final_content = "".join(content_parts) or partial_content

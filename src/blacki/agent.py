@@ -1,9 +1,11 @@
 """ADK LlmAgent configuration."""
 
+from __future__ import annotations
+
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
@@ -11,6 +13,7 @@ from google.adk.apps import App
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
+from .adk_runtime import DeepSeekReasoningPlugin
 from .callbacks import (
     LoggingCallbacks,
     notify_telegram_after_model,
@@ -22,12 +25,9 @@ from .prompt import (
     return_global_instruction,
     return_instruction_root,
 )
-from .tools import (
-    browser_list_profiles,
-    browser_stop_session,
-    browser_task,
-    example_tool,
-)
+
+if TYPE_CHECKING:
+    from google.adk.models.lite_llm import LiteLlm
 
 logger = logging.getLogger(__name__)
 
@@ -72,19 +72,14 @@ _find_and_load_dotenv()
 
 # Determine model configuration
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-google_api_key = os.getenv("GOOGLE_API_KEY")
 
 model_name = os.getenv("ROOT_AGENT_MODEL", "gemini-2.5-flash")
-model: Any = model_name
+model: str | LiteLlm = model_name
 
-use_litellm = False
-
-# OpenRouter-only: never use native Gemini (requires GOOGLE_API_KEY).
-if openrouter_api_key and not google_api_key:
+# Determine whether the (possibly normalized) model requires LiteLlm.
+use_litellm = openrouter_api_key is not None or "/" in model_name.lower()
+if openrouter_api_key:
     model_name = _normalize_model_for_openrouter(model_name)
-    use_litellm = True
-elif model_name.lower().startswith("openrouter/") or "/" in model_name:
-    use_litellm = True
 
 if use_litellm:
     try:
@@ -105,13 +100,8 @@ if use_litellm:
 skills_dir = Path(__file__).parent / "skills"
 
 
-# Build the list of tools
-agent_tools: list[Any] = [
-    example_tool,
-    browser_task,
-    browser_stop_session,
-    browser_list_profiles,
-]
+# Build the list of tools (list[Any] due to heterogeneous conditional imports)
+agent_tools: list[Any] = []
 
 # Add Brave Search tool if API key is available
 brave_search_api_key = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
@@ -211,6 +201,7 @@ if sandbox_enabled:
             sandbox_list_files,
             sandbox_read_file,
             sandbox_run_command,
+            sandbox_send_file_to_user,
             sandbox_write_file,
         )
 
@@ -220,6 +211,7 @@ if sandbox_enabled:
                 sandbox_write_file,
                 sandbox_read_file,
                 sandbox_list_files,
+                sandbox_send_file_to_user,
             ]
         )
         logger.info("Sandbox tools enabled")
@@ -258,6 +250,7 @@ app = App(
     plugins=[
         GlobalInstructionPlugin(return_global_instruction),
         LoggingPlugin(),
+        DeepSeekReasoningPlugin(name="deepseek_reasoning"),
     ],
     events_compaction_config=None,
     context_cache_config=None,

@@ -304,7 +304,27 @@ class TestStorageSingleton:
         assert storage_module._storage is None
 
     @pytest.mark.asyncio
-    async def test_close_reminder_storage_no_op_if_none(self) -> None:
+    async def test_reinit_reminder_storage_closes_existing(self) -> None:
+        """init_reminder_storage closes existing storage before replacing."""
+        import blacki.reminders.storage as storage_module
+
+        mock_pool = MagicMock(spec=asyncpg.Pool)
+        mock_pool.acquire = MagicMock()
+        mock_conn = MagicMock()
+        mock_conn.execute = AsyncMock()
+        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
+
+        existing = PostgresReminderStorage(mock_pool)
+        existing.close = AsyncMock()  # type: ignore[method-assign]
+        storage_module._storage = existing
+
+        new = await init_reminder_storage(mock_pool)
+
+        existing.close.assert_awaited_once()
+        assert storage_module._storage is new
+
+        storage_module._storage = None
         """Should do nothing if storage is already None."""
         import blacki.reminders.storage as storage_module
 

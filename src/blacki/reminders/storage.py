@@ -287,6 +287,8 @@ def get_storage() -> PostgresReminderStorage:
 async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
     """Initialize the reminder storage with a Postgres pool."""
     global _storage
+    if _storage is not None:
+        await _storage.close()
     _storage = PostgresReminderStorage(pool)
     await _storage.initialize()
     return _storage

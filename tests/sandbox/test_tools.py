@@ -11,6 +11,7 @@ from blacki.sandbox.tools import (
     sandbox_list_files,
     sandbox_read_file,
     sandbox_run_command,
+    sandbox_send_file_to_user,
     sandbox_write_file,
 )
 
@@ -475,3 +476,184 @@ class TestSandboxEnabled:
             result = sandbox_enabled()
 
         assert result is False
+
+
+class TestSandboxSendFileToUser:
+    """Tests for sandbox_send_file_to_user tool."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_sandbox(self) -> None:
+        """Test when sandbox is disabled."""
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": None, "error": "Sandbox disabled"}
+            )
+            mock_get_manager.return_value = manager
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_not_in_telegram_session(self) -> None:
+        """Test when not in a Telegram session."""
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        mock_sandbox = MagicMock()
+
+        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "error"
+        assert "Not in a Telegram session" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_missing_telegram_token(self) -> None:
+        """Test when TELEGRAM_BOT_TOKEN is not set."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        mock_sandbox = MagicMock()
+
+        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            with patch.dict("os.environ", {}, clear=True):
+                result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "error"
+        assert "TELEGRAM_BOT_TOKEN" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_successful_send(self) -> None:
+        """Test successful file send."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_file = AsyncMock(return_value=b"file contents")
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "success"
+        assert "test.txt" in result["message"]
+        mock_api.send_document.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sandbox_exception(self) -> None:
+        """Test with SandboxException during read."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_file = AsyncMock(
+            side_effect=SandboxException("Read failed")
+        )
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "error"
+        assert "Failed to read file from sandbox" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_unexpected_exception(self) -> None:
+        """Test with unexpected exception."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_file = AsyncMock(side_effect=RuntimeError("Unexpected"))
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "error"
+        assert "Unexpected error" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_with_thread_id(self) -> None:
+        """Test successful file send with thread_id."""
+        tool_context = MagicMock()
+        tool_context.state = {
+            "telegram_chat_id": "12345",
+            "telegram_thread_id": "67890",
+        }
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_file = AsyncMock(return_value=b"file contents")
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "success"
+        call_kwargs = mock_api.send_document.call_args.kwargs
+        assert call_kwargs["message_thread_id"] == 67890

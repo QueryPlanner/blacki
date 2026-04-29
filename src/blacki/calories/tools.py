@@ -5,6 +5,7 @@ from typing import Any
 import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
 
+from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
 
@@ -13,23 +14,6 @@ from .storage import CalorieEntry, get_storage
 logger = logging.getLogger(__name__)
 
 DEFAULT_CALORIE_GOAL = 2000
-
-
-def _parse_date(date_str: str | None) -> str:
-    """Parse a natural language date to YYYY-MM-DD local time."""
-    tz = get_app_timezone()
-    if not date_str or date_str.lower() in ("today", "now"):
-        return now_utc().astimezone(tz).strftime("%Y-%m-%d")
-
-    dt = dateparser.parse(  # pragma: no cover
-        date_str,
-        settings={"TIMEZONE": str(tz), "RETURN_AS_TIMEZONE_AWARE": True},
-    )
-    if not dt:  # pragma: no cover
-        # Fallback to today if unparseable
-        return now_utc().astimezone(tz).strftime("%Y-%m-%d")
-
-    return str(dt.strftime("%Y-%m-%d"))  # pragma: no cover
 
 
 async def log_meal(
@@ -118,7 +102,7 @@ async def get_calorie_summary(
     pref_storage = get_preferences_storage()
     goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
 
-    target_date = _parse_date(date)
+    target_date = parse_date(date)
 
     if days <= 1:
         summary = await storage.get_daily_summary(user_id, target_date)

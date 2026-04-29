@@ -874,3 +874,57 @@ async def test_run_user_turn_streaming_skips_empty_events() -> None:
     assert chunks[0].content == "Final answer"
     assert chunks[1].is_partial is False
     assert chunks[1].content == "Final answer"
+
+
+async def test_get_or_create_session_merges_state() -> None:
+    """Test that get_or_create_session merges state into existing sessions."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-789",
+        session_id_prefix="telegram-chat-789",
+    )
+
+    initial_session = await runtime.get_or_create_session(
+        locator=locator, state={"key_a": "val_a"}
+    )
+    assert initial_session.state.get("key_a") == "val_a"
+
+    session_again = await runtime.get_or_create_session(
+        locator=locator, state={"key_b": "val_b"}
+    )
+    assert session_again.state.get("key_a") == "val_a"
+    assert session_again.state.get("key_b") == "val_b"
+
+
+async def test_run_user_turn_with_thoughts_skips_function_calls() -> None:
+    """Test that function_call events are excluded from final content."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-456",
+        session_id_prefix="telegram-chat-456",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        part_with_fc = types.Part.from_text(text="fc_text")
+        part_with_fc.function_call = types.FunctionCall(name="test_function")
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(role="model", parts=[part_with_fc]),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Final answer after fc")],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="Hello"
+        )
+
+    assert response.content == "Final answer after fc"

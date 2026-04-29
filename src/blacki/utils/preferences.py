@@ -101,6 +101,8 @@ def get_preferences_storage() -> PostgresPreferencesStorage:
 async def init_preferences_storage(pool: asyncpg.Pool) -> PostgresPreferencesStorage:
     """Initialize the preferences storage with a Postgres pool."""
     global _storage
+    if _storage is not None:
+        await _storage.close()
     _storage = PostgresPreferencesStorage(pool)
     await _storage.initialize()
     return _storage

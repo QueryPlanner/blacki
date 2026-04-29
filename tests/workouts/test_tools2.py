@@ -18,7 +18,7 @@ def mock_tool_context():
 
 @pytest.mark.asyncio
 @patch("blacki.workouts.tools.get_storage")
-@patch("blacki.workouts.tools._parse_date")
+@patch("blacki.workouts.tools.parse_date")
 async def test_log_workout_append(
     mock_parse_date, mock_get_storage, mock_tool_context
 ) -> None:

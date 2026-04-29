@@ -183,3 +183,27 @@ async def test_singleton(mock_pool) -> None:
     await close_calorie_storage()
     with pytest.raises(RuntimeError):
         get_storage()
+
+
+@pytest.mark.asyncio
+async def test_update_entry_invalid_column(calorie_storage, mock_pool) -> None:
+    """update_entry raises ValueError for columns not in whitelist."""
+    with pytest.raises(ValueError, match="Column 'bogus' is not allowed"):
+        await calorie_storage.update_entry(1, "user1", bogus="value")
+
+
+@pytest.mark.asyncio
+async def test_reinit_calorie_storage_closes_existing(mock_pool) -> None:
+    """init_calorie_storage closes existing storage before replacing."""
+    import blacki.calories.storage as storage
+
+    existing = PostgresCalorieStorage(mock_pool)
+    existing.close = AsyncMock()  # type: ignore[method-assign]
+    storage._storage = existing
+
+    new = await init_calorie_storage(mock_pool)
+
+    existing.close.assert_awaited_once()
+    assert storage._storage is new
+
+    storage._storage = None

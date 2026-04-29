@@ -1,6 +1,6 @@
 """Application timezone utilities for reminders and display.
 
-Defaults to UTC. Override with AGENT_TIMEZONE (IANA name, e.g. Asia/Kolkata).
+Defaults to IST (Asia/Kolkata). Override with AGENT_TIMEZONE (IANA name).
 """
 
 import os
@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Final
 from zoneinfo import ZoneInfo
 
-DEFAULT_TIMEZONE_NAME: Final = "UTC"
+DEFAULT_TIMEZONE_NAME: Final = "Asia/Kolkata"
 
 
 def get_app_timezone() -> ZoneInfo:

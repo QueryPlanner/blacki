@@ -44,6 +44,15 @@ def return_instruction_root() -> str:
   for consistent history tracking.
 - If no workout split is configured, prompt the user to set one via set_workout_split.
 </workout_tracking_spec>
+
+<browser_spec>
+- An agent-browser skill is available for any task that requires a browser
+  (web scraping, form filling, screenshots, navigating sites behind auth).
+- Use the sandbox run command tool to install agent-browser and then use it
+  inside the sandbox: `npm i -g agent-browser && agent-browser install`
+- Only install when needed — there is no pre-installed browser in the sandbox.
+- Refer to the agent-browser skill documentation for usage patterns.
+</browser_spec>
 """
     return instruction
 

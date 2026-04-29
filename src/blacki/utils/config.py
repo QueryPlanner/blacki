@@ -217,13 +217,13 @@ class ServerEnv(BaseModel):
             print(f"DB_POOL_SIZE:          {self.db_pool_size}")
             print(f"DB_MAX_OVERFLOW:       {self.db_max_overflow}")
             print(f"DB_POOL_TIMEOUT:       {self.db_pool_timeout}")
-        masked_key = "********" if self.openrouter_api_key else None
+        masked_key = "********" if self.openrouter_api_key else "[not set]"
         print(f"OPENROUTER_KEY:        {masked_key}")
         print(f"HOST:                  {self.host}")
         print(f"PORT:                  {self.port}")
         print(f"ALLOW_ORIGINS:         {self.allow_origins}")
         print(f"TELEGRAM_ENABLED:      {self.telegram_enabled}")
-        masked_token = "********" if self.telegram_bot_token else None
+        masked_token = "********" if self.telegram_bot_token else "[not set]"
         print(f"TELEGRAM_BOT_TOKEN:    {masked_token}")
         print(f"TELEGRAM_TOOL_NOTIFICATIONS: {self.telegram_tool_notifications}\n\n")
 

@@ -6,6 +6,19 @@ from typing import Any
 import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
+_ALLOWED_UPDATE_COLUMNS = frozenset(
+    {
+        "description",
+        "calories",
+        "protein_g",
+        "carbs_g",
+        "fat_g",
+        "meal_type",
+        "logged_at",
+        "logged_date",
+    }
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -202,9 +215,13 @@ class PostgresCalorieStorage:
             return False
 
         set_clauses = []
-        values = [entry_id, user_id]
+        values: list[Any] = [entry_id, user_id]
 
         for i, (key, value) in enumerate(fields.items(), start=3):
+            if key not in _ALLOWED_UPDATE_COLUMNS:
+                raise ValueError(
+                    f"Column '{key}' is not allowed in calorie_logs UPDATE"
+                )
             set_clauses.append(f"{key} = ${i}")
             values.append(value)
 
@@ -258,6 +275,8 @@ def get_storage() -> PostgresCalorieStorage:
 async def init_calorie_storage(pool: asyncpg.Pool) -> PostgresCalorieStorage:
     """Initialize the calorie storage with a Postgres pool."""
     global _storage
+    if _storage is not None:
+        await _storage.close()
     _storage = PostgresCalorieStorage(pool)
     await _storage.initialize()
     return _storage
