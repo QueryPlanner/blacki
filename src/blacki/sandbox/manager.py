@@ -102,7 +102,10 @@ class SandboxManager:
             state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)
 
-            # Install nodejs, npm, and agent-browser inside the newly created sandbox
+            # Install nodejs, npm, and agent-browser inside the newly created sandbox.
+            # NOTE: This is a fallback for the default code-interpreter image. For
+            # production use, set SANDBOX_IMAGE to a custom image with nodejs and
+            # agent-browser pre-installed to avoid the slow first-boot install.
             try:
                 from opensandbox.models.execd import RunCommandOpts
 

@@ -2,6 +2,7 @@
 
 import inspect
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -32,8 +33,6 @@ class DeepSeekReasoningPlugin(BasePlugin):
         callback_context: CallbackContext,
         llm_request: LlmRequest,
     ) -> None:
-        import os
-
         m1 = os.getenv("OPENROUTER_MODEL", "").lower()
         m2 = os.getenv("MODEL_ID", "").lower()
         if "deepseek" not in m1 and "deepseek" not in m2:
