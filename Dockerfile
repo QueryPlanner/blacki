@@ -38,14 +38,9 @@ FROM python:3.13-slim AS runtime
 
 # Install system dependencies
 # - netcat-openbsd: for checking DB readiness (used in entrypoint.sh)
-# - nodejs, npm: for agent-browser
 RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
-    nodejs \
-    npm \
     && rm -rf /var/lib/apt/lists/*
-
-RUN npm i -g agent-browser && agent-browser install
 
 # Create non-root user for security (matching common host UID 1000)
 RUN groupadd -g 1000 app && \
