@@ -17,6 +17,8 @@ from .types import BotCommand, Message, ParseMode, Update
 logger = logging.getLogger(__name__)
 
 POLLING_TIMEOUT = 30
+_MAX_CONSECUTIVE_ERRORS = 5
+_FATAL_ERROR_CODES = {401, 403}
 
 
 @dataclass(slots=True, frozen=True)
@@ -102,6 +104,7 @@ class TelegramBot:
     async def _polling_loop(self) -> None:
         """Long polling loop for updates."""
         offset = 0
+        consecutive_errors = 0
 
         while self._running:
             try:
@@ -111,15 +114,48 @@ class TelegramBot:
                     allowed_updates=["message"],
                 )
 
+                consecutive_errors = 0
+
                 for update in updates:
                     offset = update.update_id + 1
                     await self._handle_update(update)
 
             except asyncio.CancelledError:
                 raise
+            except TelegramApiError as exc:
+                consecutive_errors += 1
+                status = getattr(exc, "status_code", None)
+                if status in _FATAL_ERROR_CODES:
+                    logger.critical(
+                        "Fatal Telegram API error (status=%s), stopping polling: %s",
+                        status,
+                        exc,
+                    )
+                    return
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Too many consecutive Telegram API errors (%d), stopping: %s",
+                        consecutive_errors,
+                        exc,
+                    )
+                    return
+                logger.warning(
+                    "Transient Telegram API error in polling loop (%d/%d): %s",
+                    consecutive_errors,
+                    _MAX_CONSECUTIVE_ERRORS,
+                    exc,
+                )
+                await asyncio.sleep(min(5 * consecutive_errors, 60))
             except Exception:
+                consecutive_errors += 1
                 logger.exception("Error in polling loop")
-                await asyncio.sleep(5)
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.error(
+                        "Too many consecutive errors (%d), stopping polling",
+                        consecutive_errors,
+                    )
+                    return
+                await asyncio.sleep(min(5 * consecutive_errors, 60))
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""

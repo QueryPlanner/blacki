@@ -79,7 +79,12 @@ async def _start_telegram_bot() -> None:
 
         await _telegram_bot.start_polling()
 
-        await _start_reminder_scheduler()
+        try:
+            await _start_reminder_scheduler()
+        except Exception:
+            logger.exception(
+                "Failed to start reminder scheduler — continuing without it"
+            )
     except Exception:
         logger.exception("Failed to start Telegram bot")
         raise
@@ -91,16 +96,13 @@ async def _start_reminder_scheduler() -> None:
         logger.info("Reminder scheduler not started (no database pool)")
         return
 
-    try:
-        from .reminders import get_scheduler
+    from .reminders import get_scheduler
 
-        scheduler = get_scheduler()
-        if _telegram_bot is not None and _telegram_bot._api is not None:
-            scheduler.set_api(_telegram_bot._api)
-        await scheduler.start()
-        logger.info("Reminder scheduler started")
-    except Exception:
-        logger.exception("Failed to start reminder scheduler")
+    scheduler = get_scheduler()
+    if _telegram_bot is not None and _telegram_bot._api is not None:
+        scheduler.set_api(_telegram_bot._api)
+    await scheduler.start()
+    logger.info("Reminder scheduler started")
 
 
 async def _stop_telegram_bot() -> None:
@@ -122,24 +124,28 @@ async def _init_reminder_pool(database_url: str) -> asyncpg.Pool:
         max_size=5,
     )
 
-    from .reminders import init_reminder_storage
+    try:
+        from .reminders import init_reminder_storage
 
-    await init_reminder_storage(pool)
+        await init_reminder_storage(pool)
 
-    from .utils.preferences import init_preferences_storage
+        from .utils.preferences import init_preferences_storage
 
-    await init_preferences_storage(pool)
+        await init_preferences_storage(pool)
 
-    from .calories import init_calorie_storage
+        from .calories import init_calorie_storage
 
-    await init_calorie_storage(pool)
+        await init_calorie_storage(pool)
 
-    from .workouts import init_workout_storage
+        from .workouts import init_workout_storage
 
-    await init_workout_storage(pool)
+        await init_workout_storage(pool)
 
-    logger.info("All storage modules initialized with Postgres pool")
-    return pool
+        logger.info("All storage modules initialized with Postgres pool")
+        return pool
+    except Exception:
+        await pool.close()
+        raise
 
 
 async def _stop_reminder_scheduler() -> None:
@@ -152,7 +158,7 @@ async def _stop_reminder_scheduler() -> None:
             await scheduler.stop()
             logger.info("Reminder scheduler stopped")
     except RuntimeError:
-        pass
+        logger.debug("Scheduler not initialized, nothing to stop")
     except Exception:
         logger.exception("Error stopping reminder scheduler")
 
@@ -217,6 +223,14 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await _close_reminder_pool()
         await _stop_telegram_bot()
 
+        from .tools import close_shared_brave_search_client
+
+        await close_shared_brave_search_client()
+
+        from .callbacks import close_shared_notify_client
+
+        await close_shared_notify_client()
+
 
 app.router.lifespan_context = lifespan
 
@@ -228,6 +242,15 @@ async def health() -> dict[str, str]:
     Returns:
         dict with status key indicating service health.
     """
+    checks: list[str] = []
+    if _reminder_pool is not None:
+        try:
+            await _reminder_pool.fetchval("SELECT 1")
+        except Exception:
+            checks.append("database:unreachable")
+
+    if checks:
+        return {"status": "degraded", "details": "; ".join(checks)}
     return {"status": "ok"}
 
 

@@ -1,30 +1,15 @@
 import logging
 from typing import Any
 
-import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
 
+from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
 
 from .storage import SetDetail, WorkoutExercise, WorkoutSession, get_storage
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_date(date_str: str | None) -> str:
-    tz = get_app_timezone()
-    if not date_str or date_str.lower() in ("today", "now"):  # pragma: no cover
-        return now_utc().astimezone(tz).strftime("%Y-%m-%d")
-
-    dt = dateparser.parse(  # pragma: no cover
-        date_str,
-        settings={"TIMEZONE": str(tz), "RETURN_AS_TIMEZONE_AWARE": True},
-    )
-    if not dt:  # pragma: no cover
-        return now_utc().astimezone(tz).strftime("%Y-%m-%d")
-
-    return str(dt.strftime("%Y-%m-%d"))  # pragma: no cover
 
 
 async def log_workout(
@@ -39,7 +24,7 @@ async def log_workout(
     if not user_id:
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
-    parsed_date = _parse_date(workout_date)
+    parsed_date = parse_date(workout_date)
 
     # Parse exercises
     parsed_exercises = []

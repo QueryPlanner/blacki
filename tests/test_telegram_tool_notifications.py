@@ -3,7 +3,7 @@
 
 import asyncio
 import logging
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,11 +25,11 @@ from blacki.telegram.api import TelegramApiError
 
 
 @pytest.fixture(autouse=True)
-def _clear_tool_notify_rate_limiter() -> Iterator[None]:
+async def _clear_tool_notify_rate_limiter() -> AsyncIterator[None]:
     """Isolate rate limiter state between tests."""
-    reset_telegram_tool_notify_rate_limiter_for_tests()
+    await reset_telegram_tool_notify_rate_limiter_for_tests()
     yield None
-    reset_telegram_tool_notify_rate_limiter_for_tests()
+    await reset_telegram_tool_notify_rate_limiter_for_tests()
 
 
 def test_telegram_tool_notifications_enabled_requires_all_flags(
@@ -461,7 +461,8 @@ def test_evict_oldest_rate_limit_entries_noop() -> None:
     assert "a" in storage
 
 
-def test_rate_limit_evicts_oldest_when_map_full() -> None:
+@pytest.mark.asyncio
+async def test_rate_limit_evicts_oldest_when_map_full() -> None:
     """New chat keys trigger eviction when the rate-limit map is at capacity."""
     storage: dict[str, float] = {}
     base = 1000.0
@@ -469,8 +470,14 @@ def test_rate_limit_evicts_oldest_when_map_full() -> None:
         storage[str(index)] = base + index * 0.01
     assert len(storage) == 4
 
-    assert callbacks_module._rate_limit_allows_notification(
-        "new", base + 100.0, storage=storage, min_interval=0.35, max_entries=4
+    lock = asyncio.Lock()
+    assert await callbacks_module._rate_limit_allows_notification(
+        "new",
+        base + 100.0,
+        storage=storage,
+        min_interval=0.35,
+        max_entries=4,
+        lock=lock,
     )
     assert "new" in storage
     assert len(storage) == 4
@@ -672,7 +679,7 @@ async def test_reset_schedules_async_close_when_loop_running(
             {},
             cast(ToolContext, ctx),
         )
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
         await asyncio.sleep(0)
 
     mock_client.close.assert_awaited()
@@ -700,13 +707,13 @@ async def test_reset_handles_close_exception(
             {},
             cast(ToolContext, ctx),
         )
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
         await asyncio.sleep(0)
 
     assert "Telegram notify client close failed" in caplog.text
 
 
-def test_reset_handles_loop_create_task_runtime_error(
+async def test_reset_handles_loop_create_task_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """RuntimeError from loop.create_task is caught silently."""
@@ -718,7 +725,7 @@ def test_reset_handles_loop_create_task_runtime_error(
     mock_loop.create_task = MagicMock(side_effect=RuntimeError("loop closed"))
 
     with patch("asyncio.get_running_loop", return_value=mock_loop):
-        reset_telegram_tool_notify_rate_limiter_for_tests()
+        await reset_telegram_tool_notify_rate_limiter_for_tests()
 
     assert callbacks_module._shared_notify_client is None
     assert callbacks_module._shared_notify_token is None

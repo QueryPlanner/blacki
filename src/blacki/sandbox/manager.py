@@ -119,7 +119,7 @@ class SandboxManager:
                 )
                 await sandbox.commands.run(cmd, opts=opts)
             except Exception as setup_exc:
-                logger.warning(
+                logger.error(
                     "Failed to install agent-browser in sandbox: %s", setup_exc
                 )
 

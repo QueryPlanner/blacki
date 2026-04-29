@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
@@ -47,12 +46,9 @@ def get_next_trigger_time(
         normalized_expression,
         timezone=timezone,
     )
-    next_fire_time = cast(
-        datetime | None,
-        trigger.get_next_fire_time(
-            previous_fire_time=None,
-            now=local_reference_time,
-        ),
+    next_fire_time: datetime | None = trigger.get_next_fire_time(
+        previous_fire_time=None,
+        now=local_reference_time,
     )
 
     if next_fire_time is None:

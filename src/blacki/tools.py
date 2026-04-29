@@ -19,8 +19,14 @@ _brave_search_client: httpx.AsyncClient | None = None
 async def reset_brave_search_client_cache() -> None:
     """Close and clear the shared Brave Search httpx client.
 
-    Used between tests to ensure connection pools are not leaked.
+    Used between tests and during application shutdown
+    to ensure connection pools are not leaked.
     """
+    await close_shared_brave_search_client()
+
+
+async def close_shared_brave_search_client() -> None:
+    """Close the shared Brave Search httpx client (production shutdown path)."""
     global _brave_search_client
     async with _brave_search_lock:
         if _brave_search_client is not None:
@@ -39,29 +45,6 @@ async def _get_shared_brave_search_client() -> httpx.AsyncClient:
             return _brave_search_client
         _brave_search_client = httpx.AsyncClient(timeout=30.0)
         return _brave_search_client
-
-
-def example_tool(
-    tool_context: ToolContext,
-) -> dict[str, Any]:
-    """Example tool that logs a success message.
-
-    This is a placeholder example tool. Replace with actual implementation.
-
-    Args:
-        tool_context: ADK ToolContext with access to session state
-
-    Returns:
-        A dictionary with status and message about the logging operation.
-    """
-    # TODO: add tool logic
-
-    # Log the session state keys
-    logger.info(f"Session state keys: {tool_context.state.to_dict().keys()}")
-
-    message = "Successfully used example_tool."
-    logger.info(message)
-    return {"status": "success", "message": message}
 
 
 BRAVE_SEARCH_API_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -169,7 +152,7 @@ async def brave_search(
             "results": results,
         }
 
-    except Exception:
+    except (httpx.HTTPError, httpx.TimeoutException, httpx.RequestError):
         logger.exception("Brave Search API error")
         return {
             "status": "error",

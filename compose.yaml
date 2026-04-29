@@ -1,8 +1,6 @@
 services:
   agent:
-    # Image is dynamically set during deployment via IMAGE env var
-    # Defaults to building locally if IMAGE is not specified
-    image: ${IMAGE:-agent}
+    image: ${IMAGE:-}
     build: .
     ports:
       - "${HOST_PORT:-8080}:8080"
