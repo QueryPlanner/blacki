@@ -102,30 +102,6 @@ class SandboxManager:
             state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)
 
-            # Install nodejs, npm, and agent-browser inside the newly created sandbox.
-            # NOTE: This is a fallback for the default code-interpreter image. For
-            # production use, set SANDBOX_IMAGE to a custom image with nodejs and
-            # agent-browser pre-installed to avoid the slow first-boot install.
-            try:
-                from opensandbox.models.execd import RunCommandOpts
-
-                logger.info("Running sandbox startup script to install agent-browser")
-                from datetime import timedelta
-
-                opts = RunCommandOpts(timeout=timedelta(seconds=300))
-
-                cmd = (
-                    "bash -c 'if ! command -v npm > /dev/null; then "
-                    "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && "
-                    "apt-get install -y nodejs; fi && "
-                    "npm i -g agent-browser && agent-browser install'"
-                )
-                await sandbox.commands.run(cmd, opts=opts)
-            except Exception as setup_exc:
-                logger.error(
-                    "Failed to install agent-browser in sandbox: %s", setup_exc
-                )
-
             return {"sandbox": sandbox, "error": None}
         except SandboxReadyTimeoutException as e:
             error_msg = (
