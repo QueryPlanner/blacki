@@ -2496,8 +2496,18 @@ class TestRouteNonTextMessage:
                 "date": "2024-01-01T00:00:00Z",
                 "chat": {"id": 123, "type": "private"},
                 "photo": [
-                    {"file_id": "small", "file_unique_id": "u1", "width": 100, "height": 100},
-                    {"file_id": "large", "file_unique_id": "u2", "width": 800, "height": 600},
+                    {
+                        "file_id": "small",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    },
+                    {
+                        "file_id": "large",
+                        "file_unique_id": "u2",
+                        "width": 800,
+                        "height": 600,
+                    },
                 ],
             }
         )
@@ -2653,9 +2663,7 @@ class TestHandleFileUpload:
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
 
-        with patch(
-            "blacki.sandbox.manager.get_sandbox_manager"
-        ) as mock_get_manager:
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.config.enabled = False
             mock_get_manager.return_value = manager
@@ -2683,9 +2691,7 @@ class TestHandleFileUpload:
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock()
-        mock_api.get_file = AsyncMock(
-            return_value={"file_path": "documents/test.txt"}
-        )
+        mock_api.get_file = AsyncMock(return_value={"file_path": "documents/test.txt"})
         mock_api.download_file = AsyncMock(return_value=b"file content")
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
@@ -2695,9 +2701,7 @@ class TestHandleFileUpload:
         mock_sandbox = MagicMock()
         mock_sandbox.files.write_file = AsyncMock()
 
-        with patch(
-            "blacki.sandbox.manager.get_sandbox_manager"
-        ) as mock_get_manager:
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.config.enabled = True
             manager.get_or_create_sandbox = AsyncMock(
@@ -2730,9 +2734,7 @@ class TestHandleFileUpload:
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock()
-        mock_api.get_file = AsyncMock(
-            return_value={"file_path": "documents/test.txt"}
-        )
+        mock_api.get_file = AsyncMock(return_value={"file_path": "documents/test.txt"})
         mock_api.download_file = AsyncMock(return_value=b"file content")
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
@@ -2742,9 +2744,7 @@ class TestHandleFileUpload:
         mock_sandbox = MagicMock()
         mock_sandbox.files.write_file = AsyncMock()
 
-        with patch(
-            "blacki.sandbox.manager.get_sandbox_manager"
-        ) as mock_get_manager:
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.config.enabled = True
             manager.get_or_create_sandbox = AsyncMock(
@@ -2779,9 +2779,7 @@ class TestHandleFileUpload:
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
 
-        with patch(
-            "blacki.sandbox.manager.get_sandbox_manager"
-        ) as mock_get_manager:
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.config.enabled = True
             mock_get_manager.return_value = manager
@@ -2809,16 +2807,12 @@ class TestHandleFileUpload:
 
         mock_api = create_autospec(TelegramApiClient, instance=True)
         mock_api.send_chat_action = AsyncMock()
-        mock_api.get_file = AsyncMock(
-            return_value={"file_path": "documents/test.txt"}
-        )
+        mock_api.get_file = AsyncMock(return_value={"file_path": "documents/test.txt"})
         mock_api.download_file = AsyncMock(return_value=b"file content")
         mock_api.send_message = AsyncMock()
         bot._api = mock_api
 
-        with patch(
-            "blacki.sandbox.manager.get_sandbox_manager"
-        ) as mock_get_manager:
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.config.enabled = True
             manager.get_or_create_sandbox = AsyncMock(

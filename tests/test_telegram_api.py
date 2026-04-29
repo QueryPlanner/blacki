@@ -3,8 +3,8 @@
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
+
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.types import Message, ParseMode
 
@@ -53,7 +53,9 @@ class TestTelegramApiClient:
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_response)
 
-        with patch.object(client, "_ensure_client", AsyncMock(return_value=mock_client)):
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_client)
+        ):
             result = await client.download_file("documents/file.txt")
 
         assert result == b"file bytes"

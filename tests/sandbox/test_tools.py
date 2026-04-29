@@ -534,9 +534,7 @@ class TestSandboxSendFileToUser:
             mock_get_manager.return_value = manager
 
             with patch.dict("os.environ", {}, clear=True):
-                result = await sandbox_send_file_to_user(
-                    "/tmp/test.txt", tool_context
-                )
+                result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
 
         assert result["status"] == "error"
         assert "TELEGRAM_BOT_TOKEN" in result["error"]
@@ -553,9 +551,7 @@ class TestSandboxSendFileToUser:
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
-            patch(
-                "blacki.telegram.api.TelegramApiClient"
-            ) as mock_api_client_cls,
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
@@ -609,9 +605,7 @@ class TestSandboxSendFileToUser:
         tool_context.state = {"telegram_chat_id": "12345"}
 
         mock_sandbox = MagicMock()
-        mock_sandbox.files.read_file = AsyncMock(
-            side_effect=RuntimeError("Unexpected")
-        )
+        mock_sandbox.files.read_file = AsyncMock(side_effect=RuntimeError("Unexpected"))
 
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
@@ -643,9 +637,7 @@ class TestSandboxSendFileToUser:
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
-            patch(
-                "blacki.telegram.api.TelegramApiClient"
-            ) as mock_api_client_cls,
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(

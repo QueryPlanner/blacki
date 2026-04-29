@@ -907,7 +907,7 @@ async def test_run_user_turn_with_thoughts_skips_function_calls() -> None:
     async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
         del kwargs
         part_with_fc = types.Part.from_text(text="fc_text")
-        part_with_fc.function_call = object()  # type: ignore[attr-defined]
+        part_with_fc.function_call = types.FunctionCall(name="test_function")
         yield Event(
             author="root_agent",
             partial=False,

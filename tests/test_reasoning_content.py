@@ -128,7 +128,10 @@ def test_deepseek_reasoning_plugin_skips_non_model_roles(
     ctx = MockCallbackContext(agent)
 
     plugin.before_model(ctx, request)
-    assert getattr(request.contents[0].parts[0], "thought", False) is True
+    first_content = request.contents[0]
+    first_parts = first_content.parts
+    assert first_parts is not None
+    assert getattr(first_parts[0], "thought", False) is True
 
 
 def test_deepseek_reasoning_plugin_no_thought_parts(
@@ -148,8 +151,11 @@ def test_deepseek_reasoning_plugin_no_thought_parts(
     ctx = MockCallbackContext(agent)
 
     plugin.before_model(ctx, request)
-    assert len(request.contents[0].parts) == 1
-    assert getattr(request.contents[0].parts[0], "thought", False) is False
+    first_content = request.contents[0]
+    first_parts = first_content.parts
+    assert first_parts is not None
+    assert len(first_parts) == 1
+    assert getattr(first_parts[0], "thought", False) is False
 
 
 def test_deepseek_reasoning_plugin_thought_only_content(
@@ -169,7 +175,10 @@ def test_deepseek_reasoning_plugin_thought_only_content(
     ctx = MockCallbackContext(agent)
 
     plugin.before_model(ctx, request)
-    assert len(request.contents[0].parts) == 1
-    final_text = request.contents[0].parts[0].text
+    first_content = request.contents[0]
+    first_parts = first_content.parts
+    assert first_parts is not None
+    assert len(first_parts) == 1
+    final_text = first_parts[0].text
     assert final_text is not None
     assert final_text.startswith("<think>\nI am thinking deeply...\n</think>\n")
