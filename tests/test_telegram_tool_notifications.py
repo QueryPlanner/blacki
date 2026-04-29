@@ -17,6 +17,7 @@ from google.genai.types import Content, FunctionCall, Part
 
 import blacki.callbacks as callbacks_module
 from blacki.callbacks import (
+    _format_tool_args,
     notify_telegram_before_tool,
     reset_telegram_tool_notify_rate_limiter_for_tests,
     telegram_tool_notifications_enabled,
@@ -872,3 +873,78 @@ async def test_close_shared_notify_client_when_none() -> None:
 
     assert callbacks_module._shared_notify_client is None
     assert callbacks_module._shared_notify_token is None
+
+
+def test_format_tool_args_empty_args() -> None:
+    """Empty args dict returns empty string."""
+    assert _format_tool_args({}) == ""
+
+
+def test_format_tool_args_single_arg() -> None:
+    """Single arg formatted as key=value pair."""
+    result = _format_tool_args({"query": "hello"})
+    assert "query" in result
+    assert "hello" in result
+
+
+def test_format_tool_args_multiple_args() -> None:
+    """Multiple args are comma-separated."""
+    result = _format_tool_args({"query": "hello", "count": "5"})
+    assert "query" in result
+    assert "hello" in result
+    assert "count" in result
+    assert "5" in result
+    assert ", " in result
+
+
+def test_format_tool_args_long_value_truncated() -> None:
+    """Long values are truncated with '...'."""
+    long_value = "a" * 120
+    result = _format_tool_args({"text": long_value})
+    assert "..." in result
+    assert "aaaaaa" in result
+
+
+def test_format_tool_args_overall_truncated() -> None:
+    """Very many args result in an overall truncated string."""
+    many_args = {f"k{i}": f"v{i}" for i in range(50)}
+    result = _format_tool_args(many_args)
+    assert result.endswith("...")
+
+
+def test_format_tool_args_special_chars_escaped() -> None:
+    """Special Markdown characters in keys and values are escaped."""
+    result = _format_tool_args({"file_path": "/home/user_1/file.txt"})
+    assert r"\=" in result or "=" in result
+
+
+@pytest.mark.asyncio
+async def test_notify_sends_args_in_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Telegram notification includes tool arguments in the message text."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MockToolContext(
+            state=MockState({"telegram_chat_id": "4242"}),
+        )
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("search_memory")),
+            {"query": "capital of France", "limit": 5},
+            cast(ToolContext, ctx),
+        )
+
+    kwargs = mock_client.send_message.await_args.kwargs
+    assert "Using tool" in kwargs["text"]
+    assert "query" in kwargs["text"]
+    assert "capital of France" in kwargs["text"]
+    assert "limit" in kwargs["text"]
+    assert "5" in kwargs["text"]

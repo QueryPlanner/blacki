@@ -183,9 +183,36 @@ def _parse_optional_int(value: str | int | None) -> int | None:
         return None
 
 
+def _format_tool_args(args: dict[str, Any]) -> str:
+    """Format tool arguments into a compact Telegram-friendly string.
+
+    Returns an empty string when *args* is empty. Each key=value pair is
+    MarkdownV2-escaped and long values are truncated.
+    """
+    if not args:
+        return ""
+
+    parts: list[str] = []
+    for key, value in args.items():
+        value_str = str(value)
+        truncated = len(value_str) > 100
+        if truncated:
+            value_str = value_str[:97]
+        escaped_key = escape_markdown(key)
+        escaped_value = escape_markdown(value_str)
+        suffix = "..." if truncated else ""
+        parts.append(f"{escaped_key}=`{escaped_value}{suffix}`")
+
+    formatted = ", ".join(parts)
+    if len(formatted) > 400:
+        formatted = formatted[:397] + "..."
+
+    return f"\n{formatted}"
+
+
 async def notify_telegram_before_tool(
     tool: BaseTool,
-    args: dict[str, Any],  # noqa: ARG001
+    args: dict[str, Any],
     tool_context: ToolContext,
 ) -> None:
     """Send a short Telegram notice before a tool runs (Telegram sessions only).
@@ -230,7 +257,8 @@ async def notify_telegram_before_tool(
         return None
 
     escaped_name = escape_markdown(tool.name)
-    text = f"🔧 Using tool: *{escaped_name}*"
+    args_text = _format_tool_args(args)
+    text = f"🔧 Using tool: *{escaped_name}*{args_text}"
 
     try:
         client = await _shared_telegram_notify_client(token)
