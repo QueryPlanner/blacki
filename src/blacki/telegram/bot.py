@@ -234,6 +234,93 @@ class TelegramBot:
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 
+    async def _handle_file_upload(
+        self,
+        chat_id: int,
+        message_thread_id: int | None,
+        file_id: str,
+        file_name: str,
+        caption: str | None,
+    ) -> None:
+        """Handle incoming file uploads, save to sandbox, and message agent."""
+        from blacki.sandbox.manager import get_sandbox_manager
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+        )
+
+        manager = get_sandbox_manager()
+
+        if not manager.config.enabled:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sandbox is not enabled. Cannot process file uploads\\.",
+                message_thread_id=message_thread_id,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            return
+
+        try:
+            await self.api.send_chat_action(chat_id=chat_id, action="upload_document")
+
+            file_info = await self.api.get_file(file_id)
+            file_path_api = file_info.get("file_path")
+            if not file_path_api:
+                raise Exception("Failed to get file_path from Telegram API")
+
+            file_bytes = await self.api.download_file(file_path_api)
+
+            result = await manager.get_or_create_sandbox(state)
+            sandbox = result.get("sandbox")
+            error = result.get("error")
+
+            if error or not sandbox:
+                raise Exception(f"Failed to access sandbox: {error}")
+
+            sandbox_path = f"/workspace/uploads/{file_name}"
+            await sandbox.files.write_file(sandbox_path, file_bytes)
+
+            user_message = (
+                f"User uploaded a file which has been saved to "
+                f"the sandbox at {sandbox_path}"
+            )
+            if caption:
+                user_message += f"\nCaption provided by user: {caption}"
+
+            logger.info("File %s saved to sandbox for chat %s", file_name, chat_id)
+
+            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+
+            final_response = await self.runtime.run_user_turn(
+                locator=SessionLocator(
+                    user_id=session_identity.user_id,
+                    session_id_prefix=session_identity.session_id_prefix,
+                ),
+                message_text=user_message,
+                state=state,
+            )
+
+            await self._send_final_response(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                response_text=final_response,
+            )
+
+        except Exception:
+            logger.exception("Failed to handle file upload")
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sorry, I failed to process the uploaded file\\.",
+                message_thread_id=message_thread_id,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
     async def _handle_message(
         self,
         chat_id: int,

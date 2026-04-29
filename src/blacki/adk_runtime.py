@@ -6,16 +6,64 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
+from google.adk.models.llm_request import LlmRequest
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService, Session
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
-from .utils import ServerEnv
+from .utils.config import ServerEnv
 
+
+class DeepSeekReasoningPlugin(BasePlugin):
+    """Preserves reasoning_content for DeepSeek models by nesting it in content.
+
+    Prevents 400 Bad Request crashes by explicitly moving ADK thought parts
+    into the standard content block with <think> tags, which OpenRouter supports.
+    """
+
+    def before_model(
+        self,
+        callback_context: CallbackContext,
+        llm_request: LlmRequest,
+    ) -> None:
+        import os
+
+        m1 = os.getenv("OPENROUTER_MODEL", "").lower()
+        m2 = os.getenv("MODEL_ID", "").lower()
+        if "deepseek" not in m1 and "deepseek" not in m2:
+            return
+
+        if not llm_request.contents:
+            return
+
+        for content in llm_request.contents:
+            if content.role in ("model", "assistant") and content.parts:
+                thought_parts: list[str] = []
+                other_parts: list[types.Part] = []
+
+                for p in content.parts:
+                    if getattr(p, "thought", False) and p.text:
+                        thought_parts.append(p.text)
+                    else:
+                        other_parts.append(p)
+
+                if thought_parts:
+                    thoughts = "\n".join(thought_parts)
+                    think_text = f"<think>\n{thoughts}\n</think>\n"
+
+                    if other_parts and other_parts[0].text:
+                        other_parts[0].text = think_text + other_parts[0].text
+                    else:
+                        other_parts.insert(0, types.Part.from_text(text=think_text))
+
+                    # Remove thought=True so ADK LiteLlm treats it as normal text
+                    content.parts = other_parts
 logger = logging.getLogger(__name__)
 
 DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."

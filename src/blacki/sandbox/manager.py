@@ -15,7 +15,7 @@ from opensandbox.exceptions import (
 from .config import SANDBOX_STATE_KEY, SandboxConfig, load_sandbox_config
 
 if TYPE_CHECKING:
-    from google.adk.tools import ToolContext
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,11 @@ class SandboxManager:
         """Get the sandbox configuration."""
         return self._config
 
-    async def get_or_create_sandbox(self, tool_context: ToolContext) -> dict[str, Any]:
+    async def get_or_create_sandbox(self, state: Any) -> dict[str, Any]:
         """Get existing sandbox or create a new one for this session.
 
         Args:
-            tool_context: ADK tool context with session state.
+            state: ADK session state object or dict.
 
         Returns:
             Dict with sandbox instance or error information.
@@ -76,7 +76,7 @@ class SandboxManager:
                 "sandbox": None,
             }
 
-        sandbox_id = tool_context.state.get(SANDBOX_STATE_KEY)
+        sandbox_id = state.get(SANDBOX_STATE_KEY)
         if sandbox_id:
             try:
                 sandbox = await Sandbox.connect(
@@ -99,8 +99,30 @@ class SandboxManager:
                 timeout=self._config.timeout,
                 resource=self._config.resource,
             )
-            tool_context.state[SANDBOX_STATE_KEY] = sandbox.id
+            state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)
+
+            # Install nodejs, npm, and agent-browser inside the newly created sandbox
+            try:
+                from opensandbox.models.execd import RunCommandOpts
+
+                logger.info("Running sandbox startup script to install agent-browser")
+                from datetime import timedelta
+
+                opts = RunCommandOpts(timeout=timedelta(seconds=300))
+
+                cmd = (
+                    "bash -c 'if ! command -v npm > /dev/null; then "
+                    "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && "
+                    "apt-get install -y nodejs; fi && "
+                    "npm i -g agent-browser && agent-browser install'"
+                )
+                await sandbox.commands.run(cmd, opts=opts)
+            except Exception as setup_exc:
+                logger.warning(
+                    "Failed to install agent-browser in sandbox: %s", setup_exc
+                )
+
             return {"sandbox": sandbox, "error": None}
         except SandboxReadyTimeoutException as e:
             error_msg = (

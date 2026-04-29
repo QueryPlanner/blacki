@@ -133,6 +133,93 @@ class TelegramApiClient:
 
         return telegram_response.result or {}
 
+    def _build_file_url(self, file_path: str) -> str:
+        """Build the API URL for downloading a file."""
+        return f"https://api.telegram.org/file/bot{self.token}/{file_path}"
+
+    async def get_file(self, file_id: str) -> dict[str, Any]:
+        """Get file info by file_id.
+
+        Returns:
+            A dictionary representing the File object.
+        """
+        result = await self._request("getFile", {"file_id": file_id})
+        return result if isinstance(result, dict) else {}
+
+    async def download_file(self, file_path: str) -> bytes:
+        """Download a file by file_path.
+
+        Returns:
+            The raw bytes of the file.
+        """
+        client = await self._ensure_client()
+        url = self._build_file_url(file_path)
+        response = await client.get(url, timeout=self.timeout)
+        response.raise_for_status()
+        return response.content
+
+    async def send_document(
+        self,
+        chat_id: int | str,
+        document_bytes: bytes,
+        filename: str,
+        *,
+        caption: str | None = None,
+        message_thread_id: int | None = None,
+        parse_mode: ParseMode | None = None,
+    ) -> Message:
+        """Send a document to a chat.
+
+        Args:
+            chat_id: Target chat.
+            document_bytes: The file contents.
+            filename: Name of the file.
+            caption: Document caption.
+            message_thread_id: Target thread.
+            parse_mode: Parse mode.
+
+        Returns:
+            The sent Message object.
+        """
+        client = await self._ensure_client()
+        url = self._build_url("sendDocument")
+
+        data: dict[str, Any] = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+        if message_thread_id is not None:
+            data["message_thread_id"] = message_thread_id
+        if parse_mode is not None:
+            data["parse_mode"] = parse_mode.value
+
+        files = {"document": (filename, document_bytes)}
+
+        response = await client.post(url, data=data, files=files, timeout=self.timeout)
+
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("description", response.text)
+            except Exception:
+                error_msg = response.text
+            raise TelegramApiError(
+                message=f"HTTP {response.status_code}: {error_msg}",
+                error_code=response.status_code,
+            )
+
+        response_data = response.json()
+        from .types import TelegramResponse
+
+        telegram_response = TelegramResponse.model_validate(response_data)
+
+        if not telegram_response.ok:
+            raise TelegramApiError(
+                message=telegram_response.description or "Unknown Telegram API error",
+                error_code=telegram_response.error_code,
+            )
+
+        return Message.model_validate(telegram_response.result)
+
     async def get_me(self) -> dict[str, Any]:
         """Get information about the bot.
 

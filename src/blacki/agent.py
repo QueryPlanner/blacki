@@ -11,6 +11,7 @@ from google.adk.apps import App
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
+from .adk_runtime import DeepSeekReasoningPlugin
 from .callbacks import (
     LoggingCallbacks,
     notify_telegram_after_model,
@@ -23,9 +24,6 @@ from .prompt import (
     return_instruction_root,
 )
 from .tools import (
-    browser_list_profiles,
-    browser_stop_session,
-    browser_task,
     example_tool,
 )
 
@@ -108,9 +106,6 @@ skills_dir = Path(__file__).parent / "skills"
 # Build the list of tools
 agent_tools: list[Any] = [
     example_tool,
-    browser_task,
-    browser_stop_session,
-    browser_list_profiles,
 ]
 
 # Add Brave Search tool if API key is available
@@ -211,6 +206,7 @@ if sandbox_enabled:
             sandbox_list_files,
             sandbox_read_file,
             sandbox_run_command,
+            sandbox_send_file_to_user,
             sandbox_write_file,
         )
 
@@ -220,6 +216,7 @@ if sandbox_enabled:
                 sandbox_write_file,
                 sandbox_read_file,
                 sandbox_list_files,
+                sandbox_send_file_to_user,
             ]
         )
         logger.info("Sandbox tools enabled")
@@ -258,6 +255,7 @@ app = App(
     plugins=[
         GlobalInstructionPlugin(return_global_instruction),
         LoggingPlugin(),
+        DeepSeekReasoningPlugin(name="deepseek_reasoning"),
     ],
     events_compaction_config=None,
     context_cache_config=None,

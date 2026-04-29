@@ -7,6 +7,7 @@ from .tools import (
     sandbox_list_files,
     sandbox_read_file,
     sandbox_run_command,
+    sandbox_send_file_to_user,
     sandbox_write_file,
 )
 
@@ -20,5 +21,6 @@ __all__ = [
     "sandbox_list_files",
     "sandbox_read_file",
     "sandbox_run_command",
+    "sandbox_send_file_to_user",
     "sandbox_write_file",
 ]

@@ -54,7 +54,7 @@ async def sandbox_run_command(
     """
     manager = get_sandbox_manager()
 
-    result = await manager.get_or_create_sandbox(tool_context)
+    result = await manager.get_or_create_sandbox(tool_context.state)
     sandbox = result.get("sandbox")
     error = result.get("error")
 
@@ -104,7 +104,7 @@ async def sandbox_write_file(
     """
     manager = get_sandbox_manager()
 
-    result = await manager.get_or_create_sandbox(tool_context)
+    result = await manager.get_or_create_sandbox(tool_context.state)
     sandbox = result.get("sandbox")
     error = result.get("error")
 
@@ -139,7 +139,7 @@ async def sandbox_read_file(
     """
     manager = get_sandbox_manager()
 
-    result = await manager.get_or_create_sandbox(tool_context)
+    result = await manager.get_or_create_sandbox(tool_context.state)
     sandbox = result.get("sandbox")
     error = result.get("error")
 
@@ -157,6 +157,74 @@ async def sandbox_read_file(
         error_msg = f"Unexpected error: {e}"
         logger.exception(error_msg)
         return {"status": "error", "error": error_msg, "content": None}
+
+
+async def sandbox_send_file_to_user(
+    sandbox_path: str,
+    tool_context: ToolContext,
+) -> dict[str, Any]:
+    """Send a file from the sandbox back to the user via Telegram.
+
+    Reads a file from the sandbox and sends it to the user's Telegram chat.
+
+    Args:
+        sandbox_path: Absolute or relative file path in the sandbox.
+        tool_context: ADK tool context for session state.
+
+    Returns:
+        Dictionary with status and optional error.
+    """
+    manager = get_sandbox_manager()
+
+    result = await manager.get_or_create_sandbox(tool_context.state)
+    sandbox = result.get("sandbox")
+    error = result.get("error")
+
+    if error or sandbox is None:
+        return {"status": "error", "error": error}
+
+    try:
+        chat_id_str = tool_context.state.get("telegram_chat_id")
+        if not chat_id_str:
+            return {"status": "error", "error": "Not in a Telegram session"}
+
+        chat_id = int(chat_id_str)
+        thread_id_str = tool_context.state.get("telegram_thread_id")
+        thread_id = int(thread_id_str) if thread_id_str else None
+
+        import os
+
+        from blacki.telegram.api import TelegramApiClient
+
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+        if not token:
+            return {"status": "error", "error": "TELEGRAM_BOT_TOKEN is not set"}
+
+        # Read file from sandbox (content can be string or bytes)
+        content = await sandbox.files.read_file(sandbox_path)
+        content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+
+        from pathlib import Path
+
+        filename = Path(sandbox_path).name
+
+        async with TelegramApiClient(token) as api:
+            await api.send_document(
+                chat_id=chat_id,
+                document_bytes=content_bytes,
+                filename=filename,
+                message_thread_id=thread_id,
+            )
+
+        return {"status": "success", "message": f"File {filename} sent to user."}
+    except SandboxException as e:
+        error_msg = f"Failed to read file from sandbox: {e}"
+        logger.exception(error_msg)
+        return {"status": "error", "error": error_msg}
+    except Exception as e:
+        error_msg = f"Unexpected error: {e}"
+        logger.exception(error_msg)
+        return {"status": "error", "error": error_msg}
 
 
 async def sandbox_list_files(
@@ -177,7 +245,7 @@ async def sandbox_list_files(
     """
     manager = get_sandbox_manager()
 
-    result = await manager.get_or_create_sandbox(tool_context)
+    result = await manager.get_or_create_sandbox(tool_context.state)
     sandbox = result.get("sandbox")
     error = result.get("error")
 

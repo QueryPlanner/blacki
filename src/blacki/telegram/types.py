@@ -51,6 +51,71 @@ class User(BaseModel):
     language_code: str | None = None
 
 
+class Document(BaseModel):
+    """A general file."""
+
+    file_id: str
+    file_unique_id: str
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
+class PhotoSize(BaseModel):
+    """One size of a photo or file/sticker thumbnail."""
+
+    file_id: str
+    file_unique_id: str
+    width: int
+    height: int
+    file_size: int | None = None
+
+
+class Audio(BaseModel):
+    """An audio file."""
+
+    file_id: str
+    file_unique_id: str
+    duration: int
+    performer: str | None = None
+    title: str | None = None
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
+class Video(BaseModel):
+    """A video file."""
+
+    file_id: str
+    file_unique_id: str
+    width: int
+    height: int
+    duration: int
+    file_name: str | None = None
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
+class Voice(BaseModel):
+    """A voice note."""
+
+    file_id: str
+    file_unique_id: str
+    duration: int
+    mime_type: str | None = None
+    file_size: int | None = None
+
+
+class File(BaseModel):
+    """A file ready to be downloaded."""
+
+    file_id: str
+    file_unique_id: str
+    file_size: int | None = None
+    file_path: str | None = None
+
+
 class Message(BaseModel):
     """A Telegram message."""
 
