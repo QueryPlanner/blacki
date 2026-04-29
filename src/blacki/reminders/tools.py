@@ -49,7 +49,7 @@ async def schedule_reminder(
         message: Self-contained delivery instruction for the future reminder
             (max 500 characters).
         reminder_datetime: For one-time reminders, when to fire in the app
-            local timezone (default UTC; set AGENT_TIMEZONE to change).
+            local timezone (default IST; set AGENT_TIMEZONE to change).
             Use wall-clock strings such as '2026-03-15 14:30', or relative
             phrases like 'in 30 minutes' or 'tomorrow at 9am'.
         recurrence: Optional recurring schedule as a 5-field cron expression in

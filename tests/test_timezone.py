@@ -18,11 +18,11 @@ from blacki.utils.timezone import (
 class TestGetAppTimezone:
     """Tests for get_app_timezone function."""
 
-    def test_returns_utc_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should return UTC timezone when AGENT_TIMEZONE is not set."""
+    def test_returns_ist_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should return IST timezone when AGENT_TIMEZONE is not set."""
         monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
         tz = get_app_timezone()
-        assert tz == ZoneInfo("UTC")
+        assert tz == ZoneInfo("Asia/Kolkata")
 
     def test_returns_configured_timezone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should return configured timezone when AGENT_TIMEZONE is set."""
@@ -30,19 +30,19 @@ class TestGetAppTimezone:
         tz = get_app_timezone()
         assert tz == ZoneInfo("Asia/Kolkata")
 
-    def test_falls_back_to_utc_on_invalid_timezone(
+    def test_falls_back_to_ist_on_invalid_timezone(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should fall back to UTC for invalid timezone names."""
+        """Should fall back to IST for invalid timezone names."""
         monkeypatch.setenv("AGENT_TIMEZONE", "Invalid/Timezone")
         tz = get_app_timezone()
-        assert tz == ZoneInfo("UTC")
+        assert tz == ZoneInfo("Asia/Kolkata")
 
     def test_handles_empty_timezone(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should return UTC when AGENT_TIMEZONE is empty string."""
+        """Should return IST when AGENT_TIMEZONE is empty string."""
         monkeypatch.setenv("AGENT_TIMEZONE", "")
         tz = get_app_timezone()
-        assert tz == ZoneInfo("UTC")
+        assert tz == ZoneInfo("Asia/Kolkata")
 
 
 class TestNowUtc:
@@ -72,13 +72,14 @@ class TestNaiveLocalNow:
         assert result.tzinfo is None
 
     def test_returns_recent_time(self) -> None:
-        """Should return a time close to current time."""
-        before = datetime.now(UTC)
+        """Should return a time close to current local time."""
+        tz = get_app_timezone()
+        before = datetime.now(tz).replace(tzinfo=None)
         result = naive_local_now()
-        after = datetime.now(UTC)
+        after = datetime.now(tz).replace(tzinfo=None)
 
-        assert (result - before.replace(tzinfo=None)).total_seconds() < 1
-        assert (after.replace(tzinfo=None) - result).total_seconds() < 1
+        assert (result - before).total_seconds() < 1
+        assert (after - result).total_seconds() < 1
 
 
 class TestUtcIsoSeconds:
@@ -111,7 +112,7 @@ class TestFormatStoredInstantForDisplay:
 
     def test_formats_utc_iso_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should format UTC ISO string in app timezone."""
-        monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
+        monkeypatch.setenv("AGENT_TIMEZONE", "UTC")
 
         iso_string = "2026-04-18T12:30:45+00:00"
         result = format_stored_instant_for_display(iso_string)
@@ -131,7 +132,7 @@ class TestFormatStoredInstantForDisplay:
 
     def test_handles_z_suffix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should handle ISO string with Z suffix."""
-        monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
+        monkeypatch.setenv("AGENT_TIMEZONE", "UTC")
 
         iso_string = "2026-04-18T12:30:45Z"
         result = format_stored_instant_for_display(iso_string)
@@ -140,7 +141,7 @@ class TestFormatStoredInstantForDisplay:
 
     def test_handles_naive_iso_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should treat naive ISO string as UTC."""
-        monkeypatch.delenv("AGENT_TIMEZONE", raising=False)
+        monkeypatch.setenv("AGENT_TIMEZONE", "UTC")
 
         iso_string = "2026-04-18T12:30:45"
         result = format_stored_instant_for_display(iso_string)

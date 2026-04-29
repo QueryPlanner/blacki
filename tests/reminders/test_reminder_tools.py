@@ -36,8 +36,14 @@ class TestScheduleReminder:
     @pytest.mark.asyncio
     async def test_schedule_one_time_reminder(self, mock_scheduler: MagicMock) -> None:
         """Should schedule a one-time reminder."""
+        from zoneinfo import ZoneInfo
+
         with (
             patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=ZoneInfo("UTC"),
+            ),
             patch(
                 "blacki.reminders.tools.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
@@ -141,10 +147,16 @@ class TestScheduleReminder:
     @pytest.mark.asyncio
     async def test_schedule_reminder_exception(self, mock_scheduler: MagicMock) -> None:
         """Should handle exception during schedule."""
+        from zoneinfo import ZoneInfo
+
         mock_scheduler.schedule_reminder.side_effect = Exception("DB error")
 
         with (
             patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch(
+                "blacki.reminders.tools.get_app_timezone",
+                return_value=ZoneInfo("UTC"),
+            ),
             patch(
                 "blacki.reminders.tools.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
