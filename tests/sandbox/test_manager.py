@@ -30,7 +30,7 @@ class TestSandboxManager:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        result = await manager.get_or_create_sandbox(tool_context)
+        result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "disabled" in result["error"].lower()
@@ -51,7 +51,7 @@ class TestSandboxManager:
             new_callable=AsyncMock,
             return_value=mock_sandbox,
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] == mock_sandbox
         assert result["error"] is None
@@ -73,7 +73,7 @@ class TestSandboxManager:
             new_callable=AsyncMock,
             return_value=mock_sandbox,
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] == mock_sandbox
         assert result["error"] is None
@@ -103,7 +103,7 @@ class TestSandboxManager:
                 return_value=mock_sandbox,
             ),
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] == mock_sandbox
         assert tool_context.state["__sandbox_id__"] == "new-sandbox-id"
@@ -123,7 +123,7 @@ class TestSandboxManager:
             new_callable=AsyncMock,
             side_effect=SandboxReadyTimeoutException("Timeout"),
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "timed out" in result["error"].lower()
@@ -143,7 +143,7 @@ class TestSandboxManager:
             new_callable=AsyncMock,
             side_effect=SandboxException("Generic error"),
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "Failed to create sandbox" in result["error"]
@@ -189,7 +189,7 @@ class TestSandboxManager:
             new_callable=AsyncMock,
             side_effect=RuntimeError("Unexpected error"),
         ):
-            result = await manager.get_or_create_sandbox(tool_context)
+            result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "Unexpected error" in result["error"]

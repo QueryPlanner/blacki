@@ -248,6 +248,14 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
+            has_function_call = (
+                event.content is not None
+                and event.content.parts
+                and any(
+                    getattr(part, "function_call", None) for part in event.content.parts
+                )
+            )
+
             event_thoughts, event_content = _extract_turn_parts(event)
             if event_thoughts:
                 if event.partial:
@@ -258,7 +266,8 @@ class AdkRuntime:
                 if event.partial:
                     partial_content = event_content
                 else:
-                    content_parts.append(event_content)
+                    if not has_function_call:
+                        content_parts.append(event_content)
 
         final_thoughts = "".join(thoughts_parts) or partial_thoughts
         final_content = "".join(content_parts) or partial_content
