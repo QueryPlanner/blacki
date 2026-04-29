@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -2442,3 +2442,398 @@ class TestFinalCoverage:
         # 1. remaining = " " * 10.strip() -> ""
         # 2. while remaining is False -> Jumps to return chunks (line 353)
         assert chunks == []
+
+
+class TestRouteNonTextMessage:
+    """Tests for _route_non_text_message method."""
+
+    @pytest.mark.asyncio
+    async def test_handles_document(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing a document message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "document": {
+                    "file_id": "doc123",
+                    "file_unique_id": "uniq123",
+                    "file_name": "report.pdf",
+                },
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_called_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="doc123",
+            file_name="report.pdf",
+            caption=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_handles_photo(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing a photo message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "photo": [
+                    {"file_id": "small", "file_unique_id": "u1", "width": 100, "height": 100},
+                    {"file_id": "large", "file_unique_id": "u2", "width": 800, "height": 600},
+                ],
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_called_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="large",
+            file_name="photo.jpg",
+            caption=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_handles_audio(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing an audio message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "audio": {
+                    "file_id": "aud123",
+                    "file_unique_id": "uniq123",
+                    "duration": 120,
+                    "file_name": "song.mp3",
+                },
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_called_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="aud123",
+            file_name="song.mp3",
+            caption=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_handles_video(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing a video message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "video": {
+                    "file_id": "vid123",
+                    "file_unique_id": "uniq123",
+                    "width": 1920,
+                    "height": 1080,
+                    "duration": 60,
+                    "file_name": "clip.mp4",
+                },
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_called_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="vid123",
+            file_name="clip.mp4",
+            caption=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_handles_voice(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing a voice message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "voice": {
+                    "file_id": "voi123",
+                    "file_unique_id": "uniq123",
+                    "duration": 10,
+                },
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_called_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voi123",
+            file_name="voice.ogg",
+            caption=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_handles_unsupported_message(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test routing an unsupported non-text message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+
+        message = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            }
+        )
+
+        await bot._route_non_text_message(message)
+
+        bot._handle_file_upload.assert_not_called()
+
+
+class TestHandleFileUpload:
+    """Tests for _handle_file_upload method."""
+
+    @pytest.mark.asyncio
+    async def test_sandbox_disabled(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test file upload when sandbox is disabled."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        with patch(
+            "blacki.sandbox.manager.get_sandbox_manager"
+        ) as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = False
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="doc123",
+                file_name="test.txt",
+                caption=None,
+            )
+
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "Sandbox is not enabled" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_successful_upload(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test successful file upload flow."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            return_value={"file_path": "documents/test.txt"}
+        )
+        mock_api.download_file = AsyncMock(return_value=b"file content")
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        runtime_recorder.run_user_turn_response = "I see your file!"
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.write_file = AsyncMock()
+
+        with patch(
+            "blacki.sandbox.manager.get_sandbox_manager"
+        ) as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = True
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="doc123",
+                file_name="test.txt",
+                caption="Here is a test file",
+            )
+
+        mock_api.send_chat_action.assert_called()
+        mock_api.get_file.assert_called_once_with("doc123")
+        mock_api.download_file.assert_called_once_with("documents/test.txt")
+        mock_sandbox.files.write_file.assert_called_once()
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_successful_upload_without_caption(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test successful file upload flow without caption."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            return_value={"file_path": "documents/test.txt"}
+        )
+        mock_api.download_file = AsyncMock(return_value=b"file content")
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        runtime_recorder.run_user_turn_response = "I see your file!"
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.write_file = AsyncMock()
+
+        with patch(
+            "blacki.sandbox.manager.get_sandbox_manager"
+        ) as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = True
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="doc123",
+                file_name="test.txt",
+                caption=None,
+            )
+
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert "sandbox at /workspace/uploads/test.txt" in call["message_text"]
+        assert "Caption" not in call["message_text"]
+
+    @pytest.mark.asyncio
+    async def test_upload_no_file_path(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test file upload when get_file returns no file_path."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={})
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        with patch(
+            "blacki.sandbox.manager.get_sandbox_manager"
+        ) as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = True
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="doc123",
+                file_name="test.txt",
+                caption=None,
+            )
+
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "failed to process" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_upload_sandbox_creation_error(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test file upload when sandbox creation fails."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            return_value={"file_path": "documents/test.txt"}
+        )
+        mock_api.download_file = AsyncMock(return_value=b"file content")
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        with patch(
+            "blacki.sandbox.manager.get_sandbox_manager"
+        ) as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = True
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": None, "error": "creation error"}
+            )
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="doc123",
+                file_name="test.txt",
+                caption=None,
+            )
+
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert "failed to process" in call_kwargs["text"]

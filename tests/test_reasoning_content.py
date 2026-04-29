@@ -95,3 +95,81 @@ def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
     assert request.contents[0].parts is not None
     assert len(request.contents[0].parts) == 2
     assert getattr(request.contents[0].parts[0], "thought", False) is True
+
+
+def test_deepseek_reasoning_plugin_empty_contents(monkeypatch: Any) -> None:
+    """Test that the plugin handles empty contents gracefully."""
+    monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
+    plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
+
+    request = LlmRequest(contents=[])
+
+    agent = MockAgent("openrouter/deepseek/deepseek-r1")
+    ctx = MockCallbackContext(agent)
+
+    plugin.before_model(ctx, request)
+    assert len(request.contents) == 0
+
+
+def test_deepseek_reasoning_plugin_skips_non_model_roles(
+    monkeypatch: Any,
+) -> None:
+    """Test that the plugin skips content with non-model/non-assistant roles."""
+    monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
+    plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
+
+    content = types.Content(
+        role="user",
+        parts=[_create_part(text="I am thinking...", thought=True)],
+    )
+    request = LlmRequest(contents=[content])
+
+    agent = MockAgent("openrouter/deepseek/deepseek-r1")
+    ctx = MockCallbackContext(agent)
+
+    plugin.before_model(ctx, request)
+    assert getattr(request.contents[0].parts[0], "thought", False) is True
+
+
+def test_deepseek_reasoning_plugin_no_thought_parts(
+    monkeypatch: Any,
+) -> None:
+    """Test that the plugin does nothing when there are no thought parts."""
+    monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
+    plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
+
+    content = types.Content(
+        role="assistant",
+        parts=[_create_part(text="Just a regular answer.", thought=False)],
+    )
+    request = LlmRequest(contents=[content])
+
+    agent = MockAgent("openrouter/deepseek/deepseek-r1")
+    ctx = MockCallbackContext(agent)
+
+    plugin.before_model(ctx, request)
+    assert len(request.contents[0].parts) == 1
+    assert getattr(request.contents[0].parts[0], "thought", False) is False
+
+
+def test_deepseek_reasoning_plugin_thought_only_content(
+    monkeypatch: Any,
+) -> None:
+    """Test that the plugin handles content with only thought parts."""
+    monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
+    plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
+
+    content = types.Content(
+        role="assistant",
+        parts=[_create_part(text="I am thinking deeply...", thought=True)],
+    )
+    request = LlmRequest(contents=[content])
+
+    agent = MockAgent("openrouter/deepseek/deepseek-r1")
+    ctx = MockCallbackContext(agent)
+
+    plugin.before_model(ctx, request)
+    assert len(request.contents[0].parts) == 1
+    final_text = request.contents[0].parts[0].text
+    assert final_text is not None
+    assert final_text.startswith("<think>\nI am thinking deeply...\n</think>\n")

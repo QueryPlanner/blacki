@@ -13,6 +13,7 @@ from blacki.tools import (
     _get_shared_brave_search_client,
     brave_search,
     brave_search_api_key_available,
+    example_tool,
     reset_brave_search_client_cache,
 )
 
@@ -340,3 +341,17 @@ class TestBraveSearchApiKeyAvailable:
         """Should return False when API key is empty string."""
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "   ")
         assert brave_search_api_key_available() is False
+
+
+class TestExampleTool:
+    """Tests for example_tool function."""
+
+    def test_example_tool(self) -> None:
+        """Test example_tool returns success message."""
+        tool_context = MagicMock(spec=ToolContext)
+        tool_context.state = MockState({"key1": "val1"})
+
+        result = example_tool(tool_context)
+
+        assert result["status"] == "success"
+        assert result["message"] == "Successfully used example_tool."
