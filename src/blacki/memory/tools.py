@@ -176,8 +176,7 @@ async def get_all_memories(
     user_id = user_id or get_default_user_id()
 
     try:
-        filters = {"user_id": user_id}
-        result = client.get_all(filters=filters, page=page, page_size=page_size)
+        result = client.get_all(user_id=user_id, page=page, page_size=page_size)
 
         memories = result.get("results", []) if isinstance(result, dict) else result
 
