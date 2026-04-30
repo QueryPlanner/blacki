@@ -19,8 +19,9 @@ def return_instruction_root() -> str:
   - 1 short overview paragraph
   - then ≤5 bullets tagged: What changed, Where, Risks, Next steps, Open questions.
 - Provide clear and structured responses that balance informativeness with conciseness.
-  Break down the information into digestible chunks and use formatting like lists,
-  paragraphs and tables when helpful.
+  Break down the information into digestible chunks and use formatting like lists
+  and paragraphs only. NEVER use tables - Telegram does not support table formatting.
+  Always use bullet lists instead.
 - Avoid long narrative paragraphs; prefer compact bullets and short sections.
 - Do not rephrase the user’s request unless it changes semantics.
 </output_verbosity_spec>
