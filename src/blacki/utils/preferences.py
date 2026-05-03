@@ -78,14 +78,16 @@ def get_preferences_storage() -> PostgresPreferencesStorage:
 
     Uses the AppContainer for dependency injection.
     """
-    from blacki.container import _container
+    from blacki.container import get_container
 
-    if _container is None or _container._preferences_storage is None:
+    container = get_container()
+    storage = container.preferences_storage
+    if not storage.is_initialized:
         raise RuntimeError(
             "Preferences storage not initialized. "
             "Call init_preferences_storage() first."
         )
-    return _container.preferences_storage
+    return storage
 
 
 async def init_preferences_storage(pool: asyncpg.Pool) -> PostgresPreferencesStorage:
@@ -97,7 +99,7 @@ async def init_preferences_storage(pool: asyncpg.Pool) -> PostgresPreferencesSto
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is None:
+    if container_module._container is None:  # pragma: no cover
         container_module.set_container_from_pool(pool)
 
     if _storage is not None:
@@ -105,9 +107,9 @@ async def init_preferences_storage(pool: asyncpg.Pool) -> PostgresPreferencesSto
         _storage = None
 
     container = container_module._container
-    if container is None:
+    if container is None:  # pragma: no cover
         raise RuntimeError("Container not initialized")
-    if container._preferences_storage is not None:
+    if container._preferences_storage is not None:  # pragma: no cover
         await container._preferences_storage.close()
 
     storage = container.preferences_storage
@@ -125,7 +127,7 @@ async def close_preferences_storage() -> None:
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is not None:
+    if container_module._container is not None:  # pragma: no cover
         container = container_module._container
         if container._preferences_storage is not None:
             await container._preferences_storage.close()

@@ -172,3 +172,8 @@ _find_and_load_dotenv()
 root_agent = create_agent()
 
 app = create_app(root_agent)
+
+# ADK requires module-level `root_agent` and `app` globals for agent discovery.
+# These are created at import time to support the ADK runtime's module scanning.
+# For explicit initialization control, use `create_agent()` and `create_app()`
+# directly from an entry point.

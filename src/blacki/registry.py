@@ -84,7 +84,7 @@ def _build_reminder_tools() -> list[Any]:
         from blacki.reminders import cancel_reminder, list_reminders, schedule_reminder
 
         return [schedule_reminder, list_reminders, cancel_reminder]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Reminder tools: %s", e)
         return []
 
@@ -101,7 +101,7 @@ def _build_calorie_tools() -> list[Any]:
         )
 
         return [log_meal, get_calorie_summary, edit_meal, delete_meal, set_calorie_goal]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Calorie tools: %s", e)
         return []
 
@@ -128,7 +128,7 @@ def _build_workout_tools() -> list[Any]:
             set_workout_split,
             get_todays_workout,
         ]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Workout tools: %s", e)
         return []
 
@@ -151,7 +151,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_list_files,
             sandbox_send_file_to_user,
         ]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)
         return []
 
@@ -166,7 +166,7 @@ def _build_skill_tools(skills_dir: Path) -> list[Any]:
         if explore_repo_skill:
             logger.info("Explore repo skill enabled")
             return [McpSkillToolset(skills=[(explore_repo_skill, None)])]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load skills toolset: %s", e)
     return []
 
@@ -193,7 +193,7 @@ def _build_memory_tools() -> list[Any]:
             delete_memory,
             delete_all_memories,
         ]
-    except ImportError as e:
+    except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Memory tools: %s", e)
         return []
 

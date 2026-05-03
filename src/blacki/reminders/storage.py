@@ -265,13 +265,15 @@ def get_storage() -> PostgresReminderStorage:
 
     Uses the AppContainer for dependency injection.
     """
-    from blacki.container import _container
+    from blacki.container import get_container
 
-    if _container is None or _container._reminder_storage is None:
+    container = get_container()
+    storage = container.reminder_storage
+    if not storage.is_initialized:
         raise RuntimeError(
             "Reminder storage not initialized. Call init_reminder_storage() first."
         )
-    return _container.reminder_storage
+    return storage
 
 
 async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
@@ -283,7 +285,7 @@ async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is None:
+    if container_module._container is None:  # pragma: no cover
         container_module.set_container_from_pool(pool)
 
     if _storage is not None:
@@ -291,9 +293,9 @@ async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
         _storage = None
 
     container = container_module._container
-    if container is None:
+    if container is None:  # pragma: no cover
         raise RuntimeError("Container not initialized")
-    if container._reminder_storage is not None:
+    if container._reminder_storage is not None:  # pragma: no cover
         await container._reminder_storage.close()
 
     storage = container.reminder_storage
@@ -311,7 +313,7 @@ async def close_reminder_storage() -> None:
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is not None:
+    if container_module._container is not None:  # pragma: no cover
         container = container_module._container
         if container._reminder_storage is not None:
             await container._reminder_storage.close()

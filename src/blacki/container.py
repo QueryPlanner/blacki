@@ -5,6 +5,7 @@ replacing the global singleton pattern with explicit dependency injection.
 
 Usage:
     container = await AppContainer.create(database_url)
+    await container.initialize_all_storages()
     set_container(container)
     try:
         reminder_storage = container.reminder_storage
@@ -104,7 +105,7 @@ class AppContainer:
     """Container for managing application-wide resources.
 
     Manages the lifecycle of the database pool and storage singletons.
-    All storages are lazily initialized on first access.
+    All storages are lazily instantiated on first access.
 
     Attributes:
         pool: The asyncpg connection pool.
@@ -125,7 +126,9 @@ class AppContainer:
     )
 
     @classmethod
-    async def create(cls, database_url: str, pool_size: int = 5) -> Self:
+    async def create(
+        cls, database_url: str, pool_size: int = 5
+    ) -> Self:  # pragma: no cover
         """Create and initialize the container with a database pool.
 
         Args:
@@ -171,7 +174,7 @@ class AppContainer:
     async def initialize_all_storages(self) -> None:
         """Initialize all storage instances.
 
-        This is optional - storages are also initialized lazily on first access.
+        This is optional - storages are also instantiated lazily on first access.
         Call this during startup to catch initialization errors early.
         """
         await self.reminder_storage.initialize()

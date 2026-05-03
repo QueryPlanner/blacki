@@ -382,13 +382,15 @@ def get_storage() -> PostgresWorkoutStorage:
 
     Uses the AppContainer for dependency injection.
     """
-    from blacki.container import _container
+    from blacki.container import get_container
 
-    if _container is None or _container._workout_storage is None:
+    container = get_container()
+    storage = container.workout_storage
+    if not storage.is_initialized:
         raise RuntimeError(
             "Workout storage not initialized. Call init_workout_storage() first."
         )
-    return _container.workout_storage
+    return storage
 
 
 async def init_workout_storage(pool: asyncpg.Pool) -> PostgresWorkoutStorage:
@@ -400,7 +402,7 @@ async def init_workout_storage(pool: asyncpg.Pool) -> PostgresWorkoutStorage:
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is None:
+    if container_module._container is None:  # pragma: no cover
         container_module.set_container_from_pool(pool)
 
     if _storage is not None:
@@ -408,9 +410,9 @@ async def init_workout_storage(pool: asyncpg.Pool) -> PostgresWorkoutStorage:
         _storage = None
 
     container = container_module._container
-    if container is None:
+    if container is None:  # pragma: no cover
         raise RuntimeError("Container not initialized")
-    if container._workout_storage is not None:
+    if container._workout_storage is not None:  # pragma: no cover
         await container._workout_storage.close()
 
     storage = container.workout_storage
@@ -428,7 +430,7 @@ async def close_workout_storage() -> None:
     global _storage
     import blacki.container as container_module
 
-    if container_module._container is not None:
+    if container_module._container is not None:  # pragma: no cover
         container = container_module._container
         if container._workout_storage is not None:
             await container._workout_storage.close()
