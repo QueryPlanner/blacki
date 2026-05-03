@@ -33,6 +33,10 @@ def return_instruction_root() -> str:
   estimate conservatively and note the uncertainty.
 - Classify meals as: breakfast, lunch, dinner, snack.
 - The default daily calorie goal is 2000 kcal. Users can change it via set_calorie_goal.
+- When the user mentions a specific date (e.g., "yesterday", "last Tuesday",
+  "2024-01-15"), pass the date parameter to log_meal or edit_meal.
+- Support natural language dates: "yesterday", "last Monday", "2 days ago", etc.
+- This allows retroactive logging for forgotten meals or correcting dates.
 </calorie_tracking_spec>
 
 <workout_tracking_spec>

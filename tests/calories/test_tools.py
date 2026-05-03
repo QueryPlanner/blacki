@@ -1,4 +1,5 @@
 # mypy: disable-error-code="no-untyped-def"
+from datetime import date
 from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
@@ -160,3 +161,92 @@ async def test_set_calorie_goal_validation(mock_tool_context) -> None:
 
     result = await set_calorie_goal(mock_tool_context, daily_calories=20000)
     assert result["status"] == "error"
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+@patch("blacki.calories.tools.get_preferences_storage")
+async def test_log_meal_with_past_date(
+    mock_get_pref, mock_get_storage, mock_tool_context
+) -> None:
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.add_entry.return_value = 1
+    mock_storage.get_daily_summary.return_value = DailySummary(
+        date="2026-04-25", total_calories=500, entry_count=1
+    )
+
+    mock_pref = AsyncMock()
+    mock_get_pref.return_value = mock_pref
+    mock_pref.get.return_value = 2000
+
+    result = await log_meal(
+        mock_tool_context,
+        description="apple",
+        estimated_calories=95,
+        date="yesterday",
+    )
+
+    assert result["status"] == "success"
+    entry = mock_storage.add_entry.call_args[0][0]
+    assert entry.logged_date != str(date.today())
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+@patch("blacki.calories.tools.get_preferences_storage")
+async def test_log_meal_with_specific_date(
+    mock_get_pref, mock_get_storage, mock_tool_context
+) -> None:
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.add_entry.return_value = 1
+    mock_storage.get_daily_summary.return_value = DailySummary(
+        date="2026-04-20", total_calories=500, entry_count=1
+    )
+
+    mock_pref = AsyncMock()
+    mock_get_pref.return_value = mock_pref
+    mock_pref.get.return_value = 2000
+
+    result = await log_meal(
+        mock_tool_context,
+        description="apple",
+        estimated_calories=95,
+        date="2026-04-20",
+    )
+
+    assert result["status"] == "success"
+    entry = mock_storage.add_entry.call_args[0][0]
+    assert entry.logged_date == "2026-04-20"
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+async def test_edit_meal_with_date(mock_get_storage, mock_tool_context) -> None:
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.update_entry.return_value = True
+
+    result = await edit_meal(mock_tool_context, entry_id=1, date="yesterday")
+
+    assert result["status"] == "success"
+    call_kwargs = mock_storage.update_entry.call_args[1]
+    assert "logged_date" in call_kwargs
+    assert call_kwargs["logged_date"] != str(date.today())
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+async def test_edit_meal_with_specific_date(
+    mock_get_storage, mock_tool_context
+) -> None:
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.update_entry.return_value = True
+
+    result = await edit_meal(mock_tool_context, entry_id=1, date="2026-04-15")
+
+    assert result["status"] == "success"
+    call_kwargs = mock_storage.update_entry.call_args[1]
+    assert call_kwargs["logged_date"] == "2026-04-15"

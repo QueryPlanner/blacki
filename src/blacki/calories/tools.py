@@ -20,6 +20,7 @@ async def log_meal(
     tool_context: ToolContext,
     description: str,
     estimated_calories: int,
+    date: str | None = None,
     meal_type: str | None = None,
     protein_g: int | None = None,
     carbs_g: int | None = None,
@@ -29,6 +30,10 @@ async def log_meal(
 
     The LLM MUST estimate the calories before calling this tool
     based on the food description.
+
+    Args:
+        date: Optional date for the meal (natural language like "yesterday",
+              "last Monday", or "2024-01-15"). Defaults to today.
     """
     if estimated_calories <= 0:
         return {"status": "error", "message": "estimated_calories must be > 0"}
@@ -47,8 +52,7 @@ async def log_meal(
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
     now = now_utc()
-    tz = get_app_timezone()
-    local_date = now.astimezone(tz).strftime("%Y-%m-%d")
+    local_date = parse_date(date)
 
     entry = CalorieEntry(
         user_id=user_id,
@@ -140,12 +144,18 @@ async def edit_meal(
     entry_id: int,
     description: str | None = None,
     estimated_calories: int | None = None,
+    date: str | None = None,
     meal_type: str | None = None,
     protein_g: int | None = None,
     carbs_g: int | None = None,
     fat_g: int | None = None,
 ) -> dict[str, Any]:
-    """Edit an existing meal entry."""
+    """Edit an existing meal entry.
+
+    Args:
+        date: Optional new date for the meal (natural language like
+              "yesterday", "last Monday", or "2024-01-15").
+    """
     user_id = tool_context.user_id
     if not user_id:  # pragma: no cover
         return {"status": "error", "message": "Missing user_id in tool_context"}
@@ -155,6 +165,8 @@ async def edit_meal(
         updates["description"] = description
     if estimated_calories is not None:  # pragma: no cover
         updates["calories"] = estimated_calories
+    if date is not None:
+        updates["logged_date"] = parse_date(date)
     if meal_type is not None:  # pragma: no cover
         updates["meal_type"] = meal_type.lower()
     if protein_g is not None:  # pragma: no cover
