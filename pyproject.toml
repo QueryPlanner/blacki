@@ -28,6 +28,7 @@ dependencies = [
     "apscheduler>=3.11.0,<4.0.0",
     "dateparser>=1.2.0,<2.0.0",
     "opensandbox>=0.1.7",
+    "mem0ai>=0.1.0,<1.0.0",
 ]
 
 [project.scripts]
@@ -103,7 +104,7 @@ strict_equality = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "opensandbox.*"]
+module = ["apscheduler.*", "opensandbox.*", "mem0", "mem0.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
@@ -114,6 +115,8 @@ omit = [
     "src/blacki/server.py",
     "src/blacki/**/agent.py",
     "src/blacki/utils/observability.py",
+    "src/blacki/memory/config.py",
+    "src/blacki/memory/tools.py",
 ]
 
 [tool.coverage.report]

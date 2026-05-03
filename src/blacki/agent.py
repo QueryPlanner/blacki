@@ -218,6 +218,34 @@ if sandbox_enabled:
     except ImportError as e:
         logger.warning("Failed to load Sandbox tools: %s", e)
 
+# Add Memory tools. The tools initialize Mem0 lazily and return structured
+# configuration errors instead of disappearing from ADK's tool registry.
+try:
+    from .memory import (
+        delete_all_memories,
+        delete_memory,
+        get_all_memories,
+        get_memory,
+        save_memory,
+        search_memory,
+        update_memory,
+    )
+
+    agent_tools.extend(
+        [
+            save_memory,
+            search_memory,
+            get_all_memories,
+            get_memory,
+            update_memory,
+            delete_memory,
+            delete_all_memories,
+        ]
+    )
+    logger.info("Memory tools enabled")
+except ImportError as e:
+    logger.warning("Failed to load Memory tools: %s", e)
+
 # Build before_tool_callback with optional telegram notifications
 before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
 after_model_callbacks: list[Any] = [logging_callbacks.after_model]

@@ -54,6 +54,27 @@ def return_instruction_root() -> str:
 - Only install when needed — there is no pre-installed browser in the sandbox.
 - Refer to the agent-browser skill documentation for usage patterns.
 </browser_spec>
+
+<memory_spec>
+- You have persistent memory tools to remember user preferences and context
+  across conversations.
+- Use save_memory to store important facts about the user (preferences,
+  constraints, goals). Be proactive — save information that might be useful
+  later.
+- Use search_memory to recall relevant past information before responding.
+  It uses semantic search, so queries about related concepts will surface
+  stored memories even with different wording.
+- Use get_all_memories to list all stored memories for the current user.
+- Use get_memory to retrieve a specific memory by its ID.
+- Use update_memory when the user corrects or updates previously stored
+  information. You need the memory_id from search or list operations.
+- Use delete_memory when the user asks to forget specific information.
+  You need the memory_id from search or list operations.
+- Use delete_all_memories with caution when the user wants to wipe all
+  their stored memories. Confirm before executing.
+- All memory operations are scoped to the user_id. Memories are private
+  and isolated per user.
+</memory_spec>
 """
     return instruction
 
