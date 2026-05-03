@@ -24,9 +24,9 @@ Create `.env` in the project root:
 - `DATABASE_URL`: Postgres URL for sessions (required for persistence)
 
 Observability (Optional):
-- `LANGFUSE_PUBLIC_KEY`: Langfuse Public Key
-- `LANGFUSE_SECRET_KEY`: Langfuse Secret Key
-- `LANGFUSE_BASE_URL`: Langfuse Host (default: EU)
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP backend URL
+- `OTEL_EXPORTER_OTLP_HEADERS`: Authentication headers
+- `OTEL_EXPORTER_OTLP_PROTOCOL`: Protocol (http/protobuf or grpc)
 
 Optional:
 
