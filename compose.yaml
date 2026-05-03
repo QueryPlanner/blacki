@@ -7,7 +7,7 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=8080
-      - AGENT_NAME=local-dev
+      - AGENT_NAME=${AGENT_NAME:-local-dev}
       - LOG_LEVEL=INFO
       - RELOAD_AGENTS=true
       - SERVE_WEB_INTERFACE=true
