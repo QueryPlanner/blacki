@@ -546,7 +546,7 @@ class TestSandboxSendFileToUser:
         tool_context.state = {"telegram_chat_id": "12345"}
 
         mock_sandbox = MagicMock()
-        mock_sandbox.files.read_file = AsyncMock(return_value=b"file contents")
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=b"file contents")
 
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
@@ -579,7 +579,7 @@ class TestSandboxSendFileToUser:
         tool_context.state = {"telegram_chat_id": "12345"}
 
         mock_sandbox = MagicMock()
-        mock_sandbox.files.read_file = AsyncMock(
+        mock_sandbox.files.read_bytes = AsyncMock(
             side_effect=SandboxException("Read failed")
         )
 
@@ -605,7 +605,9 @@ class TestSandboxSendFileToUser:
         tool_context.state = {"telegram_chat_id": "12345"}
 
         mock_sandbox = MagicMock()
-        mock_sandbox.files.read_file = AsyncMock(side_effect=RuntimeError("Unexpected"))
+        mock_sandbox.files.read_bytes = AsyncMock(
+            side_effect=RuntimeError("Unexpected")
+        )
 
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
@@ -632,7 +634,7 @@ class TestSandboxSendFileToUser:
         }
 
         mock_sandbox = MagicMock()
-        mock_sandbox.files.read_file = AsyncMock(return_value=b"file contents")
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=b"file contents")
 
         with (
             patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
@@ -657,3 +659,151 @@ class TestSandboxSendFileToUser:
         assert result["status"] == "success"
         call_kwargs = mock_api.send_document.call_args.kwargs
         assert call_kwargs["message_thread_id"] == 67890
+
+    @pytest.mark.asyncio
+    async def test_send_png_file(self) -> None:
+        """Test sending a PNG image file."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=png_bytes)
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/image.png", tool_context)
+
+        assert result["status"] == "success"
+        assert "image.png" in result["message"]
+        call_kwargs = mock_api.send_document.call_args.kwargs
+        assert call_kwargs["filename"] == "image.png"
+        assert call_kwargs["document_bytes"] == png_bytes
+
+    @pytest.mark.asyncio
+    async def test_send_jpeg_file(self) -> None:
+        """Test sending a JPEG image file."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00"
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=jpeg_bytes)
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/photo.jpg", tool_context)
+
+        assert result["status"] == "success"
+        assert "photo.jpg" in result["message"]
+        call_kwargs = mock_api.send_document.call_args.kwargs
+        assert call_kwargs["filename"] == "photo.jpg"
+        assert call_kwargs["document_bytes"] == jpeg_bytes
+
+    @pytest.mark.asyncio
+    async def test_send_pdf_file(self) -> None:
+        """Test sending a PDF file."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        pdf_bytes = b"%PDF-1.4\n1 0 obj\n<<\n/Type /Catalog"
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=pdf_bytes)
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/document.pdf", tool_context)
+
+        assert result["status"] == "success"
+        assert "document.pdf" in result["message"]
+        call_kwargs = mock_api.send_document.call_args.kwargs
+        assert call_kwargs["filename"] == "document.pdf"
+        assert call_kwargs["document_bytes"] == pdf_bytes
+
+    @pytest.mark.asyncio
+    async def test_send_text_file_regression(self) -> None:
+        """Test that text files still work after binary file support."""
+        tool_context = MagicMock()
+        tool_context.state = {"telegram_chat_id": "12345"}
+
+        text_bytes = b"Hello, World!\nThis is a text file."
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.read_bytes = AsyncMock(return_value=text_bytes)
+
+        with (
+            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
+            patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
+        ):
+            manager = MagicMock()
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            mock_api = MagicMock()
+            mock_api.send_document = AsyncMock()
+            mock_api_client_cls.return_value.__aenter__ = AsyncMock(
+                return_value=mock_api
+            )
+            mock_api_client_cls.return_value.__aexit__ = AsyncMock()
+
+            result = await sandbox_send_file_to_user("/tmp/test.txt", tool_context)
+
+        assert result["status"] == "success"
+        assert "test.txt" in result["message"]
+        call_kwargs = mock_api.send_document.call_args.kwargs
+        assert call_kwargs["filename"] == "test.txt"
+        assert call_kwargs["document_bytes"] == text_bytes
