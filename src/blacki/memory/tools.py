@@ -10,11 +10,24 @@ from google.adk.tools import ToolContext
 from .config import (
     get_default_user_id,
     get_memory_client,
+    get_memory_client_error,
     get_search_limit,
-    is_cloud_client,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_service_unavailable_response(
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a structured response when the Mem0 backend is unavailable."""
+    response: dict[str, Any] = {
+        "status": "error",
+        "error": get_memory_client_error() or "Memory service is not configured.",
+    }
+    if extra_fields:
+        response.update(extra_fields)
+    return response
 
 
 async def save_memory(
@@ -39,10 +52,7 @@ async def save_memory(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-        }
+        return _memory_service_unavailable_response()
 
     if not text.strip():
         return {
@@ -92,11 +102,7 @@ async def search_memory(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-            "results": [],
-        }
+        return _memory_service_unavailable_response({"results": []})
 
     if not query.strip():
         return {
@@ -154,6 +160,10 @@ async def get_all_memories(
     Use this tool to retrieve all stored memories for a user, not just
     those matching a semantic query. Useful for browsing or auditing.
 
+    Note: Mem0 OSS does not support offset-based pagination. This function
+    fetches `page * page_size` records and slices client-side. Deep pagination
+    (high page numbers) may be inefficient for users with many memories.
+
     Args:
         tool_context: ADK tool context.
         user_id: Unique identifier for the user. Defaults to MEM0_USER_ID env var.
@@ -167,21 +177,30 @@ async def get_all_memories(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-            "results": [],
-        }
+        return _memory_service_unavailable_response({"results": []})
 
     user_id = user_id or get_default_user_id()
 
+    if page > 3:
+        logger.warning(
+            "Deep pagination requested (page %d). Mem0 OSS does not support "
+            "offset-based pagination, so this fetches %d records client-side. "
+            "Consider using search_memory for targeted queries instead.",
+            page,
+            page * page_size,
+        )
+
     try:
-        result = client.get_all(user_id=user_id, page=page, page_size=page_size)
+        result_limit = page * page_size
+        result = client.get_all(user_id=user_id, limit=result_limit)
 
         memories = result.get("results", []) if isinstance(result, dict) else result
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paged_memories = memories[start_index:end_index]
 
         formatted_results: list[dict[str, Any]] = []
-        for m in memories:
+        for m in paged_memories:
             if isinstance(m, dict):
                 formatted_results.append(
                     {
@@ -233,10 +252,7 @@ async def get_memory(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-        }
+        return _memory_service_unavailable_response()
 
     if not memory_id.strip():
         return {
@@ -275,7 +291,6 @@ async def update_memory(
     memory_id: str,
     text: str,
     tool_context: ToolContext,
-    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Update an existing memory by its ID.
 
@@ -286,7 +301,6 @@ async def update_memory(
         memory_id: The unique identifier of the memory to update.
         text: The new memory text.
         tool_context: ADK tool context.
-        metadata: Optional metadata to attach to the memory.
 
     Returns:
         Dictionary with status and result message.
@@ -295,10 +309,7 @@ async def update_memory(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-        }
+        return _memory_service_unavailable_response()
 
     if not memory_id.strip():
         return {
@@ -313,10 +324,7 @@ async def update_memory(
         }
 
     try:
-        if is_cloud_client():
-            client.update(memory_id, options={"text": text, "metadata": metadata})
-        else:
-            client.update(memory_id, data=text, metadata=metadata)
+        client.update(memory_id, data=text)
 
         logger.info("Updated memory %s", memory_id)
         return {
@@ -351,10 +359,7 @@ async def delete_memory(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-        }
+        return _memory_service_unavailable_response()
 
     if not memory_id.strip():
         return {
@@ -397,10 +402,7 @@ async def delete_all_memories(
 
     client = get_memory_client()
     if client is None:
-        return {
-            "status": "error",
-            "error": "Memory service is not configured.",
-        }
+        return _memory_service_unavailable_response()
 
     user_id = user_id or get_default_user_id()
 

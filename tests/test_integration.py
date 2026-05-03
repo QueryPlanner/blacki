@@ -108,3 +108,18 @@ class TestAgentIntegration:
             for tool in typed_agent.tools:
                 assert tool is not None
                 assert hasattr(tool, "__class__")
+
+    def test_memory_tools_are_registered(self) -> None:
+        """Verify memory tools stay available to ADK."""
+        agent = app.root_agent
+        assert agent is not None
+        typed_agent = as_agent_config(agent)
+
+        assert typed_agent.tools is not None
+        tool_names = {
+            getattr(tool, "name", None) or getattr(tool, "__name__", "")
+            for tool in typed_agent.tools
+        }
+
+        assert "save_memory" in tool_names
+        assert "search_memory" in tool_names

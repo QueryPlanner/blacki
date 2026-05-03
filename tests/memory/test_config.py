@@ -11,8 +11,8 @@ from blacki.memory.config import (
     _get_vector_store_config,
     get_default_user_id,
     get_memory_client,
+    get_memory_client_error,
     get_search_limit,
-    is_cloud_client,
     reset_memory_client,
 )
 
@@ -36,26 +36,32 @@ class TestGetLlmConfig:
 
         assert result == {}
 
-    def test_uses_openrouter_default_when_no_model(
+    def test_uses_litellm_openrouter_default_when_no_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should use openrouter default model when no MEM0_LLM_MODEL."""
+        """Should use LiteLLM and OpenRouter default when no MEM0_LLM_MODEL."""
         monkeypatch.delenv("MEM0_LLM_MODEL", raising=False)
+        monkeypatch.delenv("MEM0_LLM_PROVIDER", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
         result = _get_llm_config()
 
-        assert result["model"] == "openrouter/google/gemini-2.0-flash-001"
-        assert result["api_key"] == "test_key"
+        assert result["provider"] == "litellm"
+        assert result["config"]["model"] == "openrouter/google/gemini-2.0-flash-001"
+        assert result["config"]["api_key"] == "test_key"
 
-    def test_uses_custom_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should use custom model when MEM0_LLM_MODEL is set."""
+    def test_uses_custom_model_and_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should use custom model and provider when set."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "custom-model")
+        monkeypatch.setenv("MEM0_LLM_PROVIDER", "openai")
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
         result = _get_llm_config()
 
-        assert result["model"] == "custom-model"
+        assert result["provider"] == "openai"
+        assert result["config"]["model"] == "custom-model"
 
     def test_uses_mem0_llm_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should prefer MEM0_LLM_API_KEY over OPENROUTER_API_KEY."""
@@ -65,7 +71,7 @@ class TestGetLlmConfig:
 
         result = _get_llm_config()
 
-        assert result["api_key"] == "mem0_key"
+        assert result["config"]["api_key"] == "mem0_key"
 
     def test_includes_temperature(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should include temperature when set."""
@@ -74,7 +80,7 @@ class TestGetLlmConfig:
 
         result = _get_llm_config()
 
-        assert result["temperature"] == 0.5
+        assert result["config"]["temperature"] == 0.5
 
     def test_invalid_temperature_logs_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -85,7 +91,7 @@ class TestGetLlmConfig:
 
         result = _get_llm_config()
 
-        assert "temperature" not in result
+        assert "temperature" not in result["config"]
         assert "Invalid MEM0_LLM_TEMPERATURE" in caplog.text
 
     def test_includes_max_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +101,7 @@ class TestGetLlmConfig:
 
         result = _get_llm_config()
 
-        assert result["max_tokens"] == 2000
+        assert result["config"]["max_tokens"] == 2000
 
     def test_invalid_max_tokens_logs_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -106,28 +112,54 @@ class TestGetLlmConfig:
 
         result = _get_llm_config()
 
-        assert "max_tokens" not in result
+        assert "max_tokens" not in result["config"]
         assert "Invalid MEM0_LLM_MAX_TOKENS" in caplog.text
 
 
 class TestGetEmbedderConfig:
     """Tests for _get_embedder_config function."""
 
-    def test_uses_default_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should use default model when not set."""
+    def test_uses_gemini_defaults(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should use Gemini embedding defaults when not set."""
+        monkeypatch.delenv("MEM0_EMBEDDER_PROVIDER", raising=False)
         monkeypatch.delenv("MEM0_EMBEDDER_MODEL", raising=False)
+        monkeypatch.delenv("MEM0_EMBEDDER_DIMS", raising=False)
 
         result = _get_embedder_config()
 
-        assert result["model"] == "BAAI/bge-small-en-v1.5"
+        assert result["provider"] == "gemini"
+        assert result["config"]["model"] == "gemini-embedding-001"
+        assert result["config"]["embedding_dims"] == 768
 
-    def test_uses_custom_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should use custom model when set."""
-        monkeypatch.setenv("MEM0_EMBEDDER_MODEL", "custom-embedder")
+    def test_uses_google_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should pass GOOGLE_API_KEY to the Gemini embedder."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
+        monkeypatch.delenv("MEM0_EMBEDDER_API_KEY", raising=False)
 
         result = _get_embedder_config()
 
-        assert result["model"] == "custom-embedder"
+        assert result["config"]["api_key"] == "google_key"
+
+    def test_uses_mem0_embedder_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should prefer MEM0_EMBEDDER_API_KEY over GOOGLE_API_KEY."""
+        monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
+        monkeypatch.setenv("MEM0_EMBEDDER_API_KEY", "embedder_key")
+
+        result = _get_embedder_config()
+
+        assert result["config"]["api_key"] == "embedder_key"
+
+    def test_uses_custom_provider_and_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should use custom embedder provider and model when set."""
+        monkeypatch.setenv("MEM0_EMBEDDER_PROVIDER", "openai")
+        monkeypatch.setenv("MEM0_EMBEDDER_MODEL", "text-embedding-3-small")
+
+        result = _get_embedder_config()
+
+        assert result["provider"] == "openai"
+        assert result["config"]["model"] == "text-embedding-3-small"
 
     def test_includes_dims(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should include embedding_dims when set."""
@@ -135,63 +167,106 @@ class TestGetEmbedderConfig:
 
         result = _get_embedder_config()
 
-        assert result["embedding_dims"] == 512
+        assert result["config"]["embedding_dims"] == 512
 
-    def test_invalid_dims_logs_warning(
+    def test_invalid_dims_logs_warning_and_uses_default(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Should log warning for invalid dims."""
+        """Should log warning and fall back for invalid dimensions."""
         monkeypatch.setenv("MEM0_EMBEDDER_DIMS", "invalid")
 
         result = _get_embedder_config()
 
-        assert "embedding_dims" not in result
+        assert result["config"]["embedding_dims"] == 768
         assert "Invalid MEM0_EMBEDDER_DIMS" in caplog.text
 
 
 class TestGetVectorStoreConfig:
     """Tests for _get_vector_store_config function."""
 
-    def test_uses_embedded_mode_by_default(
+    def test_uses_local_qdrant_only_when_cloud_absent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should use embedded Qdrant by default."""
+        """Should use local Qdrant path when Cloud URL/API key are absent."""
+        monkeypatch.delenv("MEM0_QDRANT_URL", raising=False)
+        monkeypatch.delenv("MEM0_QDRANT_API_KEY", raising=False)
         monkeypatch.delenv("MEM0_QDRANT_HOST", raising=False)
         monkeypatch.delenv("MEM0_QDRANT_PORT", raising=False)
 
         result = _get_vector_store_config()
 
-        assert result["type"] == "qdrant"
-        assert "path" in result["config"]
+        assert result["provider"] == "qdrant"
+        assert result["config"]["path"] == "./data/qdrant"
+        assert result["config"]["collection_name"] == "blacki_memories_gemini_768"
+        assert result["config"]["embedding_model_dims"] == 768
 
-    def test_uses_remote_qdrant_when_configured(
+    def test_uses_qdrant_cloud_when_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should use remote Qdrant when host and port are set."""
+        """Should use Qdrant Cloud when URL and API key are set."""
+        monkeypatch.setenv("MEM0_QDRANT_URL", "https://cluster.qdrant.io")
+        monkeypatch.setenv("MEM0_QDRANT_API_KEY", "qdrant_key")
+
+        result = _get_vector_store_config()
+
+        assert result["provider"] == "qdrant"
+        assert result["config"]["url"] == "https://cluster.qdrant.io"
+        assert result["config"]["api_key"] == "qdrant_key"
+        assert "path" not in result["config"]
+
+    def test_requires_qdrant_cloud_url_and_api_key_together(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should reject partial Qdrant Cloud configuration."""
+        monkeypatch.setenv("MEM0_QDRANT_URL", "https://cluster.qdrant.io")
+        monkeypatch.delenv("MEM0_QDRANT_API_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="MEM0_QDRANT_URL"):
+            _get_vector_store_config()
+
+    def test_uses_remote_qdrant_when_host_port_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should use remote Qdrant server when host and port are set."""
+        monkeypatch.delenv("MEM0_QDRANT_URL", raising=False)
+        monkeypatch.delenv("MEM0_QDRANT_API_KEY", raising=False)
         monkeypatch.setenv("MEM0_QDRANT_HOST", "localhost")
         monkeypatch.setenv("MEM0_QDRANT_PORT", "6333")
 
         result = _get_vector_store_config()
 
-        assert result["type"] == "qdrant"
+        assert result["provider"] == "qdrant"
         assert result["config"]["host"] == "localhost"
         assert result["config"]["port"] == 6333
+
+    def test_qdrant_dimensions_match_embedder_dimensions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should use the embedder dimensions for the vector store."""
+        monkeypatch.setenv("MEM0_EMBEDDER_DIMS", "1536")
+
+        result = _get_vector_store_config()
+
+        assert result["config"]["embedding_model_dims"] == 1536
 
 
 class TestBuildOssConfig:
     """Tests for _build_oss_config function."""
 
     def test_builds_full_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should build full config from environment."""
+        """Should build full OSS config from environment."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
         monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
         monkeypatch.setenv("MEM0_COLLECTION_NAME", "test_collection")
+        monkeypatch.setenv("MEM0_QDRANT_URL", "https://cluster.qdrant.io")
+        monkeypatch.setenv("MEM0_QDRANT_API_KEY", "qdrant_key")
 
         result = _build_oss_config()
 
-        assert "llm" in result
-        assert "embedder" in result
-        assert "vector_store" in result
+        assert result["llm"]["provider"] == "litellm"
+        assert result["embedder"]["provider"] == "gemini"
+        assert result["vector_store"]["provider"] == "qdrant"
+        assert result["vector_store"]["config"]["collection_name"] == "test_collection"
 
 
 class TestGetMemoryClient:
@@ -202,18 +277,20 @@ class TestGetMemoryClient:
         """Reset the memory client before each test."""
         reset_memory_client()
 
-    def test_returns_cloud_client_with_api_key(
+    def test_returns_oss_client_even_with_mem0_api_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should return MemoryClient when MEM0_API_KEY is set."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
+        """Should use OSS Memory instead of Mem0 Platform."""
+        monkeypatch.setenv("MEM0_API_KEY", "platform_key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
         mock_client = MagicMock()
-        with patch("mem0.MemoryClient", return_value=mock_client) as mock_class:
+        mock_memory = MagicMock()
+        mock_memory.from_config.return_value = mock_client
+        with patch("mem0.Memory", mock_memory):
             result = get_memory_client()
 
-            mock_class.assert_called_once_with(api_key="test_key")
-            assert result is mock_client
+        assert result is mock_client
 
     def test_returns_oss_client_without_api_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -228,60 +305,61 @@ class TestGetMemoryClient:
         with patch("mem0.Memory", mock_memory):
             result = get_memory_client()
 
-            assert result is mock_client
+        assert result is mock_client
 
-    def test_returns_none_on_import_error(
+    def test_returns_none_on_config_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should return None when mem0ai is not installed."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
+        """Should return None when OSS memory cannot initialize."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
-        with patch("mem0.MemoryClient", side_effect=ImportError("mem0 not found")):
+        mock_memory = MagicMock()
+        mock_memory.from_config.side_effect = ValueError("bad config")
+        with patch("mem0.Memory", mock_memory):
             result = get_memory_client()
 
-            assert result is None
+        assert result is None
+        assert (
+            get_memory_client_error()
+            == "Memory backend failed to initialize: bad config"
+        )
+
+    def test_describes_qdrant_dns_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should explain Qdrant host resolution failures."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+        monkeypatch.setenv(
+            "MEM0_QDRANT_URL",
+            "https://abcdef1234567890.qdrant.io",
+        )
+        monkeypatch.setenv("MEM0_QDRANT_API_KEY", "qdrant_key")
+
+        mock_memory = MagicMock()
+        mock_memory.from_config.side_effect = RuntimeError(
+            "[Errno 8] nodename nor servname provided, or not known"
+        )
+        with patch("mem0.Memory", mock_memory):
+            result = get_memory_client()
+
+        error = get_memory_client_error()
+
+        assert result is None
+        assert error is not None
+        assert "MEM0_QDRANT_URL host" in error
+        assert "does not resolve" in error
 
     def test_caches_client(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should cache the client instance."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
-
-        mock_client = MagicMock()
-        with patch("mem0.MemoryClient", return_value=mock_client) as mock_class:
-            client1 = get_memory_client()
-            client2 = get_memory_client()
-
-            mock_class.assert_called_once()
-            assert client1 is client2
-
-
-class TestIsCloudClient:
-    """Tests for is_cloud_client function."""
-
-    @pytest.fixture(autouse=True)
-    def reset_client(self) -> None:
-        """Reset the memory client before each test."""
-        reset_memory_client()
-
-    def test_returns_true_for_cloud(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should return True when using cloud client."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
-
-        mock_client = MagicMock()
-        with patch("mem0.MemoryClient", return_value=mock_client):
-            get_memory_client()
-            assert is_cloud_client() is True
-
-    def test_returns_false_for_oss(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should return False when using OSS client."""
-        monkeypatch.delenv("MEM0_API_KEY", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
         mock_client = MagicMock()
         mock_memory = MagicMock()
         mock_memory.from_config.return_value = mock_client
         with patch("mem0.Memory", mock_memory):
-            get_memory_client()
-            assert is_cloud_client() is False
+            client1 = get_memory_client()
+            client2 = get_memory_client()
+
+        mock_memory.from_config.assert_called_once()
+        assert client1 is client2
 
 
 class TestGetDefaultUserId:
@@ -336,16 +414,17 @@ class TestResetMemoryClient:
         """Reset the memory client before each test."""
         reset_memory_client()
 
-    def test_resets_client_and_flag(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should reset client to None and is_cloud_client to False."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
+    def test_resets_client_and_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Should reset client to None and clear any error."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
         mock_client = MagicMock()
-        with patch("mem0.MemoryClient", return_value=mock_client):
+        mock_memory = MagicMock()
+        mock_memory.from_config.return_value = mock_client
+        with patch("mem0.Memory", mock_memory):
             client = get_memory_client()
             assert client is not None
-            assert is_cloud_client() is True
 
         reset_memory_client()
 
-        assert is_cloud_client() is False
+        assert get_memory_client_error() is None

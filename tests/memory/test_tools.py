@@ -263,43 +263,16 @@ class TestUpdateMemory:
         reset_memory_client()
 
     @pytest.mark.asyncio
-    async def test_update_memory_cloud_client(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Should update memory using cloud client (options param)."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
-        tool_context = self._tool_context()
-
-        mock_client = MagicMock()
-
-        with (
-            patch("blacki.memory.tools.get_memory_client", return_value=mock_client),
-            patch("blacki.memory.tools.is_cloud_client", return_value=True),
-        ):
-            result = await update_memory(
-                "mem_123", "Updated text", tool_context, metadata={"key": "value"}
-            )
-
-        assert result["status"] == "success"
-        mock_client.update.assert_called_once()
-        call_args = mock_client.update.call_args
-        assert call_args[0][0] == "mem_123"
-        assert call_args[1]["options"]["text"] == "Updated text"
-
-    @pytest.mark.asyncio
     async def test_update_memory_oss_client(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should update memory using OSS client (data param)."""
+        """Should update memory using OSS client data param."""
         monkeypatch.setenv("MEM0_API_KEY", "")
         tool_context = self._tool_context()
 
         mock_client = MagicMock()
 
-        with (
-            patch("blacki.memory.tools.get_memory_client", return_value=mock_client),
-            patch("blacki.memory.tools.is_cloud_client", return_value=False),
-        ):
+        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
             result = await update_memory("mem_123", "Updated text", tool_context)
 
         assert result["status"] == "success"
