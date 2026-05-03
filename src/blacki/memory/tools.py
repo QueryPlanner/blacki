@@ -194,7 +194,7 @@ async def get_all_memories(
         result_limit = page * page_size
         result = client.get_all(user_id=user_id, limit=result_limit)
 
-        memories = result.get("results", []) if isinstance(result, dict) else result
+        memories = (result.get("results", []) if isinstance(result, dict) else result) or []
         start_index = (page - 1) * page_size
         end_index = start_index + page_size
         paged_memories = memories[start_index:end_index]
