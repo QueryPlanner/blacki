@@ -200,9 +200,7 @@ async def sandbox_send_file_to_user(
         if not token:
             return {"status": "error", "error": "TELEGRAM_BOT_TOKEN is not set"}
 
-        # Read file from sandbox (content can be string or bytes)
-        content = await sandbox.files.read_file(sandbox_path)
-        content_bytes = content.encode("utf-8") if isinstance(content, str) else content
+        content_bytes = await sandbox.files.read_bytes(sandbox_path)
 
         from pathlib import Path
 
