@@ -65,25 +65,35 @@ def setup_logging(log_level: str) -> None:
     # Set up OTLP log export if endpoint is configured
     logs_endpoint = os.getenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
     if logs_endpoint:
-        print(f"📊 Configuring OTLP log export to: {logs_endpoint}")
+        try:
+            print(f"📊 Configuring OTLP log export to: {logs_endpoint}")
 
-        # Create resource from OTEL_RESOURCE_ATTRIBUTES
-        resource_attrs = {}
-        if "OTEL_RESOURCE_ATTRIBUTES" in os.environ:
-            for pair in os.environ["OTEL_RESOURCE_ATTRIBUTES"].split(","):
-                if "=" in pair:
-                    key, value = pair.split("=", 1)
-                    resource_attrs[key] = value
+            # Create resource from OTEL_RESOURCE_ATTRIBUTES
+            resource_attrs = {}
+            if "OTEL_RESOURCE_ATTRIBUTES" in os.environ:
+                for pair in os.environ["OTEL_RESOURCE_ATTRIBUTES"].split(","):
+                    if "=" in pair:
+                        key, value = pair.split("=", 1)
+                        resource_attrs[key] = value
 
-        resource = Resource.create(resource_attrs)
+            resource = Resource.create(resource_attrs)
 
-        # Set up logger provider with OTLP exporter
-        provider = LoggerProvider(resource=resource)
-        provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter()))
-        set_logger_provider(provider)
+            # Set up logger provider with OTLP exporter
+            provider = LoggerProvider(resource=resource)
+            provider.add_log_record_processor(
+                BatchLogRecordProcessor(OTLPLogExporter())
+            )
+            set_logger_provider(provider)
 
-        # Add OTLP handler to root logger
-        handler = LoggingHandler(level=level)
-        logging.getLogger().addHandler(handler)
+            # Add OTLP handler to root logger
+            handler = LoggingHandler(level=level)
+            logging.getLogger().addHandler(handler)
 
-        print("✅ OTLP log export configured")
+            print("✅ OTLP log export configured")
+        except Exception as e:
+            print(f"⚠️ Failed to configure OTLP log export: {e}")
+            print("   Continuing with stdout logging only...")
+            logging.getLogger(__name__).warning(
+                "OTLP log export setup failed, falling back to stdout-only logging: %s",
+                e,
+            )
