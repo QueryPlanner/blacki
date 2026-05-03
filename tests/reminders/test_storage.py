@@ -325,6 +325,9 @@ class TestStorageSingleton:
         assert storage_module._storage is new
 
         storage_module._storage = None
+
+    @pytest.mark.asyncio
+    async def test_close_reminder_storage_when_none(self) -> None:
         """Should do nothing if storage is already None."""
         import blacki.reminders.storage as storage_module
 

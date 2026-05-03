@@ -1,11 +1,15 @@
-import asyncio
 import json
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
+
+from blacki.storage.base import PostgresStorage
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -62,28 +66,11 @@ class ExerciseHistoryEntry(BaseModel):
     total_volume_kg: float  # sum(weight * reps) across all working sets
 
 
-class PostgresWorkoutStorage:
+class PostgresWorkoutStorage(PostgresStorage):
     """Storage for workout tracking using Postgres via asyncpg."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-        self._lock = asyncio.Lock()
-        self._schema_ready = False
-
-    async def initialize(self) -> None:
-        """Ensure schema is created."""
-        async with self._lock:
-            if self._schema_ready:  # pragma: no cover
-                return
-            async with self._pool.acquire() as conn:
-                await self._create_tables(conn)
-            self._schema_ready = True
-            logger.info("Workout storage schema ready (Postgres)")
-
-    async def close(self) -> None:
-        """Mark uninitialized."""
-        async with self._lock:
-            self._schema_ready = False
+        super().__init__(pool)
 
     async def _create_tables(self, conn: asyncpg.Connection) -> None:
         await conn.execute("""
@@ -391,28 +378,61 @@ _storage: PostgresWorkoutStorage | None = None
 
 
 def get_storage() -> PostgresWorkoutStorage:
-    """Return the process-wide singleton PostgresWorkoutStorage instance."""
-    global _storage
-    if _storage is None:
+    """Return the process-wide singleton PostgresWorkoutStorage instance.
+
+    Uses the AppContainer for dependency injection.
+    """
+    from blacki.container import get_container
+
+    container = get_container()
+    storage = container.workout_storage
+    if not storage.is_initialized:
         raise RuntimeError(
             "Workout storage not initialized. Call init_workout_storage() first."
         )
-    return _storage
+    return storage
 
 
 async def init_workout_storage(pool: asyncpg.Pool) -> PostgresWorkoutStorage:
-    """Initialize the workout storage with a Postgres pool."""
+    """Initialize the workout storage with a Postgres pool.
+
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer directly for new code.
+    """
     global _storage
+    import blacki.container as container_module
+
+    if container_module._container is None:  # pragma: no cover
+        container_module.set_container_from_pool(pool)
+
     if _storage is not None:
         await _storage.close()
-    _storage = PostgresWorkoutStorage(pool)
-    await _storage.initialize()
-    return _storage
+        _storage = None
+
+    container = container_module._container
+    if container is None:  # pragma: no cover
+        raise RuntimeError("Container not initialized")
+    if container._workout_storage is not None:  # pragma: no cover
+        await container._workout_storage.close()
+
+    storage = container.workout_storage
+    await storage.initialize()
+    _storage = storage
+    return storage
 
 
 async def close_workout_storage() -> None:
-    """Close the singleton workout storage."""
+    """Close the singleton workout storage.
+
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer.close() for new code.
+    """
     global _storage
-    if _storage is not None:  # pragma: no cover
-        await _storage.close()
-        _storage = None
+    import blacki.container as container_module
+
+    if container_module._container is not None:  # pragma: no cover
+        container = container_module._container
+        if container._workout_storage is not None:
+            await container._workout_storage.close()
+            container._workout_storage = None
+    _storage = None
