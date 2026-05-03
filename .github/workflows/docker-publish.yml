@@ -103,6 +103,9 @@ jobs:
           SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
           SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          MEM0_QDRANT_URL: ${{ secrets.MEM0_QDRANT_URL }}
+          MEM0_QDRANT_API_KEY: ${{ secrets.MEM0_QDRANT_API_KEY }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -127,6 +130,9 @@ jobs:
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
           GH_TOKEN="${GH_TOKEN}"
+          GOOGLE_API_KEY="${GOOGLE_API_KEY}"
+          MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
+          MEM0_QDRANT_API_KEY="${MEM0_QDRANT_API_KEY}"
           ENVFILE
           chmod 600 /tmp/deploy.env
 
@@ -197,6 +203,9 @@ jobs:
           HOST_PORT="${HOST_PORT}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
+          GOOGLE_API_KEY="${GOOGLE_API_KEY}"
+          MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
+          MEM0_QDRANT_API_KEY="${MEM0_QDRANT_API_KEY}"
           ENVFILE
           chmod 600 .env
 

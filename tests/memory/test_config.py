@@ -47,7 +47,7 @@ class TestGetLlmConfig:
         result = _get_llm_config()
 
         assert result["provider"] == "litellm"
-        assert result["config"]["model"] == "openrouter/google/gemini-2.0-flash-001"
+        assert result["config"]["model"] == "openrouter/openai/gpt-oss-20b"
         assert result["config"]["api_key"] == "test_key"
 
     def test_uses_custom_model_and_provider(

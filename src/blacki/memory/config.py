@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LLM_MODEL = "openrouter/google/gemini-2.0-flash-001"
+DEFAULT_LLM_MODEL = "openrouter/openai/gpt-oss-20b"
 DEFAULT_EMBEDDER_PROVIDER = "gemini"
 DEFAULT_EMBEDDER_MODEL = "gemini-embedding-001"
 DEFAULT_EMBEDDER_DIMS = 768
