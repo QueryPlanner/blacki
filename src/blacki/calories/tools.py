@@ -144,7 +144,7 @@ async def edit_meal(
     entry_id: int,
     description: str | None = None,
     estimated_calories: int | None = None,
-    logged_date: str | None = None,
+    date: str | None = None,
     meal_type: str | None = None,
     protein_g: int | None = None,
     carbs_g: int | None = None,
@@ -153,8 +153,8 @@ async def edit_meal(
     """Edit an existing meal entry.
 
     Args:
-        logged_date: Optional new date for the meal (natural language like
-                     "yesterday", "last Monday", or "2024-01-15").
+        date: Optional new date for the meal (natural language like
+              "yesterday", "last Monday", or "2024-01-15").
     """
     user_id = tool_context.user_id
     if not user_id:  # pragma: no cover
@@ -165,8 +165,8 @@ async def edit_meal(
         updates["description"] = description
     if estimated_calories is not None:  # pragma: no cover
         updates["calories"] = estimated_calories
-    if logged_date is not None:
-        updates["logged_date"] = parse_date(logged_date)
+    if date is not None:
+        updates["logged_date"] = parse_date(date)
     if meal_type is not None:  # pragma: no cover
         updates["meal_type"] = meal_type.lower()
     if protein_g is not None:  # pragma: no cover
