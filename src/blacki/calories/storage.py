@@ -1,10 +1,14 @@
-import asyncio
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
+
+from blacki.storage.base import PostgresStorage
+
+if TYPE_CHECKING:
+    pass
 
 _ALLOWED_UPDATE_COLUMNS = frozenset(
     {
@@ -49,28 +53,11 @@ class DailySummary(BaseModel):
     entries: list[CalorieEntry] = []  # populated only in single-day queries
 
 
-class PostgresCalorieStorage:
+class PostgresCalorieStorage(PostgresStorage):
     """Storage for calorie tracking using Postgres via asyncpg."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-        self._lock = asyncio.Lock()
-        self._schema_ready = False
-
-    async def initialize(self) -> None:
-        """Ensure schema is created."""
-        async with self._lock:
-            if self._schema_ready:  # pragma: no cover
-                return
-            async with self._pool.acquire() as conn:
-                await self._create_tables(conn)
-            self._schema_ready = True
-            logger.info("Calorie storage schema ready (Postgres)")
-
-    async def close(self) -> None:
-        """Mark uninitialized."""
-        async with self._lock:
-            self._schema_ready = False
+        super().__init__(pool)
 
     async def _create_tables(self, conn: asyncpg.Connection) -> None:
         await conn.execute("""
@@ -263,28 +250,59 @@ _storage: PostgresCalorieStorage | None = None
 
 
 def get_storage() -> PostgresCalorieStorage:
-    """Return the process-wide singleton PostgresCalorieStorage instance."""
-    global _storage
-    if _storage is None:
+    """Return the process-wide singleton PostgresCalorieStorage instance.
+
+    Uses the AppContainer for dependency injection.
+    """
+    from blacki.container import _container
+
+    if _container is None or _container._calorie_storage is None:
         raise RuntimeError(
             "Calorie storage not initialized. Call init_calorie_storage() first."
         )
-    return _storage
+    return _container.calorie_storage
 
 
 async def init_calorie_storage(pool: asyncpg.Pool) -> PostgresCalorieStorage:
-    """Initialize the calorie storage with a Postgres pool."""
+    """Initialize the calorie storage with a Postgres pool.
+
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer directly for new code.
+    """
     global _storage
+    import blacki.container as container_module
+
+    if container_module._container is None:
+        container_module.set_container_from_pool(pool)
+
     if _storage is not None:
         await _storage.close()
-    _storage = PostgresCalorieStorage(pool)
-    await _storage.initialize()
-    return _storage
+        _storage = None
+
+    container = container_module._container
+    if container is None:
+        raise RuntimeError("Container not initialized")
+    if container._calorie_storage is not None:
+        await container._calorie_storage.close()
+
+    storage = container.calorie_storage
+    await storage.initialize()
+    _storage = storage
+    return storage
 
 
 async def close_calorie_storage() -> None:
-    """Close the singleton calorie storage."""
+    """Close the singleton calorie storage.
+
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer.close() for new code.
+    """
     global _storage
-    if _storage is not None:  # pragma: no cover
-        await _storage.close()
-        _storage = None
+    import blacki.container as container_module
+
+    if container_module._container is not None:
+        container = container_module._container
+        if container._calorie_storage is not None:
+            await container._calorie_storage.close()
+            container._calorie_storage = None
+    _storage = None

@@ -5,15 +5,18 @@ with the ADK session service when DATABASE_URL is configured.
 """
 
 import abc
-import asyncio
 import logging
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
+from blacki.storage.base import PostgresStorage
 from blacki.utils.timezone import now_utc
+
+if TYPE_CHECKING:
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -92,28 +95,11 @@ class BaseReminderStorage(abc.ABC):
         """Delete a reminder if it belongs to the given user."""
 
 
-class PostgresReminderStorage(BaseReminderStorage):
+class PostgresReminderStorage(PostgresStorage):
     """Storage for reminders using Postgres via asyncpg."""
 
     def __init__(self, pool: asyncpg.Pool) -> None:
-        self._pool = pool
-        self._lock = asyncio.Lock()
-        self._schema_ready = False
-
-    async def initialize(self) -> None:
-        """Ensure schema is created."""
-        async with self._lock:
-            if self._schema_ready:
-                return
-            async with self._pool.acquire() as conn:
-                await self._create_tables(conn)
-            self._schema_ready = True
-            logger.info("Reminder storage schema ready (Postgres)")
-
-    async def close(self) -> None:
-        """Mark uninitialized (pool lifecycle managed externally)."""
-        async with self._lock:
-            self._schema_ready = False
+        super().__init__(pool)
 
     async def _create_tables(self, conn: asyncpg.Connection) -> None:
         await conn.execute("""
@@ -275,28 +261,59 @@ _storage: PostgresReminderStorage | None = None
 
 
 def get_storage() -> PostgresReminderStorage:
-    """Return the process-wide singleton ReminderStorage instance."""
-    global _storage
-    if _storage is None:
+    """Return the process-wide singleton ReminderStorage instance.
+
+    Uses the AppContainer for dependency injection.
+    """
+    from blacki.container import _container
+
+    if _container is None or _container._reminder_storage is None:
         raise RuntimeError(
             "Reminder storage not initialized. Call init_reminder_storage() first."
         )
-    return _storage
+    return _container.reminder_storage
 
 
 async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
-    """Initialize the reminder storage with a Postgres pool."""
-    global _storage
-    if _storage is not None:
-        await _storage.close()
-    _storage = PostgresReminderStorage(pool)
-    await _storage.initialize()
-    return _storage
+    """Initialize the reminder storage with a Postgres pool.
 
-
-async def close_reminder_storage() -> None:
-    """Close the singleton reminder storage."""
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer directly for new code.
+    """
     global _storage
+    import blacki.container as container_module
+
+    if container_module._container is None:
+        container_module.set_container_from_pool(pool)
+
     if _storage is not None:
         await _storage.close()
         _storage = None
+
+    container = container_module._container
+    if container is None:
+        raise RuntimeError("Container not initialized")
+    if container._reminder_storage is not None:
+        await container._reminder_storage.close()
+
+    storage = container.reminder_storage
+    await storage.initialize()
+    _storage = storage
+    return storage
+
+
+async def close_reminder_storage() -> None:
+    """Close the singleton reminder storage.
+
+    Note: This function is provided for backward compatibility.
+    Prefer using AppContainer.close() for new code.
+    """
+    global _storage
+    import blacki.container as container_module
+
+    if container_module._container is not None:
+        container = container_module._container
+        if container._reminder_storage is not None:
+            await container._reminder_storage.close()
+            container._reminder_storage = None
+    _storage = None

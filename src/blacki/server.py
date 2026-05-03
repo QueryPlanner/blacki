@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import asyncpg  # type: ignore[import-untyped]
 import uvicorn
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
@@ -22,6 +21,7 @@ from .adk_runtime import (
     build_session_service_uri,
     create_adk_runtime,
 )
+from .container import AppContainer, close_container, init_container
 from .utils import (
     ServerEnv,
     configure_otel_resource,
@@ -31,23 +31,18 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
-# Load and validate environment configuration
 env = initialize_environment(ServerEnv)
 
-# Configure OpenTelemetry
 configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-# Initialize OpenInference instrumentation for ADK
 GoogleADKInstrumentor().instrument()
 
-# Configure logging
 setup_logging(log_level=env.log_level)
 
-# Telegram bot instance (initialized on startup)
 _telegram_bot = None
-_reminder_pool: asyncpg.Pool | None = None
+_container: AppContainer | None = None
 
 
 async def _start_telegram_bot() -> None:
@@ -92,8 +87,8 @@ async def _start_telegram_bot() -> None:
 
 async def _start_reminder_scheduler() -> None:
     """Start the reminder scheduler if storage is initialized."""
-    if _reminder_pool is None:
-        logger.info("Reminder scheduler not started (no database pool)")
+    if _container is None:
+        logger.info("Reminder scheduler not started (no container)")
         return
 
     from .reminders import get_scheduler
@@ -116,38 +111,6 @@ async def _stop_telegram_bot() -> None:
             logger.exception("Error stopping Telegram bot")
 
 
-async def _init_reminder_pool(database_url: str) -> asyncpg.Pool:
-    """Initialize the Postgres pool for reminder storage."""
-    pool = await asyncpg.create_pool(
-        database_url,
-        min_size=1,
-        max_size=5,
-    )
-
-    try:
-        from .reminders import init_reminder_storage
-
-        await init_reminder_storage(pool)
-
-        from .utils.preferences import init_preferences_storage
-
-        await init_preferences_storage(pool)
-
-        from .calories import init_calorie_storage
-
-        await init_calorie_storage(pool)
-
-        from .workouts import init_workout_storage
-
-        await init_workout_storage(pool)
-
-        logger.info("All storage modules initialized with Postgres pool")
-        return pool
-    except Exception:
-        await pool.close()
-        raise
-
-
 async def _stop_reminder_scheduler() -> None:
     """Stop the reminder scheduler if running."""
     try:
@@ -163,28 +126,16 @@ async def _stop_reminder_scheduler() -> None:
         logger.exception("Error stopping reminder scheduler")
 
 
-async def _close_reminder_pool() -> None:
-    """Close the reminder Postgres pool."""
-    global _reminder_pool
-    if _reminder_pool is not None:
-        await _reminder_pool.close()
-        _reminder_pool = None
-        logger.info("Reminder Postgres pool closed")
-
-
-# Use .resolve() to handle symlinks and ensure absolute path across environments
 AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 
 session_uri = build_session_service_uri(env)
 session_db_kwargs = build_session_db_kwargs(env)
 
-# ADK fastapi app will set up OTel using resource attributes from env vars
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,
     session_service_uri=session_uri,
     session_db_kwargs=session_db_kwargs,
-    artifact_service_uri=None,  # Explicitly None as GCP bucket not used
-    # Memory service does not yet support Postgres scheme in ADK
+    artifact_service_uri=None,
     memory_service_uri=None,
     allow_origins=env.allow_origins_list,
     web=env.serve_web_interface,
@@ -200,28 +151,22 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     explicitly during application teardown. Running this in the lifespan
     hook keeps the bot lifecycle aligned with the FastAPI app lifecycle.
     """
-    global _reminder_pool
+    global _container
 
     if env.database_url:
-        _reminder_pool = await _init_reminder_pool(env.database_url)
+        _container = await init_container(env.database_url)
+        await _container.initialize_all_storages()
 
     await _start_telegram_bot()
     try:
         yield
     finally:
         await _stop_reminder_scheduler()
-
-        # Close additional storages
-        from .calories import close_calorie_storage
-        from .utils.preferences import close_preferences_storage
-        from .workouts import close_workout_storage
-
-        await close_preferences_storage()
-        await close_calorie_storage()
-        await close_workout_storage()
-
-        await _close_reminder_pool()
         await _stop_telegram_bot()
+
+        if _container is not None:
+            await close_container()
+            _container = None
 
         from .tools import close_shared_brave_search_client
 
@@ -243,9 +188,9 @@ async def health() -> dict[str, str]:
         dict with status key indicating service health.
     """
     checks: list[str] = []
-    if _reminder_pool is not None:
+    if _container is not None:
         try:
-            await _reminder_pool.fetchval("SELECT 1")
+            await _container.pool.fetchval("SELECT 1")
         except Exception:
             checks.append("database:unreachable")
 
