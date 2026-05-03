@@ -67,21 +67,33 @@ Complete reference for all environment variables used in this project.
 
 **OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT**
 - **Default:** `FALSE`
-- **Purpose:** Capture full prompts/responses in traces. Set to `TRUE` to see conversation content in Langfuse or Jaeger.
+- **Purpose:** Capture full prompts/responses in traces. Set to `TRUE` to see conversation content in your OTLP backend.
 
-### Observability (Langfuse)
+### Observability (OpenTelemetry OTLP)
 
-**LANGFUSE_PUBLIC_KEY**
-- **Value:** `pk-lf-...`
-- **Purpose:** Automatically configures OTel to export to Langfuse.
+Configure your OTLP backend using standard OpenTelemetry environment variables. See `.env.example` for provider-specific examples (Axiom, Jaeger, Honeycomb, Langfuse).
 
-**LANGFUSE_SECRET_KEY**
-- **Value:** `sk-lf-...`
-- **Purpose:** Authentication for Langfuse OTLP.
+**OTEL_EXPORTER_OTLP_ENDPOINT**
+- **Value:** OTLP backend URL (e.g., `https://api.axiom.co`)
+- **Purpose:** Base endpoint for all OTLP signals (traces, logs, metrics)
 
-**LANGFUSE_BASE_URL**
-- **Default:** `https://cloud.langfuse.com`
-- **Options:** `https://us.cloud.langfuse.com` or your self-hosted URL.
+**OTEL_EXPORTER_OTLP_TRACES_ENDPOINT**
+- **Value:** Traces-specific endpoint (e.g., `https://api.axiom.co/v1/traces`)
+- **Purpose:** Override the traces endpoint (optional)
+
+**OTEL_EXPORTER_OTLP_LOGS_ENDPOINT**
+- **Value:** Logs-specific endpoint (e.g., `https://api.axiom.co/v1/logs`)
+- **Purpose:** Override the logs endpoint (optional)
+
+**OTEL_EXPORTER_OTLP_HEADERS**
+- **Value:** Authentication headers (e.g., `Authorization=Bearer token,X-Axiom-Dataset=name`)
+- **Purpose:** Authentication and provider-specific headers
+
+**OTEL_EXPORTER_OTLP_PROTOCOL**
+- **Value:** `http/protobuf` (recommended) or `grpc`
+- **Purpose:** OTLP transport protocol
+
+For complete configuration options, see [OpenTelemetry Environment Variables](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
 
 ## Environment Variable Precedence
 

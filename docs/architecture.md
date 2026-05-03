@@ -13,7 +13,7 @@ Google ADK is useful even without Google Cloud:
 - **Entry point**: `python -m blacki.server`
   - Wraps `google.adk.cli.fast_api.get_fast_api_app(...)`
   - Uses in-memory sessions by default for fast response times
-  - Configures OpenTelemetry for vendor-neutral tracing (Langfuse auto-config included)
+  - Configures OpenTelemetry for vendor-neutral tracing via standard OTLP environment variables
 - **Agents directory**: `src/`
   - ADK Dev UI lists *directories* under `agents_dir`.
 - **Main Agent**: `src/blacki/agent.py`

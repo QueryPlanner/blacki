@@ -39,7 +39,7 @@ configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-# Initialize Langfuse/OpenInference instrumentation
+# Initialize OpenInference instrumentation for ADK
 GoogleADKInstrumentor().instrument()
 
 # Configure logging

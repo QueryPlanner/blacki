@@ -10,7 +10,7 @@ We believe you should own your agents. This template is designed to strip away t
 - 🐳 **Deploy Anywhere**: Pre-configured Docker & Compose setup. Runs on Hetzner, DigitalOcean, or your basement server.
 - 🛠️ **Automated Setup**: Includes a `setup.sh` script to harden your server (UFW, Fail2Ban) and install dependencies in minutes.
 - 🔄 **CI/CD Included**: GitHub Actions workflow builds multi-arch images (AMD64/ARM64) and pushes to GHCR automatically.
-- 🔭 **Open Observability**: Built-in OpenTelemetry (OTel) instrumentation. Pre-configured for **Langfuse**, but easily adaptable to Jaeger, Prometheus, or any OTel-compatible backend.
+- 🔭 **Open Observability**: Built-in OpenTelemetry (OTel) instrumentation. Configure any OTLP-compatible backend (Axiom, Jaeger, Honeycomb, Langfuse, etc.) via standard environment variables.
 - 🚀 **Modern Stack**: Python 3.13, `uv`, `fastapi`, `asyncpg`.
 - ⚡ **Fast Response Times**: In-memory sessions for low-latency agent responses.
 
@@ -73,9 +73,7 @@ docker compose up --build -d
 
 ## Observability
 
-The template comes pre-wired with **OpenTelemetry**. By default, it's set up to export traces to **Langfuse** for beautiful, actionable insights into your agent's performance and costs.
-
-To change the backend, simply update the OTel exporter configuration in your `.env`. You are not locked into any specific observability vendor.
+The template comes pre-wired with **OpenTelemetry** using standard OTLP environment variables. Configure your preferred backend (Axiom, Jaeger, Honeycomb, Langfuse, etc.) by setting `OTEL_EXPORTER_OTLP_*` variables in your `.env`. You are not locked into any specific observability vendor.
 
 ## Documentation
 

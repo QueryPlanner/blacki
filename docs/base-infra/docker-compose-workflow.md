@@ -120,8 +120,9 @@ GOOGLE_API_KEY=your-key
 OPENROUTER_API_KEY=your-key
 
 # Observability (Optional)
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
+# OTEL_EXPORTER_OTLP_ENDPOINT=https://api.axiom.co
+# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer YOUR_TOKEN,X-Axiom-Dataset=YOUR_DATASET
+# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 
 # Logging verbosity
 LOG_LEVEL=DEBUG

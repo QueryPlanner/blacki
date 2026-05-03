@@ -97,39 +97,44 @@ OpenTelemetry resource attributes uniquely identify your service instances in tr
 
 `LoggingCallbacks` (in `callbacks.py`) logs agent lifecycle events (start/end, model calls, tool invocations) with automatic trace context correlation.
 
-## Vendor Neutrality & Langfuse Integration
+## Vendor Neutrality
 
-This project uses **OpenTelemetry (OTel)** as the standard protocol for observability. This ensures you are **not locked into any specific vendor**. You can send traces to any backend that supports OTLP (e.g., Jaeger, Honeycomb, Datadog, Langfuse).
+This project uses **OpenTelemetry (OTel)** as the standard protocol for observability. You are **not locked into any specific vendor** — configure your OTLP backend using standard OpenTelemetry environment variables.
 
-### Langfuse (Auto-Configuration)
+### Configuration
 
-For convenience, we provide built-in auto-configuration for [Langfuse](https://langfuse.com). If you provide Langfuse credentials, the system will automatically configure the OTLP exporter for you.
+Set the standard `OTEL_EXPORTER_OTLP_*` environment variables for your chosen backend:
 
-**Setup:**
-1. Add `langfuse` and `openinference-instrumentation-google-adk` to your dependencies.
-2. Set the following environment variables:
-   ```bash
-   LANGFUSE_PUBLIC_KEY="pk-lf-..."
-   LANGFUSE_SECRET_KEY="sk-lf-..."
-   LANGFUSE_BASE_URL="https://cloud.langfuse.com" # or https://us.cloud.langfuse.com
-   ```
-   *The system will automatically generate the required OTLP headers and endpoint.*
-
-### Other Vendors (Jaeger, Honeycomb, etc.)
-
-To use a different vendor, simply **do not** set the `LANGFUSE_` variables. Instead, set the standard OpenTelemetry environment variables for your provider.
+**Example: Axiom**
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://api.axiom.co
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.axiom.co/v1/traces
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://api.axiom.co/v1/logs
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer YOUR_API_TOKEN,X-Axiom-Dataset=YOUR_DATASET
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
 
 **Example: Jaeger (Local)**
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318/v1/traces"
-OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf"
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
 
 **Example: Honeycomb**
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT="https://api.honeycomb.io"
-OTEL_EXPORTER_OTLP_HEADERS="x-honeycomb-team=YOUR_API_KEY"
+OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
+OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=YOUR_API_KEY
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 ```
+
+**Example: Langfuse**
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic BASE64_ENCODED_KEYS
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
+
+For complete OTLP configuration options, see the [OpenTelemetry Environment Variables specification](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
 
 ## Message Content Capture
 

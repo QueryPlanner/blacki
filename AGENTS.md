@@ -44,7 +44,7 @@ By delegating to managed services, the agent stays fast, cheap, and reliable. Th
 *   **Model Interface:** LiteLLM (supports Google, OpenRouter, etc.)
 *   **Server:** FastAPI
 *   **Database:** PostgreSQL (via `asyncpg`)
-*   **Observability:** OpenTelemetry (OTel) with Langfuse support
+*   **Observability:** OpenTelemetry (OTel) with vendor-neutral OTLP configuration
 *   **Infrastructure:** Docker, Docker Compose
 
 ## Building and Running
