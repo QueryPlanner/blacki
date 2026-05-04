@@ -235,3 +235,177 @@ class TestTelegramApiClient:
             await client.send_document(
                 chat_id=123, document_bytes=b"content", filename="test.txt"
             )
+
+    @pytest.mark.asyncio
+    async def test_send_photo_success(self) -> None:
+        """Test send_photo returns Message on success."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "message_id": 42,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "photo": [
+                    {
+                        "file_id": "photo123",
+                        "file_unique_id": "uniq123",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            },
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+        ):
+            result = await client.send_photo(
+                chat_id=123,
+                photo_bytes=b"image content",
+                filename="test.png",
+                caption="A test photo",
+                message_thread_id=456,
+            )
+
+        assert isinstance(result, Message)
+        assert result.message_id == 42
+        assert result.chat.id == 123
+
+    @pytest.mark.asyncio
+    async def test_send_photo_minimal_params(self) -> None:
+        """Test send_photo with only required params."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            },
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+        ):
+            result = await client.send_photo(
+                chat_id=123, photo_bytes=b"image", filename="test.jpg"
+            )
+
+        assert isinstance(result, Message)
+
+    @pytest.mark.asyncio
+    async def test_send_photo_with_parse_mode(self) -> None:
+        """Test send_photo with parse_mode."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            },
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+        ):
+            await client.send_photo(
+                chat_id=123,
+                photo_bytes=b"image",
+                filename="test.png",
+                parse_mode=ParseMode.HTML,
+            )
+
+        call_args = mock_http_client.post.call_args
+        assert call_args.kwargs["data"]["parse_mode"] == "HTML"
+
+    @pytest.mark.asyncio
+    async def test_send_photo_http_error(self) -> None:
+        """Test send_photo raises on HTTP error."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {"description": "Bad Request"}
+        mock_response.text = "raw error"
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match="Bad Request"),
+        ):
+            await client.send_photo(
+                chat_id=123, photo_bytes=b"image", filename="test.png"
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_photo_http_error_no_json(self) -> None:
+        """Test send_photo raises on HTTP error without JSON."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.json.side_effect = Exception("not json")
+        mock_response.text = "raw error text"
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match="raw error text"),
+        ):
+            await client.send_photo(
+                chat_id=123, photo_bytes=b"image", filename="test.png"
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_photo_api_not_ok(self) -> None:
+        """Test send_photo raises when API returns ok=False."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": False,
+            "description": "Forbidden",
+            "error_code": 403,
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match="Forbidden"),
+        ):
+            await client.send_photo(
+                chat_id=123, photo_bytes=b"image", filename="test.png"
+            )
