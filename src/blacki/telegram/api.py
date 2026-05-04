@@ -158,6 +158,71 @@ class TelegramApiClient:
         response.raise_for_status()
         return response.content
 
+    async def send_photo(
+        self,
+        chat_id: int | str,
+        photo_bytes: bytes,
+        filename: str,
+        *,
+        caption: str | None = None,
+        message_thread_id: int | None = None,
+        parse_mode: ParseMode | None = None,
+    ) -> Message:
+        """Send a photo to a chat.
+
+        Args:
+            chat_id: Target chat.
+            photo_bytes: The photo contents.
+            filename: Name of the file.
+            caption: Photo caption.
+            message_thread_id: Target thread.
+            parse_mode: Parse mode.
+
+        Returns:
+            The sent Message object.
+        """
+        client = await self._ensure_client()
+        url = self._build_url("sendPhoto")
+
+        data: dict[str, Any] = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+        if message_thread_id is not None:
+            data["message_thread_id"] = message_thread_id
+        if parse_mode is not None:
+            data["parse_mode"] = parse_mode.value
+
+        files = {"photo": (filename, photo_bytes)}
+
+        response = await client.post(url, data=data, files=files, timeout=self.timeout)
+
+        if response.status_code >= 400:
+            try:
+                error_data = response.json()
+                error_msg = error_data.get("description", response.text)
+            except Exception:
+                error_msg = response.text
+            raise TelegramApiError(
+                message=f"HTTP {response.status_code}: {error_msg}",
+                error_code=response.status_code,
+            )
+
+        response_data = response.json()
+        telegram_response = TelegramResponse.model_validate(response_data)
+
+        if not telegram_response.ok:
+            retry_after = None
+            if telegram_response.parameters:
+                retry_after = telegram_response.parameters.retry_after
+
+            raise TelegramApiError(
+                message=telegram_response.description or "Unknown Telegram API error",
+                error_code=telegram_response.error_code,
+                retry_after=retry_after,
+            )
+
+        return Message.model_validate(telegram_response.result)
+
     async def send_document(
         self,
         chat_id: int | str,
@@ -208,14 +273,17 @@ class TelegramApiClient:
             )
 
         response_data = response.json()
-        from .types import TelegramResponse
-
         telegram_response = TelegramResponse.model_validate(response_data)
 
         if not telegram_response.ok:
+            retry_after = None
+            if telegram_response.parameters:
+                retry_after = telegram_response.parameters.retry_after
+
             raise TelegramApiError(
                 message=telegram_response.description or "Unknown Telegram API error",
                 error_code=telegram_response.error_code,
+                retry_after=retry_after,
             )
 
         return Message.model_validate(telegram_response.result)

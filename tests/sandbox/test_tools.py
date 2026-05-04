@@ -7,6 +7,7 @@ from opensandbox.exceptions import SandboxException
 
 from blacki.sandbox.tools import (
     _format_command_output,
+    _is_image_file,
     sandbox_enabled,
     sandbox_list_files,
     sandbox_read_file,
@@ -39,9 +40,7 @@ class TestFormatCommandOutput:
 
         result = _format_command_output(execution)
 
-        assert "Output" in result
-        assert "[stderr]" in result
-        assert "Warning" in result
+        assert result == "Output\n[stderr]\nWarning"
 
     def test_with_error(self) -> None:
         """Test output with error."""
@@ -68,6 +67,48 @@ class TestFormatCommandOutput:
         result = _format_command_output(execution)
 
         assert result == "(no output)"
+
+
+class TestIsImageFile:
+    """Tests for _is_image_file helper."""
+
+    def test_png_extension(self) -> None:
+        """Test PNG file detection."""
+        assert _is_image_file("test.png") is True
+        assert _is_image_file("image.PNG") is True
+        assert _is_image_file("/path/to/file.png") is True
+
+    def test_jpeg_extensions(self) -> None:
+        """Test JPEG file detection."""
+        assert _is_image_file("photo.jpg") is True
+        assert _is_image_file("image.jpeg") is True
+        assert _is_image_file("picture.JPG") is True
+        assert _is_image_file("photo.JPEG") is True
+
+    def test_gif_extension(self) -> None:
+        """Test GIF file detection."""
+        assert _is_image_file("animation.gif") is True
+        assert _is_image_file("funny.GIF") is True
+
+    def test_webp_extension(self) -> None:
+        """Test WebP file detection."""
+        assert _is_image_file("modern.webp") is True
+        assert _is_image_file("image.WEBP") is True
+
+    def test_non_image_extensions(self) -> None:
+        """Test non-image file detection."""
+        assert _is_image_file("document.pdf") is False
+        assert _is_image_file("data.txt") is False
+        assert _is_image_file("archive.zip") is False
+        assert _is_image_file("script.py") is False
+
+    def test_no_extension(self) -> None:
+        """Test file without extension."""
+        assert _is_image_file("README") is False
+
+    def test_empty_string(self) -> None:
+        """Test empty filename."""
+        assert _is_image_file("") is False
 
 
 class TestSandboxRunCommand:
@@ -662,7 +703,7 @@ class TestSandboxSendFileToUser:
 
     @pytest.mark.asyncio
     async def test_send_png_file(self) -> None:
-        """Test sending a PNG image file."""
+        """Test sending a PNG image file as photo."""
         tool_context = MagicMock()
         tool_context.state = {"telegram_chat_id": "12345"}
 
@@ -683,6 +724,7 @@ class TestSandboxSendFileToUser:
             mock_get_manager.return_value = manager
 
             mock_api = MagicMock()
+            mock_api.send_photo = AsyncMock()
             mock_api.send_document = AsyncMock()
             mock_api_client_cls.return_value.__aenter__ = AsyncMock(
                 return_value=mock_api
@@ -693,13 +735,15 @@ class TestSandboxSendFileToUser:
 
         assert result["status"] == "success"
         assert "image.png" in result["message"]
-        call_kwargs = mock_api.send_document.call_args.kwargs
+        mock_api.send_photo.assert_called_once()
+        mock_api.send_document.assert_not_called()
+        call_kwargs = mock_api.send_photo.call_args.kwargs
         assert call_kwargs["filename"] == "image.png"
-        assert call_kwargs["document_bytes"] == png_bytes
+        assert call_kwargs["photo_bytes"] == png_bytes
 
     @pytest.mark.asyncio
     async def test_send_jpeg_file(self) -> None:
-        """Test sending a JPEG image file."""
+        """Test sending a JPEG image file as photo."""
         tool_context = MagicMock()
         tool_context.state = {"telegram_chat_id": "12345"}
 
@@ -720,6 +764,7 @@ class TestSandboxSendFileToUser:
             mock_get_manager.return_value = manager
 
             mock_api = MagicMock()
+            mock_api.send_photo = AsyncMock()
             mock_api.send_document = AsyncMock()
             mock_api_client_cls.return_value.__aenter__ = AsyncMock(
                 return_value=mock_api
@@ -730,13 +775,15 @@ class TestSandboxSendFileToUser:
 
         assert result["status"] == "success"
         assert "photo.jpg" in result["message"]
-        call_kwargs = mock_api.send_document.call_args.kwargs
+        mock_api.send_photo.assert_called_once()
+        mock_api.send_document.assert_not_called()
+        call_kwargs = mock_api.send_photo.call_args.kwargs
         assert call_kwargs["filename"] == "photo.jpg"
-        assert call_kwargs["document_bytes"] == jpeg_bytes
+        assert call_kwargs["photo_bytes"] == jpeg_bytes
 
     @pytest.mark.asyncio
     async def test_send_pdf_file(self) -> None:
-        """Test sending a PDF file."""
+        """Test sending a PDF file as document."""
         tool_context = MagicMock()
         tool_context.state = {"telegram_chat_id": "12345"}
 
@@ -757,6 +804,7 @@ class TestSandboxSendFileToUser:
             mock_get_manager.return_value = manager
 
             mock_api = MagicMock()
+            mock_api.send_photo = AsyncMock()
             mock_api.send_document = AsyncMock()
             mock_api_client_cls.return_value.__aenter__ = AsyncMock(
                 return_value=mock_api
@@ -767,13 +815,15 @@ class TestSandboxSendFileToUser:
 
         assert result["status"] == "success"
         assert "document.pdf" in result["message"]
+        mock_api.send_document.assert_called_once()
+        mock_api.send_photo.assert_not_called()
         call_kwargs = mock_api.send_document.call_args.kwargs
         assert call_kwargs["filename"] == "document.pdf"
         assert call_kwargs["document_bytes"] == pdf_bytes
 
     @pytest.mark.asyncio
     async def test_send_text_file_regression(self) -> None:
-        """Test that text files still work after binary file support."""
+        """Test that text files still work as documents."""
         tool_context = MagicMock()
         tool_context.state = {"telegram_chat_id": "12345"}
 
@@ -794,6 +844,7 @@ class TestSandboxSendFileToUser:
             mock_get_manager.return_value = manager
 
             mock_api = MagicMock()
+            mock_api.send_photo = AsyncMock()
             mock_api.send_document = AsyncMock()
             mock_api_client_cls.return_value.__aenter__ = AsyncMock(
                 return_value=mock_api
@@ -804,6 +855,8 @@ class TestSandboxSendFileToUser:
 
         assert result["status"] == "success"
         assert "test.txt" in result["message"]
+        mock_api.send_document.assert_called_once()
+        mock_api.send_photo.assert_not_called()
         call_kwargs = mock_api.send_document.call_args.kwargs
         assert call_kwargs["filename"] == "test.txt"
         assert call_kwargs["document_bytes"] == text_bytes

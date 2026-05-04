@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from google.adk.tools import ToolContext
@@ -14,6 +15,20 @@ from opensandbox.models.filesystem import SearchEntry
 from .manager import get_sandbox_manager
 
 logger = logging.getLogger(__name__)
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def _is_image_file(filename: str) -> bool:
+    """Check if file is a common image type based on extension.
+
+    Args:
+        filename: File name or path to check.
+
+    Returns:
+        True if file has an image extension.
+    """
+    return Path(filename).suffix.lower() in IMAGE_EXTENSIONS
 
 
 def _format_command_output(execution: Any) -> str:
@@ -202,17 +217,23 @@ async def sandbox_send_file_to_user(
 
         content_bytes = await sandbox.files.read_bytes(sandbox_path)
 
-        from pathlib import Path
-
         filename = Path(sandbox_path).name
 
         async with TelegramApiClient(token) as api:
-            await api.send_document(
-                chat_id=chat_id,
-                document_bytes=content_bytes,
-                filename=filename,
-                message_thread_id=thread_id,
-            )
+            if _is_image_file(filename):
+                await api.send_photo(
+                    chat_id=chat_id,
+                    photo_bytes=content_bytes,
+                    filename=filename,
+                    message_thread_id=thread_id,
+                )
+            else:
+                await api.send_document(
+                    chat_id=chat_id,
+                    document_bytes=content_bytes,
+                    filename=filename,
+                    message_thread_id=thread_id,
+                )
 
         return {"status": "success", "message": f"File {filename} sent to user."}
     except SandboxException as e:
