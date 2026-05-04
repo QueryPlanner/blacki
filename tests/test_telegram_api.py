@@ -237,6 +237,35 @@ class TestTelegramApiClient:
             )
 
     @pytest.mark.asyncio
+    async def test_send_document_api_not_ok_with_retry_after(self) -> None:
+        """Test send_document raises with retry_after when rate-limited."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": False,
+            "description": "Too Many Requests",
+            "error_code": 429,
+            "parameters": {"retry_after": 30},
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match="Too Many Requests") as exc_info,
+        ):
+            await client.send_document(
+                chat_id=123, document_bytes=b"content", filename="test.txt"
+            )
+
+        assert exc_info.value.retry_after == 30
+
+    @pytest.mark.asyncio
     async def test_send_photo_success(self) -> None:
         """Test send_photo returns Message on success."""
         client = TelegramApiClient("token")
@@ -409,3 +438,32 @@ class TestTelegramApiClient:
             await client.send_photo(
                 chat_id=123, photo_bytes=b"image", filename="test.png"
             )
+
+    @pytest.mark.asyncio
+    async def test_send_photo_api_not_ok_with_retry_after(self) -> None:
+        """Test send_photo raises with retry_after when rate-limited."""
+        client = TelegramApiClient("token")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": False,
+            "description": "Too Many Requests",
+            "error_code": 429,
+            "parameters": {"retry_after": 30},
+        }
+
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match="Too Many Requests") as exc_info,
+        ):
+            await client.send_photo(
+                chat_id=123, photo_bytes=b"image", filename="test.png"
+            )
+
+        assert exc_info.value.retry_after == 30

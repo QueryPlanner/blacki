@@ -208,14 +208,17 @@ class TelegramApiClient:
             )
 
         response_data = response.json()
-        from .types import TelegramResponse
-
         telegram_response = TelegramResponse.model_validate(response_data)
 
         if not telegram_response.ok:
+            retry_after = None
+            if telegram_response.parameters:
+                retry_after = telegram_response.parameters.retry_after
+
             raise TelegramApiError(
                 message=telegram_response.description or "Unknown Telegram API error",
                 error_code=telegram_response.error_code,
+                retry_after=retry_after,
             )
 
         return Message.model_validate(telegram_response.result)
@@ -270,14 +273,17 @@ class TelegramApiClient:
             )
 
         response_data = response.json()
-        from .types import TelegramResponse
-
         telegram_response = TelegramResponse.model_validate(response_data)
 
         if not telegram_response.ok:
+            retry_after = None
+            if telegram_response.parameters:
+                retry_after = telegram_response.parameters.retry_after
+
             raise TelegramApiError(
                 message=telegram_response.description or "Unknown Telegram API error",
                 error_code=telegram_response.error_code,
+                retry_after=retry_after,
             )
 
         return Message.model_validate(telegram_response.result)
