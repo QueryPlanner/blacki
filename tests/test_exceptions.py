@@ -1,6 +1,5 @@
 """Tests for custom exception classes."""
 
-import pytest
 
 from blacki.utils.exceptions import (
     ConfigurationError,

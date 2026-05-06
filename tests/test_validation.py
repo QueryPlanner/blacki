@@ -1,6 +1,5 @@
 """Tests for startup validation functions."""
 
-import os
 import pytest
 
 from blacki.utils.exceptions import (
@@ -28,7 +27,9 @@ class TestValidateTelegramToken:
             validate_telegram_token("")
 
     def test_invalid_format_no_colon(self) -> None:
-        with pytest.raises(InvalidTokenFormatError, match="Invalid TELEGRAM_BOT_TOKEN format"):
+        with pytest.raises(
+            InvalidTokenFormatError, match="Invalid TELEGRAM_BOT_TOKEN format"
+        ):
             validate_telegram_token("123456ABCDEF")
 
     def test_invalid_format_wrong_prefix(self) -> None:
@@ -109,9 +110,7 @@ class TestValidateConfiguration:
         with pytest.raises(InvalidTokenFormatError):
             validate_configuration(telegram_enabled=True, telegram_token="invalid")
 
-    def test_no_api_keys_with_telegram(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_api_keys_with_telegram(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
