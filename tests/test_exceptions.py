@@ -1,6 +1,5 @@
 """Tests for custom exception classes."""
 
-
 from blacki.utils.exceptions import (
     ConfigurationError,
     InvalidTokenFormatError,
