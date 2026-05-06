@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "queryplanner", email = "queryplanner@users.noreply.github.com" }
 ]
-requires-python = ">=3.13,<3.14"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     # Pin ADK to test releases before locking upgrades
     "google-adk==1.25.1",
@@ -54,7 +54,7 @@ module-name = "blacki"
 
 [tool.ruff]
 src = ["src"]
-target-version = "py313"
+target-version = "py311"
 line-length = 88
 fix = true
 extend-exclude = ["notebooks", "init_template.py"]
@@ -84,7 +84,7 @@ select = [
 "tests/**/*.py" = ["S101", "S108"]  # Allow assert statements and tmp paths in tests
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.11"
 mypy_path = "src"
 packages = ["blacki"]
 exclude = ["init_template.py"]

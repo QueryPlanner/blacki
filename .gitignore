@@ -19,6 +19,7 @@ Desktop.ini
 .env.*
 !.env.example
 !.env.sample
+!.env.minimal
 
 .envrc
 .direnv/

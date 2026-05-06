@@ -23,10 +23,12 @@ from .adk_runtime import (
 )
 from .container import AppContainer, close_container, init_container
 from .utils import (
+    ConfigurationError,
     ServerEnv,
     configure_otel_resource,
     initialize_environment,
     setup_logging,
+    validation,
 )
 
 logger = logging.getLogger(__name__)
@@ -156,6 +158,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if env.database_url:
         _container = await init_container(env.database_url)
         await _container.initialize_all_storages()
+
+    logger.info("Validating configuration...")
+    try:
+        warnings = validation.validate_configuration(
+            env.telegram_enabled, env.telegram_bot_token
+        )
+        for warning in warnings:
+            logger.warning(warning)
+        logger.info("Configuration validated successfully")
+    except ConfigurationError:
+        logger.exception("Configuration validation failed")
+        raise
 
     await _start_telegram_bot()
     try:
