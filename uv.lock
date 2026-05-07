@@ -244,6 +244,79 @@ wheels = [
 ]
 
 [[package]]
+name = "blacki"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "apscheduler" },
+    { name = "asyncpg" },
+    { name = "dateparser" },
+    { name = "google-adk" },
+    { name = "google-auth" },
+    { name = "google-cloud-logging" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "litellm" },
+    { name = "mem0ai" },
+    { name = "openinference-instrumentation-google-adk" },
+    { name = "opensandbox" },
+    { name = "opentelemetry-exporter-gcp-logging" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-instrumentation-google-genai" },
+    { name = "opentelemetry-instrumentation-logging" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "pyyaml" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "ipykernel" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+    { name = "types-grpcio" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "apscheduler", specifier = ">=3.11.0,<4.0.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "dateparser", specifier = ">=1.2.0,<2.0.0" },
+    { name = "google-adk", specifier = "==1.25.1" },
+    { name = "google-auth", specifier = ">=2.40.3,<3.0.0" },
+    { name = "google-cloud-logging", specifier = ">=3.12.1,<4.0.0" },
+    { name = "greenlet", specifier = ">=3.0.0" },
+    { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
+    { name = "litellm", specifier = ">=1.60.0" },
+    { name = "mem0ai", specifier = ">=0.1.0,<1.0.0" },
+    { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.8" },
+    { name = "opensandbox", specifier = ">=0.1.7" },
+    { name = "opentelemetry-exporter-gcp-logging", specifier = ">=1.9.0a0,<2.0.0" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.37.0" },
+    { name = "opentelemetry-instrumentation-google-genai", specifier = ">=0.4b0,<0.5" },
+    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.58b0,<0.59" },
+    { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ipykernel", specifier = ">=7.0.0,<8.0.0" },
+    { name = "mypy", specifier = ">=1.17.1,<2.0.0" },
+    { name = "pytest", specifier = ">=8.3.4,<9.0.0" },
+    { name = "pytest-asyncio", specifier = ">=1.2.0,<2.0.0" },
+    { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
+    { name = "ruff", specifier = ">=0.12.7,<1.0.0" },
+    { name = "types-grpcio", specifier = ">=1.0.0.20251009,<2.0.0.0" },
+    { name = "types-pyyaml", specifier = ">=6.0.0,<7.0.0" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -782,79 +855,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/45/e2/9c755a7088128cc7e2dbae99d0c512d71fc6504ed128eb489b516b7e47c4/google_adk-1.25.1.tar.gz", hash = "sha256:5f3771d9f704f04c4a6996a3d0c33fc6890641047d3f5a6128cc9b2a83b3326b", size = 2218119, upload-time = "2026-02-18T21:43:19.039Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/50/09/e7ed67abe7e928309799b4c4789b2a3b5eba4ac0eb6d4c7912f9e3e9823d/google_adk-1.25.1-py3-none-any.whl", hash = "sha256:62907f54b918a56450fc81669471f5819f41a48548ada3a521ac85728ca29001", size = 2579485, upload-time = "2026-02-18T21:43:20.839Z" },
-]
-
-[[package]]
-name = "google-adk-on-bare-metal"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "apscheduler" },
-    { name = "asyncpg" },
-    { name = "dateparser" },
-    { name = "google-adk" },
-    { name = "google-auth" },
-    { name = "google-cloud-logging" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "litellm" },
-    { name = "mem0ai" },
-    { name = "openinference-instrumentation-google-adk" },
-    { name = "opensandbox" },
-    { name = "opentelemetry-exporter-gcp-logging" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-instrumentation-google-genai" },
-    { name = "opentelemetry-instrumentation-logging" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "pyyaml" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "ipykernel" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-    { name = "types-grpcio" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "apscheduler", specifier = ">=3.11.0,<4.0.0" },
-    { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "dateparser", specifier = ">=1.2.0,<2.0.0" },
-    { name = "google-adk", specifier = "==1.25.1" },
-    { name = "google-auth", specifier = ">=2.40.3,<3.0.0" },
-    { name = "google-cloud-logging", specifier = ">=3.12.1,<4.0.0" },
-    { name = "greenlet", specifier = ">=3.0.0" },
-    { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
-    { name = "litellm", specifier = ">=1.60.0" },
-    { name = "mem0ai", specifier = ">=0.1.0,<1.0.0" },
-    { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.8" },
-    { name = "opensandbox", specifier = ">=0.1.7" },
-    { name = "opentelemetry-exporter-gcp-logging", specifier = ">=1.9.0a0,<2.0.0" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = "==1.37.0" },
-    { name = "opentelemetry-instrumentation-google-genai", specifier = ">=0.4b0,<0.5" },
-    { name = "opentelemetry-instrumentation-logging", specifier = ">=0.58b0,<0.59" },
-    { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
-    { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "ipykernel", specifier = ">=7.0.0,<8.0.0" },
-    { name = "mypy", specifier = ">=1.17.1,<2.0.0" },
-    { name = "pytest", specifier = ">=8.3.4,<9.0.0" },
-    { name = "pytest-asyncio", specifier = ">=1.2.0,<2.0.0" },
-    { name = "pytest-cov", specifier = ">=7.0.0,<8.0.0" },
-    { name = "ruff", specifier = ">=0.12.7,<1.0.0" },
-    { name = "types-grpcio", specifier = ">=1.0.0.20251009,<2.0.0.0" },
-    { name = "types-pyyaml", specifier = ">=6.0.0,<7.0.0" },
 ]
 
 [[package]]

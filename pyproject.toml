@@ -1,7 +1,7 @@
 [project]
-name = "google-adk-on-bare-metal"
+name = "blacki"
 version = "0.1.0"
-description = "Production-ready template for building and deploying AI agents using Google ADK, LiteLLM, and Postgres on self-hosted infrastructure"
+description = "A personal assistant agent designed to run on cheap self-hosted infrastructure using Google ADK on Bare Metal."
 readme = "README.md"
 authors = [
     { name = "queryplanner", email = "queryplanner@users.noreply.github.com" }
