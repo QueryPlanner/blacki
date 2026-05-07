@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-07
+
+### Added
+- Improve DX with startup validation and docs (#70)
+- Send images as photos for better UX (#66)
+- Add date parameter to log_meal and edit_meal tools (#62)
+- Add mem0 memory integration with CRUD tools (#54)
+
+### Changed
+- Refactor architectural debt - global singletons, duplicate patterns, and module-level initialization (#59)
+- Refactor vendor-neutral OTLP observability config (#58)
+
+### Fixed
+- Secure deployment workflow (#74)
+- Use read_bytes for binary file support (#64)
+- Add Mem0 secrets to deploy workflow (#57)
+- Remove tables for Telegram compatibility (#53)
+
 ## [0.3.0] - 2026-04-17
 
 ### Added
@@ -62,8 +80,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resolved `ValueError: Missing key inputs argument` by ensuring API keys are properly injected into the container environment.
 - Addressed interactive prompt issues in `setup.sh` by setting `DEBIAN_FRONTEND=noninteractive`.
 
-[Unreleased]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.1.1...v0.2.0
-[0.1.1]: https://github.com/QueryPlanner/google-adk-on-bare-metal/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/QueryPlanner/google-adk-on-bare-metal/releases/tag/v0.1.0
+[Unreleased]: https://github.com/QueryPlanner/blacki/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/QueryPlanner/blacki/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/QueryPlanner/blacki/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/QueryPlanner/blacki/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/QueryPlanner/blacki/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/QueryPlanner/blacki/releases/tag/v0.1.0
