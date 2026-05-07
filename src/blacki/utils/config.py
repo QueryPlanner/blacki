@@ -7,7 +7,7 @@ and configuration management.
 import json
 import os
 import sys
-from typing import Literal
+from typing import Literal, TypeVar
 
 from dotenv import load_dotenv
 from pydantic import (
@@ -17,8 +17,10 @@ from pydantic import (
     ValidationError,
 )
 
+T = TypeVar("T", bound=BaseModel)
 
-def initialize_environment[T: BaseModel](
+
+def initialize_environment(
     model_class: type[T],
     override_dotenv: bool = True,
     print_config: bool = True,

@@ -1,4 +1,14 @@
-# Google ADK on Bare Metal
+# Telegram Bot Template - Google ADK on Bare Metal
+
+Deploy your own AI assistant on Telegram with Google ADK — no cloud lock-in, no per-request fees. Run on a **$5/mo VPS** (vs Railway's $20/mo minimum). Use any LLM via OpenRouter. Own your infrastructure.
+
+**Why This Matters**
+
+| Platform | Monthly Cost | Lock-in | LLM Choice |
+|----------|-------------|---------|------------|
+| Railway | $20+ | High | Limited |
+| Vercel AI | $20+ | High | Limited |
+| **Blacki (this project)** | **$5** | **None** | **Any via OpenRouter** |
 
 A **production-ready template** for building and deploying Google ADK agents on your own infrastructure (bare metal, VPS, or private cloud) without the complexity or lock-in of heavy cloud providers.
 
@@ -11,27 +21,42 @@ We believe you should own your agents. This template is designed to strip away t
 - 🛠️ **Automated Setup**: Includes a `setup.sh` script to harden your server (UFW, Fail2Ban) and install dependencies in minutes.
 - 🔄 **CI/CD Included**: GitHub Actions workflow builds multi-arch images (AMD64/ARM64) and pushes to GHCR automatically.
 - 🔭 **Open Observability**: Built-in OpenTelemetry (OTel) instrumentation. Configure any OTLP-compatible backend (Axiom, Jaeger, Honeycomb, Langfuse, etc.) via standard environment variables.
-- 🚀 **Modern Stack**: Python 3.13, `uv`, `fastapi`, `asyncpg`.
+- 🚀 **Modern Stack**: Python 3.11+, `uv`, `fastapi`, `asyncpg`.
 - ⚡ **Fast Response Times**: In-memory sessions for low-latency agent responses.
 
 ## Quickstart
 
 ### Prerequisites
-- Python **3.13+**
+- Python **3.11+**
 - [`uv`](https://github.com/astral-sh/uv)
 - An LLM API Key (OpenRouter or Google)
 
 Optional:
 - A Postgres connection string (for Reminders system)
+- A Telegram bot token (for Telegram bot integration)
 
 ### 1) Configure Environment
 
-Copy `.env.example` to `.env`:
+**Quick Start (Minimal Config)**
 
+Copy `.env.minimal` to `.env` for the minimal required configuration:
+
+```bash
+cp .env.minimal .env
+```
+
+Edit `.env` and set:
 - **`AGENT_NAME`**: Unique ID for your agent.
-- **`OPENROUTER_API_KEY`**: Recommended for accessing varied models.
-- **`GOOGLE_API_KEY`**: Optional. Required only if using Gemini models directly.
-- **`DATABASE_URL`**: Optional. Postgres for Reminders system only.
+- **`OPENROUTER_API_KEY`**: Get one at https://openrouter.ai/keys
+- **`TELEGRAM_BOT_TOKEN`**: Get from @BotFather on Telegram
+
+**Full Configuration**
+
+For all available options, copy `.env.example` instead:
+
+```bash
+cp .env.example .env
+```
 
 ### 2) Install Dependencies
 
@@ -70,6 +95,27 @@ docker compose up --build -d
 ```
 
 👉 **[Read the Full Deployment Guide](docs/DEPLOYMENT.md)**
+
+## Upgrading
+
+1. Pull the latest changes:
+   ```bash
+   git pull
+   ```
+
+2. Check `.env.example` for new configuration options:
+   ```bash
+   git diff HEAD~1 .env.example
+   ```
+
+3. If new keys are required, add them to your `.env` file.
+
+4. Restart the server:
+   ```bash
+   docker compose restart
+   ```
+
+For breaking changes, see [CHANGELOG.md](CHANGELOG.md).
 
 ## Observability
 
