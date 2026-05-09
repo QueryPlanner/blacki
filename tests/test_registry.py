@@ -66,7 +66,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 12
+        assert len(tools) == 13
 
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
@@ -232,7 +232,7 @@ class TestBuildSandboxTools:
 
         tools = _build_sandbox_tools()
 
-        assert len(tools) == 5
+        assert len(tools) == 6
 
 
 class TestBuildMemoryTools:

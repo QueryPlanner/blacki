@@ -149,6 +149,80 @@ class TestSandboxManager:
         assert "Failed to create sandbox" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_get_or_create_sandbox_with_gemini_env(self) -> None:
+        """Test sandbox creation with Gemini environment variables and Github Token."""
+        config = SandboxConfig(
+            enabled=True,
+            domain="localhost:9090",
+            gemini_api_key="test_api_key",
+            gemini_base_url="https://test.api",
+            gemini_model="test-model",
+            github_token="test_github_token",
+        )
+        manager = SandboxManager(config)
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.id = "test-sandbox-id"
+
+        with patch(
+            "blacki.sandbox.manager.Sandbox.create",
+            new_callable=AsyncMock,
+            return_value=mock_sandbox,
+        ) as mock_create:
+            result = await manager.get_or_create_sandbox(tool_context.state)
+
+        assert result["sandbox"] == mock_sandbox
+        assert result["error"] is None
+
+        # Verify Sandbox.create was called with the right env
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        assert "env" in kwargs
+        env = kwargs["env"]
+        assert env["GEMINI_API_KEY"] == "test_api_key"
+        assert env["GEMINI_BASE_URL"] == "https://test.api"
+        assert env["GEMINI_MODEL"] == "test-model"
+        assert env["GITHUB_TOKEN"] == "test_github_token"  # noqa: S105
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_sandbox_with_partial_gemini_env(self) -> None:
+        """Test sandbox creation with partial Gemini environment variables."""
+        config = SandboxConfig(
+            enabled=True,
+            domain="localhost:9090",
+            gemini_api_key="test_api_key",
+            gemini_model=None,
+            # gemini_base_url is None
+        )
+        manager = SandboxManager(config)
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.id = "test-sandbox-id"
+
+        with patch(
+            "blacki.sandbox.manager.Sandbox.create",
+            new_callable=AsyncMock,
+            return_value=mock_sandbox,
+        ) as mock_create:
+            result = await manager.get_or_create_sandbox(tool_context.state)
+
+        assert result["sandbox"] == mock_sandbox
+        assert result["error"] is None
+
+        # Verify Sandbox.create was called with the right env
+        mock_create.assert_called_once()
+        kwargs = mock_create.call_args.kwargs
+        assert "env" in kwargs
+        env = kwargs["env"]
+        assert env["GEMINI_API_KEY"] == "test_api_key"
+        assert "GEMINI_BASE_URL" not in env
+        assert "GEMINI_MODEL" not in env
+
+    @pytest.mark.asyncio
     async def test_close(self) -> None:
         """Test closing manager."""
         config = SandboxConfig(enabled=True)

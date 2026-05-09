@@ -137,6 +137,7 @@ def _build_sandbox_tools() -> list[Any]:
     """Build sandbox tools."""
     try:
         from blacki.sandbox import (
+            sandbox_execute_code,
             sandbox_list_files,
             sandbox_read_file,
             sandbox_run_command,
@@ -150,6 +151,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_read_file,
             sandbox_list_files,
             sandbox_send_file_to_user,
+            sandbox_execute_code,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)
@@ -159,13 +161,22 @@ def _build_sandbox_tools() -> list[Any]:
 def _build_skill_tools(skills_dir: Path) -> list[Any]:
     """Build skill tools from a directory."""
     try:
+        from google.adk.skills.models import Skill
+        from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+
         from blacki.skills import load_skill_from_dir
         from blacki.skills.mcp_skill_toolset import McpSkillToolset
 
-        explore_repo_skill = load_skill_from_dir(skills_dir / "explore_repo")
-        if explore_repo_skill:
-            logger.info("Explore repo skill enabled")
-            return [McpSkillToolset(skills=[(explore_repo_skill, None)])]
+        skills_to_load = ["explore_repo", "gemini_cli", "agent_browser"]
+        loaded_skills: list[tuple[Skill, McpToolset | None]] = []
+        for skill_name in skills_to_load:
+            skill = load_skill_from_dir(skills_dir / skill_name)
+            if skill:
+                logger.info("%s skill enabled", skill_name)
+                loaded_skills.append((skill, None))
+
+        if loaded_skills:
+            return [McpSkillToolset(skills=loaded_skills)]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load skills toolset: %s", e)
     return []
