@@ -5,6 +5,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
@@ -13,7 +14,7 @@ from google.adk.events import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService, Session
+from google.adk.sessions import Session
 from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
@@ -117,12 +118,16 @@ def create_session_service(
 ) -> BaseSessionService:
     """Create a session service for programmatic ADK runner usage."""
     if session_service_uri is None:
-        logger.warning(
-            "No shared session service configured; using in-memory ADK sessions."
+        agent_dir = os.environ.get("AGENT_DIR", "src")
+        default_db_path = Path(agent_dir).resolve() / ".adk" / "sessions.db"
+        # Create the directory if it doesn't exist to prevent sqlite errors
+        default_db_path.parent.mkdir(parents=True, exist_ok=True)
+        session_service_uri = f"sqlite+aiosqlite:///{default_db_path}"
+        logger.info(
+            f"No shared session service configured; using SQLite at {default_db_path}."
         )
-        return InMemorySessionService()
 
-    if session_service_uri.startswith("postgresql+asyncpg://"):
+    if session_service_uri.startswith(("postgresql+asyncpg://", "sqlite+aiosqlite://")):
         return DatabaseSessionService(session_service_uri, **session_db_kwargs)
 
     msg = (

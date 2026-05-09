@@ -77,11 +77,11 @@ def test_build_session_db_kwargs_uses_env_values() -> None:
     }
 
 
-def test_create_session_service_without_uri_uses_in_memory() -> None:
-    """Test that missing session URI falls back to ADK's in-memory service."""
+def test_create_session_service_without_uri_uses_sqlite() -> None:
+    """Test that missing session URI falls back to SQLite service."""
     session_service = create_session_service(None, {})
 
-    assert isinstance(session_service, InMemorySessionService)
+    assert session_service.__class__.__name__ == "DatabaseSessionService"
 
 
 def test_create_session_service_with_postgres_uri() -> None:
@@ -297,7 +297,7 @@ def test_create_adk_runtime_uses_env_configuration() -> None:
     """Test shared runtime construction from environment config."""
     runtime = create_adk_runtime(_build_server_env())
 
-    assert isinstance(runtime.session_service, InMemorySessionService)
+    assert runtime.session_service.__class__.__name__ == "DatabaseSessionService"
 
 
 def test_extract_session_version_rejects_invalid_format() -> None:
