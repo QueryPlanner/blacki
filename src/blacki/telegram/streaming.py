@@ -333,6 +333,9 @@ def _get_open_entities(text: str) -> list[str]:
             continue
 
         if text[i : i + 3] == "```":
+            if "`" in open_entities:
+                i += 3
+                continue
             if open_entities and open_entities[-1] == "```":
                 open_entities.pop()
             else:
@@ -405,6 +408,13 @@ def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[s
         closing_tags = "".join(reversed(entities))
 
         while len(chunk) + len(closing_tags) > limit:
+            if len(closing_tags) >= limit:
+                split_index = limit
+                chunk = remaining[:split_index].rstrip()
+                entities = []
+                closing_tags = ""
+                break
+
             max_allowed = limit - len(closing_tags)
             new_split_index = _find_chunk_boundary(remaining, max_allowed)
 

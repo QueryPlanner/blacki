@@ -47,6 +47,8 @@ def test_get_open_entities_coverage() -> None:
     assert _get_open_entities("```code```") == []
     # Cover ` inside ```
     assert _get_open_entities("```code `inline` ```") == []
+    # Cover ``` inside `
+    assert _get_open_entities("`inline ``` code`") == []
     # Cover popping `
     assert _get_open_entities("`inline`") == []
     # Cover popping __ and ||
@@ -72,14 +74,42 @@ def test_split_long_message_hard_cut() -> None:
 
 def test_split_long_message_boundary_recalculation() -> None:
     # Limit is 20.
-    # We want a split at 20 that exceeds limit when closing tags are added,
-    # but a smaller boundary (space) exists to fallback to.
-    text = "*bold" + " " + "A" * 15
+    # text length is > 20. Space at index 20 to trigger split_index=20.
+    # Space at index 9 to trigger fallback new_split_index=9 < max_allowed (19).
+    text = "*boldA    BBBBBBBBBB " + "C" * 10
+    # indices:
+    # 012345678901234567890
+    # *boldA    BBBBBBBBBB
+    # 0..5 = *boldA
+    # 6..9 = spaces
+    # 10..19 = B's
+    # 20 = space
     chunks = split_long_message(text, limit=20)
-    # len is 21. split_index = 20. chunk = "*bold AAAAAAAAAAAAAA"
-    # len + closing = 20 + 1 = 21 > 20
-    # max_allowed = 19. _find_chunk_boundary(19) finds space at index 5.
-    # Hits else block: split_index = 5.
-    # chunk = "*bold"
-    assert chunks[0] == "*bold*"
-    assert chunks[1] == "*AAAAAAAAAAAAAAA"
+    # 1st try: split_index = 20. chunk = "*boldA    BBBBBBBBBB" (len 20)
+    # closing_tags = "*"
+    # len + closing = 21 > 20.
+    # max_allowed = 19.
+    # new_split_index = rfind(" ", 0, 20) -> index 9 (the last space in "    ")
+    # new_split_index (9) < split_index (20) and != max_allowed (19). Hits else branch!
+    # split_index = 9.
+    # chunk = text[:9].rstrip() -> "*boldA"
+    assert chunks[0] == "*boldA*"
+    # remaining = "*" + "BBBBBBBBBB CCCCCCCCCC"
+    # "*BBBBBBBBBB CCCCCCCCCC" (len 22)
+    # split_index = rfind(" ", 0, 21) -> index 11 (between B and C)
+    # chunk = "*BBBBBBBBBB"
+    assert chunks[1] == "*BBBBBBBBBB*"
+    assert chunks[2] == "*CCCCCCCCCC"
+
+
+def test_split_long_message_infinite_loop_prevention() -> None:
+    # If limit is so small that closing tags exceed the limit, it could infinite loop.
+    # We set a limit of 2, and have 3 open entities.
+    text = "*_~A"
+    chunks = split_long_message(text, limit=2)
+    # remaining = "*_~A", limit=2. chunk="*_". entities=["*", "_"]. closing="_*".
+    # len(chunk) + len(closing) = 2 + 2 = 4 > 2.
+    # It hits `len(closing_tags) >= limit` which breaks the loop.
+    # Then chunk="*_", entities=[], closing="".
+    assert chunks[0] == "*_"
+    assert chunks[1] == "~A"
