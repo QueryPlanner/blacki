@@ -105,4 +105,3 @@ For complete configuration options, see [OpenTelemetry Environment Variables](ht
 
 - **Never commit `.env` files** - Already gitignored
 - **Rotate credentials** - If `.env` is accidentally committed, rotate all credentials
-
