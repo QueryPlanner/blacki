@@ -2371,6 +2371,9 @@ class TestTelegramBotEdgeCases:
         with pytest.raises(asyncio.CancelledError):
             await bot._polling_loop()
 
+        if bot._background_tasks:
+            await asyncio.gather(*bot._background_tasks)
+
         bot._handle_update.assert_called_once_with(mock_update)
 
     @pytest.mark.asyncio
