@@ -324,6 +324,60 @@ def _is_message_not_modified(error: TelegramApiError) -> bool:
     return MESSAGE_NOT_MODIFIED_ERROR in error_message
 
 
+def _get_open_entities(text: str) -> list[str]:
+    open_entities: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+
+        if text[i : i + 3] == "```":
+            if open_entities and open_entities[-1] == "```":
+                open_entities.pop()
+            else:
+                open_entities.append("```")
+            i += 3
+            continue
+
+        if text[i] == "`":
+            if "```" in open_entities:
+                i += 1
+                continue
+            if open_entities and open_entities[-1] == "`":
+                open_entities.pop()
+            else:
+                open_entities.append("`")
+            i += 1
+            continue
+
+        if "```" in open_entities or "`" in open_entities:
+            i += 1
+            continue
+
+        if text[i : i + 2] in ("__", "||"):
+            marker = text[i : i + 2]
+            if open_entities and open_entities[-1] == marker:
+                open_entities.pop()
+            else:
+                open_entities.append(marker)
+            i += 2
+            continue
+
+        if text[i] in ("*", "_", "~"):
+            marker = text[i]
+            if open_entities and open_entities[-1] == marker:
+                open_entities.pop()
+            else:
+                open_entities.append(marker)
+            i += 1
+            continue
+
+        i += 1
+
+    return open_entities
+
+
 def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
     """Split a long message into Telegram-safe chunks.
 
@@ -347,8 +401,27 @@ def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[s
 
         split_index = _find_chunk_boundary(remaining, limit)
         chunk = remaining[:split_index].rstrip()
-        chunks.append(chunk)
-        remaining = remaining[len(chunk) :].lstrip()
+        entities = _get_open_entities(chunk)
+        closing_tags = "".join(reversed(entities))
+
+        while len(chunk) + len(closing_tags) > limit:
+            max_allowed = limit - len(closing_tags)
+            new_split_index = _find_chunk_boundary(remaining, max_allowed)
+
+            if new_split_index >= split_index or new_split_index == max_allowed:
+                split_index = max_allowed
+            else:
+                split_index = new_split_index
+
+            chunk = remaining[:split_index].rstrip()
+            entities = _get_open_entities(chunk)
+            closing_tags = "".join(reversed(entities))
+
+        chunk_with_closing = chunk + closing_tags
+        chunks.append(chunk_with_closing)
+
+        opening_tags = "".join(entities)
+        remaining = opening_tags + remaining[split_index:].lstrip()
 
     return chunks
 
