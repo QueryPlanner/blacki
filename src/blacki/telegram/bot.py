@@ -191,6 +191,10 @@ class TelegramBot:
             self._conversation_tasks[conversation_key] = current_task
 
         try:
+            # Wait for the superseded task to fully clean up before starting
+            if existing_task is not None and not existing_task.done():
+                await asyncio.wait([existing_task])
+
             await self._handle_update(update)
         except asyncio.CancelledError:
             logger.info("Message turn superseded for conversation %s", conversation_key)
