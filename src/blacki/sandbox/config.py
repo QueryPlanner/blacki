@@ -103,7 +103,11 @@ def load_sandbox_config() -> SandboxConfig:
         memory_limit=os.getenv("SANDBOX_MEMORY_LIMIT", "512Mi").strip(),
         cpu_limit=os.getenv("SANDBOX_CPU_LIMIT", "0.5").strip(),
         image=os.getenv("SANDBOX_IMAGE", "opensandbox/code-interpreter:v1.0.2").strip(),
-        gemini_api_key=os.getenv("SANDBOX_GEMINI_API_KEY", "").strip() or None,
+        gemini_api_key=(
+            os.getenv("SANDBOX_GEMINI_API_KEY", "").strip()
+            or os.getenv("GEMINI_API_KEY", "").strip()
+            or None
+        ),
         gemini_base_url=os.getenv("SANDBOX_GEMINI_BASE_URL", "").strip() or None,
         gemini_model=os.getenv("SANDBOX_GEMINI_MODEL", "").strip() or None,
     )
