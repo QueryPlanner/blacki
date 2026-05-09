@@ -99,6 +99,8 @@ class SandboxManager:
                 env["GEMINI_BASE_URL"] = self._config.gemini_base_url
             if self._config.gemini_model:
                 env["GEMINI_MODEL"] = self._config.gemini_model
+            if self._config.github_token:
+                env["GITHUB_TOKEN"] = self._config.github_token
 
             sandbox = await Sandbox.create(
                 self._config.image,

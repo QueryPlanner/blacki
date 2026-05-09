@@ -49,6 +49,7 @@ class SandboxConfig(BaseModel):
     gemini_model: str | None = Field(
         default="gemini-3-flash-preview", description="Gemini Model"
     )
+    github_token: str | None = Field(default=None, description="GitHub Token")
 
     @field_validator("memory_limit")
     @classmethod
@@ -106,10 +107,16 @@ def load_sandbox_config() -> SandboxConfig:
         gemini_api_key=(
             os.getenv("SANDBOX_GEMINI_API_KEY", "").strip()
             or os.getenv("GEMINI_API_KEY", "").strip()
+            or os.getenv("GOOGLE_API_KEY", "").strip()
             or None
         ),
         gemini_base_url=os.getenv("SANDBOX_GEMINI_BASE_URL", "").strip() or None,
         gemini_model=os.getenv("SANDBOX_GEMINI_MODEL", "").strip() or None,
+        github_token=(
+            os.getenv("SANDBOX_GITHUB_TOKEN", "").strip()
+            or os.getenv("GITHUB_TOKEN", "").strip()
+            or None
+        ),
     )
 
 

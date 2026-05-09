@@ -150,13 +150,14 @@ class TestSandboxManager:
 
     @pytest.mark.asyncio
     async def test_get_or_create_sandbox_with_gemini_env(self) -> None:
-        """Test sandbox creation with Gemini environment variables."""
+        """Test sandbox creation with Gemini environment variables and Github Token."""
         config = SandboxConfig(
             enabled=True,
             domain="localhost:9090",
             gemini_api_key="test_api_key",
             gemini_base_url="https://test.api",
             gemini_model="test-model",
+            github_token="test_github_token",
         )
         manager = SandboxManager(config)
         tool_context = MagicMock()
@@ -183,6 +184,7 @@ class TestSandboxManager:
         assert env["GEMINI_API_KEY"] == "test_api_key"
         assert env["GEMINI_BASE_URL"] == "https://test.api"
         assert env["GEMINI_MODEL"] == "test-model"
+        assert env["GITHUB_TOKEN"] == "test_github_token"  # noqa: S105
 
     @pytest.mark.asyncio
     async def test_get_or_create_sandbox_with_partial_gemini_env(self) -> None:
