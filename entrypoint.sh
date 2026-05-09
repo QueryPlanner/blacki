@@ -9,7 +9,7 @@ if echo "$DATABASE_URL" | grep -q "postgresql://"; then
     # This is a basic extraction and might need adjustment for complex URLs
     DB_HOST=$(echo $DATABASE_URL | sed -e 's|^.*@||' -e 's|/.*$||' -e 's|:.*$||')
     DB_PORT=$(echo $DATABASE_URL | sed -e 's|^.*@||' -e 's|/.*$||' -e 's|^.*:||')
-    
+
     # Default port if not specified
     if [ "$DB_HOST" = "$DB_PORT" ]; then
         DB_PORT=5432
