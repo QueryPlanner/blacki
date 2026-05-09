@@ -2,11 +2,13 @@
 """Tests for shared ADK runtime helpers."""
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from google.adk.events import Event
 from google.adk.sessions import InMemorySessionService
+from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
 from blacki.adk_runtime import (
@@ -77,11 +79,11 @@ def test_build_session_db_kwargs_uses_env_values() -> None:
     }
 
 
-def test_create_session_service_without_uri_uses_in_memory() -> None:
-    """Test that missing session URI falls back to ADK's in-memory service."""
-    session_service = create_session_service(None, {})
+def test_create_session_service_without_uri_uses_sqlite(tmp_path: Path) -> None:
+    """Test that missing session URI falls back to SQLite service."""
+    session_service = create_session_service(None, {}, agent_dir=str(tmp_path))
 
-    assert isinstance(session_service, InMemorySessionService)
+    assert isinstance(session_service, DatabaseSessionService)
 
 
 def test_create_session_service_with_postgres_uri() -> None:
@@ -91,7 +93,7 @@ def test_create_session_service_with_postgres_uri() -> None:
         {},
     )
 
-    assert session_service.__class__.__name__ == "DatabaseSessionService"
+    assert isinstance(session_service, DatabaseSessionService)
 
 
 def test_create_session_service_rejects_unsupported_uri() -> None:
@@ -293,11 +295,13 @@ async def test_get_or_create_session_creates_v1_when_no_valid_sessions() -> None
     assert session.id == "telegram-chat-456-v1"
 
 
-def test_create_adk_runtime_uses_env_configuration() -> None:
+def test_create_adk_runtime_uses_env_configuration(tmp_path: Path) -> None:
     """Test shared runtime construction from environment config."""
-    runtime = create_adk_runtime(_build_server_env())
+    env = _build_server_env()
+    env.agent_dir = str(tmp_path)
+    runtime = create_adk_runtime(env)
 
-    assert isinstance(runtime.session_service, InMemorySessionService)
+    assert isinstance(runtime.session_service, DatabaseSessionService)
 
 
 def test_extract_session_version_rejects_invalid_format() -> None:

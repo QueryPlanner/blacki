@@ -107,6 +107,12 @@ class ServerEnv(BaseModel):
         description="Whether to serve the ADK web interface",
     )
 
+    agent_dir: str = Field(
+        default="src",
+        alias="AGENT_DIR",
+        description="Base directory for the agent, used for local storage paths",
+    )
+
     reload_agents: bool = Field(
         default=False,
         alias="RELOAD_AGENTS",
@@ -208,6 +214,7 @@ class ServerEnv(BaseModel):
         """Print server configuration for user verification."""
         print("\n\n✅ Environment variables loaded for server:\n")
         print(f"AGENT_NAME:            {self.agent_name}")
+        print(f"AGENT_DIR:             {self.agent_dir}")
         print(f"LOG_LEVEL:             {self.log_level}")
         print(f"SERVE_WEB_INTERFACE:   {self.serve_web_interface}")
         print(f"RELOAD_AGENTS:         {self.reload_agents}")
