@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -42,8 +43,6 @@ async def sandbox_execute_code(
         return {"status": "error", "error": error, "output": None}
 
     try:
-        import asyncio
-
         interpreter = await CodeInterpreter.create(sandbox=sandbox)
 
         # Use default context for Python to maintain state

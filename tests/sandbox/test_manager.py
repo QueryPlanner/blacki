@@ -221,6 +221,9 @@ class TestSandboxManager:
         assert env["GEMINI_API_KEY"] == "test_api_key"
         assert "GEMINI_BASE_URL" not in env
         assert "GEMINI_MODEL" not in env
+
+    @pytest.mark.asyncio
+    async def test_close(self) -> None:
         """Test closing manager."""
         config = SandboxConfig(enabled=True)
         manager = SandboxManager(config)

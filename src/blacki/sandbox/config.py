@@ -111,7 +111,8 @@ def load_sandbox_config() -> SandboxConfig:
             or None
         ),
         gemini_base_url=os.getenv("SANDBOX_GEMINI_BASE_URL", "").strip() or None,
-        gemini_model=os.getenv("SANDBOX_GEMINI_MODEL", "").strip() or None,
+        gemini_model=os.getenv("SANDBOX_GEMINI_MODEL", "").strip()
+        or "gemini-3-flash-preview",
         github_token=(
             os.getenv("SANDBOX_GITHUB_TOKEN", "").strip()
             or os.getenv("GITHUB_TOKEN", "").strip()
