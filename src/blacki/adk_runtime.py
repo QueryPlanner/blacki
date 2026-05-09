@@ -115,10 +115,10 @@ def build_session_db_kwargs(env: ServerEnv) -> dict[str, Any]:
 def create_session_service(
     session_service_uri: str | None,
     session_db_kwargs: dict[str, Any],
+    agent_dir: str = "src",
 ) -> BaseSessionService:
     """Create a session service for programmatic ADK runner usage."""
     if session_service_uri is None:
-        agent_dir = os.environ.get("AGENT_DIR", "src")
         default_db_path = Path(agent_dir).resolve() / ".adk" / "sessions.db"
         # Create the directory if it doesn't exist to prevent sqlite errors
         default_db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -430,6 +430,7 @@ def create_adk_runtime(env: ServerEnv) -> AdkRuntime:
     session_service = create_session_service(
         session_service_uri=session_service_uri,
         session_db_kwargs=session_db_kwargs,
+        agent_dir=env.agent_dir,
     )
     return AdkRuntime(session_service=session_service)
 
