@@ -2371,6 +2371,9 @@ class TestTelegramBotEdgeCases:
         with pytest.raises(asyncio.CancelledError):
             await bot._polling_loop()
 
+        if bot._background_tasks:
+            await asyncio.gather(*bot._background_tasks)
+
         bot._handle_update.assert_called_once_with(mock_update)
 
     @pytest.mark.asyncio
@@ -2412,6 +2415,237 @@ class TestTelegramBotEdgeCases:
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
         # This should just do nothing
         await bot._handle_command(mock_message, "/unknown")
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_no_message(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _safe_handle_update with no message."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        update = Update.model_validate({"update_id": 1, "message": None})
+        await bot._safe_handle_update(update)
+
+    @pytest.mark.asyncio
+    async def test_stop_with_background_tasks(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test stop cancels and awaits background tasks."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        async def dummy_task() -> None:
+            await asyncio.sleep(10)
+
+        task = asyncio.create_task(dummy_task())
+        bot._background_tasks.add(task)
+
+        await bot.stop()
+
+        assert task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_cancellation(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _safe_handle_update cancels existing tasks."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_update = AsyncMock()  # type: ignore[method-assign]
+
+        update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        async def long_task() -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.01)
+                raise
+
+        existing_task = asyncio.create_task(long_task())
+        bot._conversation_tasks["chat-123"] = existing_task
+
+        task = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.05)
+
+        assert existing_task.cancelled()
+
+        await task
+        bot._handle_update.assert_awaited_once_with(update)
+        assert "chat-123" not in bot._conversation_tasks
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_is_cancelled(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _safe_handle_update when itself is cancelled."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        async def mock_handle(*args: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(10)
+
+        bot._handle_update = mock_handle  # type: ignore[method-assign]
+
+        update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        task = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.01)
+
+        assert bot._conversation_tasks["chat-123"] == task
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert "chat-123" not in bot._conversation_tasks
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_replaced_task(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test finally block when task is replaced by a newer task."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        async def mock_handle(*args: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(10)
+
+        bot._handle_update = mock_handle  # type: ignore[method-assign]
+
+        update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        # Start task 1
+        task1 = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.01)  # Yield to let task1 start
+
+        # Start task 2 which will cancel task 1
+        task2 = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.05)  # Yield to let task2 cancel task1
+
+        # task1 should hit CancelledError and its finally block should see task2
+        assert task1.cancelled()
+
+        # task2 is still running and in the dict
+        assert bot._conversation_tasks["chat-123"] == task2
+
+        # Clean up
+        task2.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task2
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_no_current_task(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test branch when asyncio.current_task() is None."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        bot._handle_update = AsyncMock()  # type: ignore[method-assign]
+
+        update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        with patch("asyncio.current_task", return_value=None):
+            await bot._safe_handle_update(update)
+
+        bot._handle_update.assert_awaited_once_with(update)
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_multiple_rapid_messages(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test cascading cancellations for three rapid messages."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        # We need a task that sleeps so it can be cancelled
+        async def mock_handle(*args: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(10)
+
+        bot._handle_update = mock_handle  # type: ignore[method-assign]
+
+        update = Update.model_validate(
+            {
+                "update_id": 1,
+                "message": {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "text": "Hello",
+                },
+            }
+        )
+
+        # Start task 1
+        task1 = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.01)
+
+        # Start task 2
+        task2 = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.01)
+
+        # Start task 3
+        task3 = asyncio.create_task(bot._safe_handle_update(update))
+        await asyncio.sleep(0.05)
+
+        # task1 and task2 should be cancelled
+        assert task1.cancelled()
+        assert task2.cancelled()
+
+        # task3 should still be running and be the active task
+        assert bot._conversation_tasks["chat-123"] == task3
+
+        # Clean up
+        task3.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task3
 
 
 class TestFinalCoverage:

@@ -44,6 +44,8 @@ class TelegramBot:
         self._api: TelegramApiClient | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
+        self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def api(self) -> TelegramApiClient:
@@ -78,6 +80,12 @@ class TelegramBot:
             self._polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._polling_task
+
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
         await self.runtime.close()
 
@@ -118,7 +126,9 @@ class TelegramBot:
 
                 for update in updates:
                     offset = update.update_id + 1
-                    await self._handle_update(update)
+                    task = asyncio.create_task(self._safe_handle_update(update))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
 
             except asyncio.CancelledError:
                 raise
@@ -156,6 +166,42 @@ class TelegramBot:
                     )
                     return
                 await asyncio.sleep(min(5 * consecutive_errors, 60))
+
+    async def _safe_handle_update(self, update: Update) -> None:
+        """Handle update concurrently and allow cancellation."""
+        if update.message is None:
+            return
+
+        chat_id = update.message.chat.id
+        message_thread_id = update.message.message_thread_id
+        conversation_key = self._build_conversation_key(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+
+        existing_task = self._conversation_tasks.get(conversation_key)
+        if existing_task is not None and not existing_task.done():
+            logger.info(
+                "Cancelling in-flight turn for conversation %s", conversation_key
+            )
+            existing_task.cancel()
+
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._conversation_tasks[conversation_key] = current_task
+
+        try:
+            # Wait for the superseded task to fully clean up before starting
+            if existing_task is not None and not existing_task.done():
+                await asyncio.wait([existing_task])
+
+            await self._handle_update(update)
+        except asyncio.CancelledError:
+            logger.info("Message turn superseded for conversation %s", conversation_key)
+            raise
+        finally:
+            if self._conversation_tasks.get(conversation_key) is current_task:
+                self._conversation_tasks.pop(conversation_key, None)
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""
