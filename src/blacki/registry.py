@@ -137,6 +137,7 @@ def _build_sandbox_tools() -> list[Any]:
     """Build sandbox tools."""
     try:
         from blacki.sandbox import (
+            sandbox_execute_code,
             sandbox_list_files,
             sandbox_read_file,
             sandbox_run_command,
@@ -150,6 +151,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_read_file,
             sandbox_list_files,
             sandbox_send_file_to_user,
+            sandbox_execute_code,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)

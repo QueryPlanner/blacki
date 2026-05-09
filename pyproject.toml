@@ -28,6 +28,7 @@ dependencies = [
     "dateparser>=1.2.0,<2.0.0",
     "opensandbox>=0.1.7",
     "mem0ai>=0.1.0,<1.0.0",
+    "opensandbox-code-interpreter>=0.1.2",
 ]
 
 [project.scripts]

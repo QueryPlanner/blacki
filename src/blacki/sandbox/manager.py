@@ -92,12 +92,23 @@ class SandboxManager:
                 )
 
         try:
+            env = {}
+            if self._config.gemini_api_key:
+                env["GEMINI_API_KEY"] = self._config.gemini_api_key
+            if self._config.gemini_base_url:
+                env["GEMINI_BASE_URL"] = self._config.gemini_base_url
+            if self._config.gemini_model:
+                env["GEMINI_MODEL"] = self._config.gemini_model
+
             sandbox = await Sandbox.create(
                 self._config.image,
-                connection_config=self._connection_config,
+                connection_config=self._config.connection_config
+                if hasattr(self._config, "connection_config")
+                else self._connection_config,
                 entrypoint=self._config.entrypoint,
                 timeout=self._config.timeout,
                 resource=self._config.resource,
+                env=env if env else None,
             )
             state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)

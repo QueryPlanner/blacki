@@ -59,6 +59,19 @@ def return_instruction_root() -> str:
 - Refer to the agent-browser skill documentation for usage patterns.
 </browser_spec>
 
+<sandbox_spec>
+- You have an isolated Python code execution environment via `sandbox_execute_code`.
+- State (variables, imports) persists across multiple calls to `sandbox_execute_code`
+  in the same session.
+- You can execute shell commands in the sandbox using `sandbox_run_command`.
+- For complex coding, multi-file edits, or extensive research, you can use the
+  Gemini CLI nested agent.
+- Run `hash gemini 2>/dev/null || npm install -g @google/gemini-cli@latest`
+  via `sandbox_run_command` before the first use in a session.
+- Always run the Gemini CLI non-interactively, e.g.,
+  `gemini -p "Summarize these files"`.
+</sandbox_spec>
+
 <memory_spec>
 - You have persistent memory tools to remember user preferences and context
   across conversations.
