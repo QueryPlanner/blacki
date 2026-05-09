@@ -102,9 +102,7 @@ class SandboxManager:
 
             sandbox = await Sandbox.create(
                 self._config.image,
-                connection_config=self._config.connection_config
-                if hasattr(self._config, "connection_config")
-                else self._connection_config,
+                connection_config=self._connection_config,
                 entrypoint=self._config.entrypoint,
                 timeout=self._config.timeout,
                 resource=self._config.resource,

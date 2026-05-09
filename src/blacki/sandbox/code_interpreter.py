@@ -42,12 +42,17 @@ async def sandbox_execute_code(
         return {"status": "error", "error": error, "output": None}
 
     try:
+        import asyncio
+
         interpreter = await CodeInterpreter.create(sandbox=sandbox)
 
         # Use default context for Python to maintain state
-        execution = await interpreter.codes.run(
-            code,
-            language=SupportedLanguage.PYTHON,
+        execution = await asyncio.wait_for(
+            interpreter.codes.run(
+                code,
+                language=SupportedLanguage.PYTHON,
+            ),
+            timeout=timeout,
         )
 
         stdout = "\n".join(msg.text for msg in execution.logs.stdout if msg.text)
@@ -70,6 +75,10 @@ async def sandbox_execute_code(
             }
 
         return {"status": "success", "output": output or "(no output)"}
+    except TimeoutError:
+        error_msg = f"Execution timed out after {timeout} seconds"
+        logger.error(error_msg)
+        return {"status": "error", "error": error_msg, "output": None}
     except SandboxException as e:
         error_msg = f"Sandbox code execution error: {e}"
         logger.exception(error_msg)

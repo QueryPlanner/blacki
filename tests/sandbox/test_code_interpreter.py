@@ -99,6 +99,37 @@ async def test_sandbox_execute_code_with_stderr(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_execute_code_timeout(
+    mock_sandbox_manager: MagicMock,
+) -> None:
+    """Test code execution timeout."""
+    mock_sandbox = MagicMock()
+    mock_sandbox_manager.get_or_create_sandbox = AsyncMock(
+        return_value={
+            "sandbox": mock_sandbox,
+            "error": None,
+        }
+    )
+
+    mock_interpreter = MagicMock()
+    mock_interpreter.codes.run = AsyncMock(side_effect=TimeoutError())
+
+    with patch(
+        "blacki.sandbox.code_interpreter.CodeInterpreter.create",
+        new_callable=AsyncMock,
+    ) as mock_create:
+        mock_create.return_value = mock_interpreter
+
+        tool_context = MagicMock()
+        tool_context.state = {}
+
+        result = await sandbox_execute_code("while True: pass", tool_context, timeout=1)
+
+        assert result["status"] == "error"
+        assert "timed out after 1 seconds" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_execute_code_with_execution_error(
     mock_sandbox_manager: MagicMock,
 ) -> None:
