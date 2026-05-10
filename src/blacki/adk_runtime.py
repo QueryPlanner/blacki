@@ -182,13 +182,6 @@ class AdkRuntime:
                 for key, value in state.items():
                     existing_session.state[key] = value
 
-                if (
-                    hasattr(self.runner, "session_service")
-                    and self.runner.session_service is not None
-                    and hasattr(self.runner.session_service, "update_session")
-                ):
-                    await self.runner.session_service.update_session(existing_session)
-
             return existing_session
 
         return await self._create_versioned_session(

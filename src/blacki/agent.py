@@ -44,21 +44,36 @@ class TelegramModelOverridePlugin(BasePlugin):
     This is used by the Telegram bot to steer the model on a per-chat basis.
     """
 
+    def __init__(self, name: str = "telegram_model_override") -> None:
+        super().__init__(name=name)
+        self.normalize_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
+
     async def before_model_callback(
         self, *, callback_context: CallbackContext, llm_request: LlmRequest
     ) -> None:
         if not callback_context.session:
             return
 
-        model_override = callback_context.session.state.get("telegram_model_override")
+        chat_id = callback_context.session.state.get("telegram_chat_id")
+        if not chat_id:
+            return
+
+        from .utils.preferences import get_preferences_storage
+
+        try:
+            storage = get_preferences_storage()
+            model_override = await storage.get(chat_id, "telegram_model_override")
+        except Exception:
+            logger.exception("Failed to fetch preferences for model override")
+            return
+
         if not model_override:
             return
 
         logger.info("Overriding model for Telegram chat to: %s", model_override)
 
         # Normalize to litellm string format if OpenRouter API key is set
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-        if openrouter_api_key:
+        if self.normalize_openrouter:
             model_override = _normalize_model_for_openrouter(model_override)
 
         llm_request.model = model_override

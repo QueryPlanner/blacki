@@ -444,7 +444,7 @@ class TelegramBot:
         )
 
         try:
-            state = await self._get_session_state(
+            state = self._build_session_state(
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
@@ -489,7 +489,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
         )
-        state = await self._get_session_state(
+        state = self._build_session_state(
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
@@ -591,7 +591,7 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
-            state = await self._get_session_state(
+            state = self._build_session_state(
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
@@ -648,7 +648,7 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
-            state = await self._get_session_state(
+            state = self._build_session_state(
                 chat_id=chat_id_str,
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
@@ -731,30 +731,6 @@ class TelegramBot:
             return f"chat-{chat_id}"
 
         return f"chat-{chat_id}-thread-{message_thread_id}"
-
-    async def _get_session_state(
-        self,
-        *,
-        chat_id: str,
-        message_thread_id: int | None,
-        conversation_key: str,
-    ) -> dict[str, str]:
-        """Build explicit session state and merge with preferences."""
-        session_state = self._build_session_state(
-            chat_id=chat_id,
-            message_thread_id=message_thread_id,
-            conversation_key=conversation_key,
-        )
-
-        try:
-            storage = get_preferences_storage()
-            model_override = await storage.get(chat_id, "telegram_model_override")
-            if model_override:
-                session_state["telegram_model_override"] = model_override
-        except Exception:
-            logger.exception("Failed to fetch preferences for session state")
-
-        return session_state
 
     def _build_session_state(
         self,

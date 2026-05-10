@@ -885,9 +885,6 @@ async def test_get_or_create_session_merges_state() -> None:
     service = InMemorySessionService()
     runtime = AdkRuntime(service)
 
-    # Mock update_session if it exists or add it
-    service.update_session = AsyncMock()  # type: ignore[attr-defined]
-
     locator = SessionLocator(
         user_id="telegram-chat-789",
         session_id_prefix="telegram-chat-789",
@@ -903,9 +900,6 @@ async def test_get_or_create_session_merges_state() -> None:
     )
     assert session_again.state.get("key_a") == "val_a"
     assert session_again.state.get("key_b") == "val_b"
-
-    # Verify update_session was called
-    service.update_session.assert_called_with(session_again)  # type: ignore[attr-defined]
 
 
 async def test_get_or_create_session_no_update_session() -> None:

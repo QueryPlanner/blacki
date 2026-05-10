@@ -130,13 +130,8 @@ async def test_handle_command_model(bot: TelegramBot) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.telegram.bot.get_preferences_storage")
-async def test_get_session_state_no_pref(mock_get_prefs, bot: TelegramBot) -> None:
-    mock_storage = AsyncMock()
-    mock_storage.get.return_value = None  # Falsy value
-    mock_get_prefs.return_value = mock_storage
-
-    state = await bot._get_session_state(
+async def test_build_session_state_no_pref(bot: TelegramBot) -> None:
+    state = bot._build_session_state(
         chat_id="123", message_thread_id=None, conversation_key="k"
     )
     assert "telegram_model_override" not in state
@@ -230,27 +225,3 @@ async def test_handle_callback_query_edit_msg_exception(
     bot._api.edit_message_text.side_effect = Exception("fail")
     await bot._handle_callback_query(cq)
     bot._api.answer_callback_query.assert_called_once()
-
-
-@pytest.mark.asyncio
-@patch("blacki.telegram.bot.get_preferences_storage")
-async def test_get_session_state_with_pref(mock_get_prefs, bot: TelegramBot) -> None:
-    mock_storage = AsyncMock()
-    mock_storage.get.return_value = "my-model"
-    mock_get_prefs.return_value = mock_storage
-
-    state = await bot._get_session_state(
-        chat_id="123", message_thread_id=None, conversation_key="k"
-    )
-    assert state["telegram_model_override"] == "my-model"
-
-
-@pytest.mark.asyncio
-@patch("blacki.telegram.bot.get_preferences_storage")
-async def test_get_session_state_exception(mock_get_prefs, bot: TelegramBot) -> None:
-    mock_get_prefs.side_effect = Exception("fail")
-
-    state = await bot._get_session_state(
-        chat_id="123", message_thread_id=None, conversation_key="k"
-    )
-    assert "telegram_model_override" not in state
