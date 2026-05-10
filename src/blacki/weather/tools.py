@@ -100,9 +100,14 @@ async def _geocode_location(
                 "timezone": result.get("timezone", "auto"),
                 "country": result.get("country", ""),
             }
-        except (httpx.RequestError, httpx.HTTPStatusError):
-            logger.exception("Geocoding API error")
-            return None
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            logger.exception("Geocoding API HTTP error")
+            raise
+        except httpx.RequestError:
+            logger.exception("Geocoding API network error")
+            raise
 
     # First try exact location string
     result = await fetch(location)

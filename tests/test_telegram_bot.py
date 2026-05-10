@@ -1276,7 +1276,7 @@ class TestTelegramBotLifecycle:
 
         mock_api.set_my_commands.assert_called_once()
         commands = mock_api.set_my_commands.call_args.args[0]
-        assert len(commands) == 3
+        assert len(commands) == 4
         assert commands[0].command == "start"
 
     @pytest.mark.asyncio

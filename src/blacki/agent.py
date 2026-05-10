@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
+from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
@@ -28,11 +29,54 @@ from .prompt import (
 from .registry import build_tool_config_from_env, build_tools
 
 if TYPE_CHECKING:
+    from google.adk.agents.callback_context import CallbackContext
     from google.adk.models.lite_llm import LiteLlm
+    from google.adk.models.llm_request import LlmRequest
 
 logger = logging.getLogger(__name__)
 
 logging_callbacks = LoggingCallbacks()
+
+
+class TelegramModelOverridePlugin(BasePlugin):
+    """Override the model dynamically based on session state.
+
+    This is used by the Telegram bot to steer the model on a per-chat basis.
+    """
+
+    def __init__(self, name: str = "telegram_model_override") -> None:
+        super().__init__(name=name)
+        self.normalize_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
+
+    async def before_model_callback(
+        self, *, callback_context: CallbackContext, llm_request: LlmRequest
+    ) -> None:
+        if not callback_context.session:
+            return
+
+        chat_id = callback_context.session.state.get("telegram_chat_id")
+        if not chat_id:
+            return
+
+        from .utils.preferences import get_preferences_storage
+
+        try:
+            storage = get_preferences_storage()
+            model_override = await storage.get(chat_id, "telegram_model_override")
+        except Exception:
+            logger.exception("Failed to fetch preferences for model override")
+            return
+
+        if not model_override:
+            return
+
+        logger.info("Overriding model for Telegram chat to: %s", model_override)
+
+        # Normalize to litellm string format if OpenRouter API key is set
+        if self.normalize_openrouter:
+            model_override = _normalize_model_for_openrouter(model_override)
+
+        llm_request.model = model_override
 
 
 def _find_and_load_dotenv() -> None:
@@ -157,6 +201,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
         name="blacki",
         root_agent=agent,
         plugins=[
+            TelegramModelOverridePlugin(name="telegram_model_override"),
             GlobalInstructionPlugin(return_global_instruction),
             LoggingPlugin(),
             DeepSeekReasoningPlugin(name="deepseek_reasoning"),

@@ -29,8 +29,9 @@ class DeepSeekReasoningPlugin(BasePlugin):
     into the standard content block with <think> tags, which OpenRouter supports.
     """
 
-    def before_model(
+    async def before_model_callback(
         self,
+        *,
         callback_context: CallbackContext,
         llm_request: LlmRequest,
     ) -> None:
@@ -179,7 +180,8 @@ class AdkRuntime:
         if existing_session is not None:
             if state:
                 for key, value in state.items():
-                    existing_session.state.setdefault(key, value)
+                    existing_session.state[key] = value
+
             return existing_session
 
         return await self._create_versioned_session(
@@ -249,6 +251,7 @@ class AdkRuntime:
             user_id=locator.user_id,
             session_id=session.id,
             new_message=new_message,
+            state_delta=state,
         ):
             self._raise_on_event_error(event)
 
@@ -310,6 +313,7 @@ class AdkRuntime:
             session_id=session.id,
             new_message=new_message,
             run_config=streaming_config,
+            state_delta=state,
         ):
             self._raise_on_event_error(event)
 

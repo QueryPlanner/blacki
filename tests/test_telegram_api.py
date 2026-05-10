@@ -266,7 +266,136 @@ class TestTelegramApiClient:
         assert exc_info.value.retry_after == 30
 
     @pytest.mark.asyncio
-    async def test_send_photo_success(self) -> None:
+    async def test_answer_callback_query(self) -> None:
+        """Test answer_callback_query sends correct params."""
+        client = TelegramApiClient("token")
+
+        with patch.object(client, "_request", AsyncMock(return_value=True)) as mock_req:
+            result = await client.answer_callback_query(
+                "query123",
+                text="Hello",
+                show_alert=True,
+                url="https://example.com",
+                cache_time=60,
+            )
+
+            assert result is True
+            mock_req.assert_called_once_with(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": "query123",
+                    "text": "Hello",
+                    "show_alert": True,
+                    "url": "https://example.com",
+                    "cache_time": 60,
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_answer_callback_query_minimal(self) -> None:
+        """Test answer_callback_query sends correct params minimal."""
+        client = TelegramApiClient("token")
+
+        with patch.object(client, "_request", AsyncMock(return_value=True)) as mock_req:
+            result = await client.answer_callback_query("query123")
+
+            assert result is True
+            mock_req.assert_called_once_with(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": "query123",
+                },
+            )
+        """Test answer_callback_query sends correct params."""
+        client = TelegramApiClient("token")
+
+        with patch.object(client, "_request", AsyncMock(return_value=True)) as mock_req:
+            result = await client.answer_callback_query(
+                "query123",
+                text="Hello",
+                show_alert=True,
+                url="https://example.com",
+                cache_time=60,
+            )
+
+            assert result is True
+            mock_req.assert_called_once_with(
+                "answerCallbackQuery",
+                {
+                    "callback_query_id": "query123",
+                    "text": "Hello",
+                    "show_alert": True,
+                    "url": "https://example.com",
+                    "cache_time": 60,
+                },
+            )
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_reply_markup(self) -> None:
+        """Test send_message handles reply_markup."""
+        client = TelegramApiClient("token")
+
+        from blacki.telegram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Btn", callback_data="cb")]]
+        )
+
+        mock_result = {
+            "message_id": 1,
+            "date": "2024-01-01T00:00:00Z",
+            "chat": {"id": 123, "type": "private"},
+        }
+        with patch.object(
+            client, "_request", AsyncMock(return_value=mock_result)
+        ) as mock_req:
+            await client.send_message(
+                chat_id=123,
+                text="text",
+                reply_markup=markup,
+            )
+
+            call_args = mock_req.call_args
+            assert call_args[0][0] == "sendMessage"
+            assert "reply_markup" in call_args[0][1]
+            assert (
+                call_args[0][1]["reply_markup"]["inline_keyboard"][0][0]["text"]
+                == "Btn"
+            )
+
+    @pytest.mark.asyncio
+    async def test_edit_message_text_with_reply_markup(self) -> None:
+        """Test edit_message_text handles reply_markup."""
+        client = TelegramApiClient("token")
+
+        from blacki.telegram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Btn", callback_data="cb")]]
+        )
+
+        mock_result = {
+            "message_id": 1,
+            "date": "2024-01-01T00:00:00Z",
+            "chat": {"id": 123, "type": "private"},
+        }
+        with patch.object(
+            client, "_request", AsyncMock(return_value=mock_result)
+        ) as mock_req:
+            await client.edit_message_text(
+                chat_id=123,
+                message_id=1,
+                text="text",
+                reply_markup=markup,
+            )
+
+            call_args = mock_req.call_args
+            assert call_args[0][0] == "editMessageText"
+            assert "reply_markup" in call_args[0][1]
+            assert (
+                call_args[0][1]["reply_markup"]["inline_keyboard"][0][0]["text"]
+                == "Btn"
+            )
         """Test send_photo returns Message on success."""
         client = TelegramApiClient("token")
 

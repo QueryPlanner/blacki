@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from .types import BotCommand, Message, ParseMode, TelegramResponse, Update
+from .types import BotCommand, Message, ParseMode, ReplyMarkup, TelegramResponse, Update
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +348,7 @@ class TelegramApiClient:
         parse_mode: ParseMode | None = None,
         disable_notification: bool = False,
         protect_content: bool = False,
+        reply_markup: ReplyMarkup | None = None,
     ) -> Message:
         """Send a text message to a chat.
 
@@ -374,6 +375,11 @@ class TelegramApiClient:
             params["disable_notification"] = True
         if protect_content:
             params["protect_content"] = True
+        if reply_markup is not None:
+            # Pydantic's model_dump allows json-serialization later
+            params["reply_markup"] = reply_markup.model_dump(
+                exclude_none=True, by_alias=True
+            )
 
         result = await self._request("sendMessage", params)
         return Message.model_validate(result)
@@ -431,6 +437,7 @@ class TelegramApiClient:
         text: str,
         *,
         parse_mode: ParseMode | None = None,
+        reply_markup: ReplyMarkup | None = None,
     ) -> Message:
         """Edit text of a previously sent message.
 
@@ -439,6 +446,7 @@ class TelegramApiClient:
             message_id: Identifier of the message to edit.
             text: New text of the message (1-4096 characters).
             parse_mode: Mode for parsing entities in the message text.
+            reply_markup: A JSON-serialized object for an inline keyboard.
 
         Returns:
             The edited Message object.
@@ -450,6 +458,10 @@ class TelegramApiClient:
         }
         if parse_mode is not None:
             params["parse_mode"] = parse_mode.value
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup.model_dump(
+                exclude_none=True, by_alias=True
+            )
 
         result = await self._request("editMessageText", params)
         return Message.model_validate(result)
@@ -473,6 +485,42 @@ class TelegramApiClient:
             "message_id": message_id,
         }
         await self._request("deleteMessage", params)
+        return True
+
+    async def answer_callback_query(
+        self,
+        callback_query_id: str,
+        *,
+        text: str | None = None,
+        show_alert: bool = False,
+        url: str | None = None,
+        cache_time: int | None = None,
+    ) -> bool:
+        """Send answers to callback queries sent from inline keyboards.
+
+        Args:
+            callback_query_id: Unique identifier for the query to be answered.
+            text: Text of the notification.
+            show_alert: If true, an alert will be shown by the client instead.
+            url: URL that will be opened by the user's client.
+            cache_time: The maximum cache time in seconds for the result.
+
+        Returns:
+            True if the callback query was answered successfully.
+        """
+        params: dict[str, Any] = {
+            "callback_query_id": callback_query_id,
+        }
+        if text is not None:
+            params["text"] = text
+        if show_alert:
+            params["show_alert"] = True
+        if url is not None:
+            params["url"] = url
+        if cache_time is not None:
+            params["cache_time"] = cache_time
+
+        await self._request("answerCallbackQuery", params)
         return True
 
     async def send_chat_action(
