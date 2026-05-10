@@ -68,6 +68,14 @@ class TestBuildTools:
 
         assert len(tools) == 15
 
+    def test_weather_tools_disabled(self) -> None:
+        """Should not add weather tools when disabled."""
+        config = ToolConfig(weather_enabled=False)
+
+        tools = build_tools(config)
+
+        assert len(tools) == 7
+
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
         config = ToolConfig(
@@ -220,7 +228,7 @@ class TestBuildWorkoutTools:
 
         tools = _build_workout_tools()
 
-        assert len(tools) == 9
+        assert len(tools) == 7
 
 
 class TestBuildSandboxTools:
@@ -244,7 +252,7 @@ class TestBuildMemoryTools:
 
         tools = _build_memory_tools()
 
-        assert len(tools) == 9
+        assert len(tools) == 7
 
 
 class TestBuildSkillTools:
