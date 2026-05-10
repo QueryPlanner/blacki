@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
+from blacki.reminders.storage import Reminder
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
@@ -3129,3 +3130,148 @@ class TestHandleFileUpload:
         mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "failed to process" in call_kwargs["text"]
+
+
+class TestTelegramBotScheduledReminders:
+    """Tests for scheduled reminder handling in Telegram bot."""
+
+    @pytest.mark.asyncio
+    async def test_handle_scheduled_reminder_success(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test successful handling of a scheduled reminder."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_response = "Done!"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock(return_value=True)
+        bot._api = mock_api
+
+        reminder = Reminder(
+            id=1,
+            user_id="telegram-chat-12345",
+            message="Summarize news",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        # Agent should be called
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["message_text"] == "[Scheduled Event] Summarize news"
+        assert call["state"]["telegram_chat_id"] == "12345"
+        assert "telegram_thread_id" not in call["state"]
+
+        # Action and response should be sent
+        mock_api.send_chat_action.assert_called_once_with(
+            chat_id=12345, action="typing", message_thread_id=None
+        )
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert call_kwargs["chat_id"] == 12345
+        assert call_kwargs["text"] == "Done\\!"
+        assert call_kwargs["message_thread_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_handle_scheduled_reminder_with_thread(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test handling a scheduled reminder in a specific thread."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_response = "Done!"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock(return_value=True)
+        bot._api = mock_api
+
+        reminder = Reminder(
+            id=2,
+            user_id="telegram-chat-12345-thread-678",
+            message="Check emails",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["state"]["telegram_thread_id"] == "678"
+
+        mock_api.send_chat_action.assert_called_once_with(
+            chat_id=12345, action="typing", message_thread_id=678
+        )
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert call_kwargs["message_thread_id"] == 678
+
+    @pytest.mark.asyncio
+    async def test_handle_scheduled_reminder_fallback(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test fallback when the agent runtime throws an error."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_error = Exception("Agent crashed")
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock(return_value=True)
+        bot._api = mock_api
+
+        reminder = Reminder(
+            id=3,
+            user_id="telegram-chat-12345-thread-678",
+            message="Important! Notice.",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        # Agent should have been called
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+
+        # Fallback message should be sent
+        mock_api.send_message.assert_called_once()
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert call_kwargs["chat_id"] == 12345
+        assert call_kwargs["message_thread_id"] == 678
+        # Should be formatted to escape exclamation marks, etc.
+        assert "Important\\! Notice\\." in call_kwargs["text"]
+        assert "⏰ *Reminder*" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_handle_scheduled_reminder_invalid_user_id(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test handling of invalid user_id format."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        bot._api = mock_api
+
+        reminder = Reminder(
+            id=4,
+            user_id="invalid-user-id",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        mock_api.send_chat_action.assert_not_called()
+        mock_api.send_message.assert_not_called()
