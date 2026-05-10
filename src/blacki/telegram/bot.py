@@ -12,7 +12,7 @@ from blacki.reminders.storage import Reminder
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
-from .formatting import escape_markdown, format_for_telegram
+from .formatting import format_for_telegram
 from .streaming import split_long_message
 from .types import BotCommand, Message, ParseMode, Update
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
-_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-\d+)?$")
+_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 
 
 @dataclass(slots=True, frozen=True)
@@ -510,14 +510,7 @@ class TelegramBot:
 
         chat_id_str = match.group(1)
         chat_id = int(chat_id_str)
-        message_thread_id_str = (
-            reminder.user_id.split("-thread-")[-1]
-            if "-thread-" in reminder.user_id
-            else None
-        )
-        message_thread_id = (
-            int(message_thread_id_str) if message_thread_id_str else None
-        )
+        message_thread_id = int(match.group(2)) if match.group(2) else None
 
         session_identity = self._build_session_identity(
             chat_id=chat_id_str,
@@ -556,8 +549,7 @@ class TelegramBot:
                 reminder.id,
                 chat_id,
             )
-            safe_message = escape_markdown(reminder.message)
-            text = f"⏰ *Reminder*\n\n{safe_message}"
+            text = format_for_telegram(f"⏰ *Reminder*\n\n{reminder.message}")
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
