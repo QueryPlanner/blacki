@@ -96,8 +96,8 @@ async def _start_reminder_scheduler() -> None:
     from .reminders import get_scheduler
 
     scheduler = get_scheduler()
-    if _telegram_bot is not None and _telegram_bot._api is not None:
-        scheduler.set_api(_telegram_bot._api)
+    if _telegram_bot is not None:
+        scheduler.set_callback(_telegram_bot.handle_scheduled_reminder)
     await scheduler.start()
     logger.info("Reminder scheduler started")
 

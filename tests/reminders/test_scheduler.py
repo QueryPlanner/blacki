@@ -7,7 +7,6 @@ import pytest
 
 from blacki.reminders.scheduler import (
     ReminderScheduler,
-    _extract_telegram_chat_id,
     _is_stale_reminder,
     _parse_stored_trigger_time,
     get_scheduler,
@@ -32,11 +31,9 @@ class TestReminderScheduler:
         return storage
 
     @pytest.fixture
-    def mock_api(self) -> MagicMock:
-        """Create a mock TelegramApiClient."""
-        api = MagicMock()
-        api.send_message = AsyncMock()
-        return api
+    def mock_callback(self) -> AsyncMock:
+        """Create a mock callback."""
+        return AsyncMock()
 
     def _create_scheduler(self, mock_storage: MagicMock) -> ReminderScheduler:
         """Create a scheduler with mocked storage."""
@@ -119,7 +116,7 @@ class TestReminderScheduler:
 
     @pytest.mark.asyncio
     async def test_send_reminder(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should send a reminder via Telegram."""
         reminder = Reminder(
@@ -131,18 +128,15 @@ class TestReminderScheduler:
         )
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         await scheduler._send_reminder(reminder)
 
-        mock_api.send_message.assert_called_once()
-        call_kwargs = mock_api.send_message.call_args[1]
-        assert call_kwargs["chat_id"] == 123456
-        assert "Test reminder" in call_kwargs["text"]
+        mock_callback.assert_called_once_with(reminder)
 
     @pytest.mark.asyncio
     async def test_send_reminder_marks_sent(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should mark reminder as sent after delivery."""
         reminder = Reminder(
@@ -154,7 +148,7 @@ class TestReminderScheduler:
         )
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         await scheduler._send_reminder(reminder)
 
@@ -162,7 +156,7 @@ class TestReminderScheduler:
 
     @pytest.mark.asyncio
     async def test_send_recurring_reminder_reschedules(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should reschedule recurring reminder after delivery."""
         reminder = Reminder(
@@ -176,18 +170,18 @@ class TestReminderScheduler:
         )
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         await scheduler._send_reminder(reminder)
 
         mock_storage.reschedule_reminder.assert_called_once()
 
-    def test_api_raises_if_not_set(self, mock_storage: MagicMock) -> None:
-        """Should raise RuntimeError if API not set."""
+    def test_callback_raises_if_not_set(self, mock_storage: MagicMock) -> None:
+        """Should raise RuntimeError if callback not set."""
         scheduler = self._create_scheduler(mock_storage)
 
-        with pytest.raises(RuntimeError, match="API not set"):
-            _ = scheduler.api
+        with pytest.raises(RuntimeError, match="Callback not set"):
+            _ = scheduler.callback
 
     @pytest.mark.asyncio
     async def test_start_returns_early_if_already_running(
@@ -216,7 +210,7 @@ class TestReminderScheduler:
 
     @pytest.mark.asyncio
     async def test_send_reminder_skips_if_no_id(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should skip reminder if it has no ID."""
         reminder = Reminder(
@@ -227,35 +221,15 @@ class TestReminderScheduler:
         )
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         await scheduler._send_reminder(reminder)
 
-        mock_api.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_send_reminder_skips_if_invalid_user_id(
-        self, mock_storage: MagicMock, mock_api: MagicMock
-    ) -> None:
-        """Should skip reminder if user_id format is invalid."""
-        reminder = Reminder(
-            id=1,
-            user_id="invalid-user-id",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            created_at="2026-04-18T10:00:00+00:00",
-        )
-
-        scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
-
-        await scheduler._send_reminder(reminder)
-
-        mock_api.send_message.assert_not_called()
+        mock_callback.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_reminder_handles_exception(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should handle exception during send."""
         reminder = Reminder(
@@ -266,10 +240,10 @@ class TestReminderScheduler:
             created_at="2026-04-18T10:00:00+00:00",
         )
 
-        mock_api.send_message.side_effect = Exception("API error")
+        mock_callback.side_effect = Exception("Callback error")
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         await scheduler._send_reminder(reminder)
 
@@ -343,7 +317,7 @@ class TestReminderScheduler:
 
     @pytest.mark.asyncio
     async def test_check_and_send_handles_stale_reminders(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should handle stale reminders."""
         stale_reminder = Reminder(
@@ -366,7 +340,7 @@ class TestReminderScheduler:
         )
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         with patch(
             "blacki.reminders.scheduler.now_utc",
@@ -374,7 +348,7 @@ class TestReminderScheduler:
         ):
             await scheduler._check_and_send_reminders()
 
-        mock_api.send_message.assert_called_once()
+        mock_callback.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_check_and_send_no_reminders(self, mock_storage: MagicMock) -> None:
@@ -414,7 +388,7 @@ class TestReminderScheduler:
 
     @pytest.mark.asyncio
     async def test_check_and_send_only_fresh_reminders(
-        self, mock_storage: MagicMock, mock_api: MagicMock
+        self, mock_storage: MagicMock, mock_callback: MagicMock
     ) -> None:
         """Should handle case when only fresh reminders are due."""
         fresh_reminder = Reminder(
@@ -428,7 +402,7 @@ class TestReminderScheduler:
         mock_storage.get_due_reminders = AsyncMock(return_value=[fresh_reminder])
 
         scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_api(mock_api)
+        scheduler.set_callback(mock_callback)
 
         with patch(
             "blacki.reminders.scheduler.now_utc",
@@ -436,7 +410,7 @@ class TestReminderScheduler:
         ):
             await scheduler._check_and_send_reminders()
 
-        mock_api.send_message.assert_called_once()
+        mock_callback.assert_called_once()
 
 
 class TestParseStoredTriggerTime:
@@ -502,46 +476,6 @@ class TestIsStaleReminder:
         result = _is_stale_reminder(trigger_time, current_time)
 
         assert result is True
-
-
-class TestExtractTelegramChatId:
-    """Tests for _extract_telegram_chat_id function."""
-
-    def test_extracts_chat_id_from_user_id(self) -> None:
-        """Should extract numeric chat_id from prefixed user_id."""
-        result = _extract_telegram_chat_id("telegram-chat-1399736563")
-
-        assert result == 1399736563
-
-    def test_extracts_chat_id_with_thread(self) -> None:
-        """Should extract chat_id from user_id with thread suffix."""
-        result = _extract_telegram_chat_id("telegram-chat-1399736563-thread-42")
-
-        assert result == 1399736563
-
-    def test_extracts_negative_supergroup_chat_id(self) -> None:
-        """Should extract negative chat_id used by Telegram groups/supergroups."""
-        result = _extract_telegram_chat_id("telegram-chat--1001234567890")
-
-        assert result == -1001234567890
-
-    def test_extracts_negative_chat_id_with_thread(self) -> None:
-        """Should extract negative chat_id when a forum thread suffix is present."""
-        result = _extract_telegram_chat_id("telegram-chat--1001234567890-thread-42")
-
-        assert result == -1001234567890
-
-    def test_returns_none_for_invalid_format(self) -> None:
-        """Should return None for invalid user_id format."""
-        result = _extract_telegram_chat_id("invalid-user-id")
-
-        assert result is None
-
-    def test_returns_none_for_unprefixed_chat_id(self) -> None:
-        """Should return None for numeric-only user_id."""
-        result = _extract_telegram_chat_id("1399736563")
-
-        assert result is None
 
 
 class TestGetScheduler:

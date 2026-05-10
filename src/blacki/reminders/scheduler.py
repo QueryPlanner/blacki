@@ -5,9 +5,8 @@ and sends them to users via Telegram.
 """
 
 import logging
-import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -17,15 +16,10 @@ from blacki.utils.timezone import get_app_timezone, now_utc, utc_iso_seconds
 from .recurrence import get_next_trigger_time
 from .storage import Reminder, get_storage
 
-if TYPE_CHECKING:
-    from blacki.telegram.api import TelegramApiClient
-
 logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_SECONDS = 30
 MISFIRE_GRACE_PERIOD = timedelta(minutes=10)
-
-_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-\d+)?$")
 
 
 class ReminderScheduler:
@@ -35,28 +29,27 @@ class ReminderScheduler:
     for reminders that are due and sends them to users.
 
     Attributes:
-        api: The TelegramApiClient instance for sending messages.
         scheduler: The APScheduler instance.
         storage: The ReminderStorage instance.
     """
 
-    def __init__(self, api: "TelegramApiClient | None" = None) -> None:
-        self._api: TelegramApiClient | None = api
+    def __init__(self) -> None:
+        self._callback: Callable[[Reminder], Awaitable[None]] | None = None
         self.scheduler = AsyncIOScheduler(timezone=str(get_app_timezone()))
         self.storage = get_storage()
         self._running = False
 
-    def set_api(self, api: "TelegramApiClient") -> None:
-        """Set the TelegramApiClient instance."""
-        self._api = api
-        logger.info("Telegram API client set in scheduler")
+    def set_callback(self, callback: Callable[[Reminder], Awaitable[None]]) -> None:
+        """Set the callback to execute when a reminder fires."""
+        self._callback = callback
+        logger.info("Callback set in reminder scheduler")
 
     @property
-    def api(self) -> "TelegramApiClient":
-        """Get the API instance."""
-        if self._api is None:
-            raise RuntimeError("API not set. Call set_api() first.")
-        return self._api
+    def callback(self) -> Callable[[Reminder], Awaitable[None]]:
+        """Get the callback instance."""
+        if self._callback is None:
+            raise RuntimeError("Callback not set. Call set_callback() first.")
+        return self._callback
 
     async def start(self) -> None:
         """Start the scheduler."""
@@ -140,24 +133,15 @@ class ReminderScheduler:
         reminder_reference_time = now_utc()
 
         try:
-            chat_id = _extract_telegram_chat_id(reminder.user_id)
-            if chat_id is None:
-                logger.error(
-                    f"Could not extract chat_id from user_id: {reminder.user_id}"
-                )
-                return
-
-            text = f"⏰ *Reminder*\n\n{reminder.message}"
-            await self.api.send_message(
-                chat_id=chat_id,
-                text=text,
-            )
+            await self.callback(reminder)
 
             reminder_delivery_succeeded = True
 
         except Exception:
             logger.exception(
-                f"Failed to send reminder {reminder.id} to user {reminder.user_id}"
+                "Failed to execute callback for reminder %s (user: %s)",
+                reminder.id,
+                reminder.user_id,
             )
         finally:
             await self._complete_reminder_delivery(
@@ -291,20 +275,3 @@ def _is_stale_reminder(trigger_time: str, current_time: datetime) -> bool:
     parsed_trigger_time = _parse_stored_trigger_time(trigger_time)
     stale_cutoff_time = current_time - MISFIRE_GRACE_PERIOD
     return parsed_trigger_time < stale_cutoff_time
-
-
-def _extract_telegram_chat_id(user_id: str) -> int | None:
-    """Extract the numeric Telegram chat_id from a prefixed user_id.
-
-    Args:
-        user_id: The user_id string (e.g., "telegram-chat-1399736563",
-            "telegram-chat--1001234567890" for a supergroup, or
-            "telegram-chat-1399736563-thread-42").
-
-    Returns:
-        The numeric chat_id, or None if the user_id doesn't match the expected pattern.
-    """
-    match = _TELEGRAM_USER_ID_PATTERN.match(user_id)
-    if not match:
-        return None
-    return int(match.group(1))
