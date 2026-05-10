@@ -39,10 +39,11 @@ async def schedule_reminder(
 ) -> dict[str, Any]:
     """Schedule a reminder to be sent at a specific time.
 
-    The reminder will be delivered through the agent as a Telegram message.
-    The stored message is shown back to the agent when the reminder fires, so
-    ``message`` should be a self-contained instruction for what the user should
-    receive at delivery time.
+    The reminder will be delivered through the agent, acting as a prompt
+    for its future self. The stored message is shown back to the agent when the
+    reminder fires, so ``message`` should be a self-contained instruction for what
+    the agent should do at delivery time (e.g., "Summarize the latest news" or
+    "Say 'Time to take out the trash!'").
 
     Args:
         tool_context: ADK ToolContext with user_id in state.

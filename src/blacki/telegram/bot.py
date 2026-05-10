@@ -3,10 +3,12 @@
 import asyncio
 import contextlib
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator
+from blacki.reminders.storage import Reminder
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
+_TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-\d+)?$")
 
 
 @dataclass(slots=True, frozen=True)
@@ -480,6 +483,64 @@ class TelegramBot:
                 "❌ Sorry, I encountered an error processing your message\\. "
                 "Please try again\\."
             )
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+
+    async def handle_scheduled_reminder(self, reminder: Reminder) -> None:
+        """Handle an incoming scheduled reminder."""
+        match = _TELEGRAM_USER_ID_PATTERN.match(reminder.user_id)
+        if not match:
+            logger.error("Could not extract chat_id from user_id: %s", reminder.user_id)
+            return
+
+        chat_id_str = match.group(1)
+        chat_id = int(chat_id_str)
+        message_thread_id_str = (
+            reminder.user_id.split("-thread-")[-1]
+            if "-thread-" in reminder.user_id
+            else None
+        )
+        message_thread_id = (
+            int(message_thread_id_str) if message_thread_id_str else None
+        )
+
+        session_identity = self._build_session_identity(
+            chat_id=chat_id_str,
+            message_thread_id=message_thread_id,
+        )
+
+        logger.info("Handling scheduled reminder %s for chat %s", reminder.id, chat_id)
+
+        try:
+            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+
+            final_response = await self.runtime.run_user_turn(
+                locator=SessionLocator(
+                    user_id=session_identity.user_id,
+                    session_id_prefix=session_identity.session_id_prefix,
+                ),
+                message_text=f"[Scheduled Event] {reminder.message}",
+                state=self._build_session_state(
+                    chat_id=chat_id_str,
+                    message_thread_id=message_thread_id,
+                    conversation_key=session_identity.conversation_key,
+                ),
+            )
+            await self._send_final_response(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                response_text=final_response,
+            )
+        except Exception:
+            logger.exception(
+                "Error processing scheduled reminder %s for chat %s",
+                reminder.id,
+                chat_id,
+            )
+            text = f"⏰ *Reminder*\n\n{reminder.message}"
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
