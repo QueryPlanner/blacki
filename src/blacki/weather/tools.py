@@ -66,34 +66,45 @@ async def _get_shared_client() -> httpx.AsyncClient:
 async def _geocode_location(
     location: str, client: httpx.AsyncClient
 ) -> dict[str, Any] | None:
-    """Resolve location name to coordinates."""
-    params: dict[str, Any] = {
-        "name": location.strip(),
-        "count": 1,
-        "language": "en",
-        "format": "json",
-    }
+    """Resolve location to coordinates, falling back to first segment if needed."""
 
-    try:
-        response = await client.get(GEOCODING_API_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
+    async def fetch(query: str) -> dict[str, Any] | None:
+        params: dict[str, Any] = {
+            "name": query.strip(),
+            "count": 1,
+            "language": "en",
+            "format": "json",
+        }
+        try:
+            response = await client.get(GEOCODING_API_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
 
-        results = data.get("results")
-        if not results:
+            results = data.get("results")
+            if not results:
+                return None
+
+            result = results[0]
+            return {
+                "name": result.get("name"),
+                "latitude": result.get("latitude"),
+                "longitude": result.get("longitude"),
+                "timezone": result.get("timezone", "auto"),
+                "country": result.get("country", ""),
+            }
+        except (httpx.RequestError, httpx.HTTPStatusError):
+            logger.exception("Geocoding API error")
             return None
 
-        result = results[0]
-        return {
-            "name": result.get("name"),
-            "latitude": result.get("latitude"),
-            "longitude": result.get("longitude"),
-            "timezone": result.get("timezone", "auto"),
-            "country": result.get("country", ""),
-        }
-    except (httpx.RequestError, httpx.HTTPStatusError):
-        logger.exception("Geocoding API error")
-        return None
+    # First try exact location string
+    result = await fetch(location)
+
+    # If no result and location has commas, try the first segment
+    if not result and "," in location:
+        first_segment = location.split(",")[0]
+        result = await fetch(first_segment)
+
+    return result
 
 
 async def get_current_weather(

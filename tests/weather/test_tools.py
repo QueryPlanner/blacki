@@ -104,6 +104,55 @@ async def test_geocode_location_not_found(mock_httpx_client: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_geocode_location_fallback_success(mock_httpx_client: Any) -> None:
+    """Test geocoding fallback to first segment on comma-separated string."""
+    empty_response = MagicMock(spec=httpx.Response)
+    empty_response.json.return_value = {"results": []}
+    empty_response.raise_for_status.return_value = None
+
+    success_response = MagicMock(spec=httpx.Response)
+    success_response.json.return_value = {
+        "results": [
+            {
+                "name": "Viman Nagar",
+                "latitude": 18.56848,
+                "longitude": 73.91584,
+                "timezone": "Asia/Kolkata",
+                "country": "India",
+            }
+        ]
+    }
+    success_response.raise_for_status.return_value = None
+
+    # First call returns empty, second call returns success
+    mock_httpx_client.get.side_effect = [empty_response, success_response]
+
+    result = await _geocode_location("Viman Nagar, Pune", mock_httpx_client)
+
+    assert result == {
+        "name": "Viman Nagar",
+        "latitude": 18.56848,
+        "longitude": 73.91584,
+        "timezone": "Asia/Kolkata",
+        "country": "India",
+    }
+    assert mock_httpx_client.get.call_count == 2
+    mock_httpx_client.get.assert_any_call(
+        GEOCODING_API_URL,
+        params={
+            "name": "Viman Nagar, Pune",
+            "count": 1,
+            "language": "en",
+            "format": "json",
+        },
+    )
+    mock_httpx_client.get.assert_any_call(
+        GEOCODING_API_URL,
+        params={"name": "Viman Nagar", "count": 1, "language": "en", "format": "json"},
+    )
+
+
+@pytest.mark.asyncio
 async def test_geocode_location_error(mock_httpx_client: Any) -> None:
     """Test geocoding API error."""
     mock_httpx_client.get.side_effect = httpx.RequestError(
