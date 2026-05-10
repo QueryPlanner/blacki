@@ -42,7 +42,7 @@ class TestBuildTools:
         config = ToolConfig()
         tools = build_tools(config)
 
-        assert len(tools) == 7
+        assert len(tools) == 9
 
     def test_brave_search_tools_added(self) -> None:
         """Should add Brave Search tools when API key provided."""
@@ -50,7 +50,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 8
+        assert len(tools) == 10
 
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when database URL provided."""
@@ -66,7 +66,15 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 13
+        assert len(tools) == 15
+
+    def test_weather_tools_disabled(self) -> None:
+        """Should not add weather tools when disabled."""
+        config = ToolConfig(weather_enabled=False)
+
+        tools = build_tools(config)
+
+        assert len(tools) == 7
 
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
@@ -90,7 +98,7 @@ class TestBuildTools:
             config = ToolConfig(brave_search_api_key="test-key")
             tools = build_tools(config)
 
-            assert len(tools) == 7
+            assert len(tools) == 9
 
 
 class TestBuildToolConfigFromEnv:

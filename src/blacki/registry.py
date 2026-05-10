@@ -32,6 +32,7 @@ class ToolConfig:
     database_url: str | None = None
     sandbox_enabled: bool = False
     skills_dir: Path | None = None
+    weather_enabled: bool = True
 
 
 def build_tools(config: ToolConfig) -> list[Any]:
@@ -61,6 +62,10 @@ def build_tools(config: ToolConfig) -> list[Any]:
 
     if config.skills_dir:
         tools.extend(_build_skill_tools(config.skills_dir))
+
+    if config.weather_enabled:
+        tools.extend(_build_weather_tools())
+        logger.info("Weather tools enabled")
 
     tools.extend(_build_memory_tools())
 
@@ -180,6 +185,17 @@ def _build_skill_tools(skills_dir: Path) -> list[Any]:
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load skills toolset: %s", e)
     return []
+
+
+def _build_weather_tools() -> list[Any]:
+    """Build weather tools."""
+    try:
+        from blacki.weather import get_current_weather, get_weather_forecast
+
+        return [get_current_weather, get_weather_forecast]
+    except ImportError as e:  # pragma: no cover
+        logger.warning("Failed to load Weather tools: %s", e)
+        return []
 
 
 def _build_memory_tools() -> list[Any]:
