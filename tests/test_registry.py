@@ -42,7 +42,7 @@ class TestBuildTools:
         config = ToolConfig()
         tools = build_tools(config)
 
-        assert len(tools) == 7
+        assert len(tools) == 9
 
     def test_brave_search_tools_added(self) -> None:
         """Should add Brave Search tools when API key provided."""
@@ -50,7 +50,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 8
+        assert len(tools) == 10
 
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when database URL provided."""
@@ -66,7 +66,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 13
+        assert len(tools) == 15
 
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
@@ -90,7 +90,7 @@ class TestBuildTools:
             config = ToolConfig(brave_search_api_key="test-key")
             tools = build_tools(config)
 
-            assert len(tools) == 7
+            assert len(tools) == 9
 
 
 class TestBuildToolConfigFromEnv:
@@ -220,7 +220,7 @@ class TestBuildWorkoutTools:
 
         tools = _build_workout_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 9
 
 
 class TestBuildSandboxTools:
@@ -244,7 +244,7 @@ class TestBuildMemoryTools:
 
         tools = _build_memory_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 9
 
 
 class TestBuildSkillTools:

@@ -54,12 +54,20 @@ def get_weather_description(code: int) -> str:
     return WMO_CODES.get(code, f"Unknown ({code})")
 
 
-async def _get_shared_client() -> httpx.AsyncClient:
+async def cleanup_weather_client() -> None:
+    """Close the shared HTTP client."""
     global _weather_client
     async with _weather_client_lock:
         if _weather_client is not None:
-            return _weather_client
-        _weather_client = httpx.AsyncClient(timeout=10.0)
+            await _weather_client.aclose()
+            _weather_client = None
+
+
+async def _get_shared_client() -> httpx.AsyncClient:
+    global _weather_client
+    async with _weather_client_lock:
+        if _weather_client is None:
+            _weather_client = httpx.AsyncClient(timeout=10.0)
         return _weather_client
 
 
@@ -251,24 +259,26 @@ async def get_weather_forecast(
 
         forecast = []
         times = daily.get("time", [])
+        weather_codes = daily.get("weather_code", [])
+        max_temps = daily.get("temperature_2m_max", [])
+        min_temps = daily.get("temperature_2m_min", [])
+        precip_probs = daily.get("precipitation_probability_max", [])
+
         for i, t in enumerate(times):
-            code_arr = daily.get("weather_code", [])
-            code = code_arr[i] if i < len(code_arr) else None
+            code = weather_codes[i] if i < len(weather_codes) else None
+            max_temp = max_temps[i] if i < len(max_temps) else "N/A"
+            min_temp = min_temps[i] if i < len(min_temps) else "N/A"
+            precip_prob = precip_probs[i] if i < len(precip_probs) else "N/A"
+
+            unit_max = daily_units.get("temperature_2m_max", "°C")
+            unit_min = daily_units.get("temperature_2m_min", "°C")
+            unit_precip = daily_units.get("precipitation_probability_max", "%")
             forecast.append(
                 {
                     "date": t,
-                    "max_temp": (
-                        f"{daily.get('temperature_2m_max', [])[i]} "
-                        f"{daily_units.get('temperature_2m_max', '°C')}"
-                    ),
-                    "min_temp": (
-                        f"{daily.get('temperature_2m_min', [])[i]} "
-                        f"{daily_units.get('temperature_2m_min', '°C')}"
-                    ),
-                    "precipitation_probability": (
-                        f"{daily.get('precipitation_probability_max', [])[i]}"
-                        f"{daily_units.get('precipitation_probability_max', '%')}"
-                    ),
+                    "max_temp": f"{max_temp} {unit_max}",
+                    "min_temp": f"{min_temp} {unit_min}",
+                    "precipitation_probability": f"{precip_prob}{unit_precip}",
                     "condition": (
                         get_weather_description(code) if code is not None else "Unknown"
                     ),

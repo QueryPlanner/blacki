@@ -11,6 +11,7 @@ from blacki.weather.tools import (
     WEATHER_API_URL,
     _geocode_location,
     _get_shared_client,
+    cleanup_weather_client,
     get_current_weather,
     get_weather_description,
     get_weather_forecast,
@@ -396,3 +397,25 @@ async def test_get_weather_forecast_api_error(
     result = await get_weather_forecast(tool_context, "London")
     assert result["status"] == "error"
     assert "Failed to fetch weather forecast" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_weather_client() -> None:
+    """Test cleanup of the shared HTTP client."""
+    client1 = await _get_shared_client()
+    assert client1 is not None
+
+    # Second call should return the same client
+    client2 = await _get_shared_client()
+    assert client1 is client2
+
+    await cleanup_weather_client()
+
+    # Client should be recreated on next call
+    client3 = await _get_shared_client()
+    assert client3 is not None
+    assert client1 is not client3
+    await cleanup_weather_client()
+
+    # Calling cleanup again when client is None should be safe
+    await cleanup_weather_client()
