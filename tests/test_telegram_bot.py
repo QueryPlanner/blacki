@@ -1130,7 +1130,7 @@ class TestTelegramBotMessageHandling:
         )
 
         mock_api.send_chat_action.assert_called_once_with(
-            chat_id=123456789, action="typing"
+            chat_id=123456789, action="typing", message_thread_id=None
         )
         mock_api.send_message.assert_called()
 

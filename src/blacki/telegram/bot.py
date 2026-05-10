@@ -12,7 +12,7 @@ from blacki.reminders.storage import Reminder
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
-from .formatting import format_for_telegram
+from .formatting import escape_markdown, format_for_telegram
 from .streaming import split_long_message
 from .types import BotCommand, Message, ParseMode, Update
 
@@ -386,7 +386,11 @@ class TelegramBot:
             return
 
         try:
-            await self.api.send_chat_action(chat_id=chat_id, action="upload_document")
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="upload_document",
+                message_thread_id=message_thread_id,
+            )
 
             file_info = await self.api.get_file(file_id)
             file_path_api = file_info.get("file_path")
@@ -415,7 +419,11 @@ class TelegramBot:
 
             logger.info("File %s saved to sandbox for chat %s", file_name, chat_id)
 
-            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
 
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
@@ -456,7 +464,11 @@ class TelegramBot:
         logger.info("Received message from chat %s: %s...", chat_id, user_message[:50])
 
         try:
-            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
 
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
@@ -515,7 +527,11 @@ class TelegramBot:
         logger.info("Handling scheduled reminder %s for chat %s", reminder.id, chat_id)
 
         try:
-            await self.api.send_chat_action(chat_id=chat_id, action="typing")
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
 
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
@@ -540,11 +556,13 @@ class TelegramBot:
                 reminder.id,
                 chat_id,
             )
-            text = f"⏰ *Reminder*\n\n{reminder.message}"
+            safe_message = escape_markdown(reminder.message)
+            text = f"⏰ *Reminder*\n\n{safe_message}"
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN_V2,
+                message_thread_id=message_thread_id,
             )
 
     async def _send_final_response(
