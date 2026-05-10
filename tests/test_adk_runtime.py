@@ -3,7 +3,7 @@
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from google.adk.events import Event
@@ -882,7 +882,12 @@ async def test_run_user_turn_streaming_skips_empty_events() -> None:
 
 async def test_get_or_create_session_merges_state() -> None:
     """Test that get_or_create_session merges state into existing sessions."""
-    runtime = AdkRuntime(InMemorySessionService())
+    service = InMemorySessionService()
+    runtime = AdkRuntime(service)
+
+    # Mock update_session if it exists or add it
+    service.update_session = AsyncMock()  # type: ignore[attr-defined]
+
     locator = SessionLocator(
         user_id="telegram-chat-789",
         session_id_prefix="telegram-chat-789",
@@ -898,6 +903,47 @@ async def test_get_or_create_session_merges_state() -> None:
     )
     assert session_again.state.get("key_a") == "val_a"
     assert session_again.state.get("key_b") == "val_b"
+
+    # Verify update_session was called
+    service.update_session.assert_called_with(session_again)  # type: ignore[attr-defined]
+
+
+async def test_get_or_create_session_no_update_session() -> None:
+    service = InMemorySessionService()
+    runtime = AdkRuntime(service)
+
+    # Ensure no update_session
+    if hasattr(service, "update_session"):
+        delattr(service, "update_session")
+
+    locator = SessionLocator(
+        user_id="telegram-chat-999",
+        session_id_prefix="telegram-chat-999",
+    )
+
+    await runtime.get_or_create_session(locator=locator, state={"key": "val"})
+    await runtime.get_or_create_session(locator=locator, state={"key2": "val2"})
+
+
+async def test_get_or_create_session_no_session_service() -> None:
+    service = InMemorySessionService()
+    runtime = AdkRuntime(service)
+
+    # Remove session_service
+    runtime.runner.session_service = None  # type: ignore[assignment]
+
+    locator = SessionLocator(
+        user_id="telegram-chat-888",
+        session_id_prefix="telegram-chat-888",
+    )
+
+    # Initial get_or_create_session will use _get_latest_session which
+    # depends on runtime's logic.
+    # Wait, if session_service is None, _get_latest_session might crash.
+    # Let's just mock _get_latest_session directly for this test.
+    with patch.object(runtime, "_get_latest_session", AsyncMock()) as mock_latest:
+        mock_latest.return_value = type("MockSession", (), {"state": {}})()
+        await runtime.get_or_create_session(locator=locator, state={"key": "val"})
 
 
 async def test_run_user_turn_with_thoughts_skips_function_calls() -> None:

@@ -9,12 +9,21 @@ from pathlib import Path
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator
 from blacki.reminders.storage import Reminder
+from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import format_for_telegram
 from .streaming import split_long_message
-from .types import BotCommand, Message, ParseMode, Update
+from .types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ParseMode,
+    Update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +31,20 @@ POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
+
+MODEL_CHOICES = {
+    "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),
+    "m2": ("openrouter/x-ai/grok-4.3", "Grok 4.3"),
+    "m3": ("google/gemini-flash-latest", "Gemini Flash"),
+    "m4": ("openrouter/deepseek/deepseek-v4-pro", "DeepSeek v4 Pro"),
+    "m5": ("openrouter/deepseek/deepseek-v4-flash", "DeepSeek v4 Flash"),
+    "m6": ("google/gemini-pro-latest", "Gemini Pro"),
+    "m7": ("moonshotai/kimi-latest", "Kimi Latest"),
+    "m8": ("openrouter/minimax/minimax-m2.7", "MiniMax m2.7"),
+    "m9": ("openrouter/nvidia/nemotron-3-super-120b-a12b", "Nemotron 3 Super"),
+    "m10": ("openrouter/z-ai/glm-5", "GLM 5"),
+    "m_default": ("default", "System Default"),
+}
 
 
 @dataclass(slots=True, frozen=True)
@@ -105,6 +128,7 @@ class TelegramBot:
             BotCommand(
                 command="reset", description="Start a fresh conversation session"
             ),
+            BotCommand(command="model", description="Select AI model for this chat"),
         ]
         try:
             await self.api.set_my_commands(commands)
@@ -122,7 +146,7 @@ class TelegramBot:
                 updates = await self.api.get_updates(
                     offset=offset,
                     timeout=POLLING_TIMEOUT,
-                    allowed_updates=["message"],
+                    allowed_updates=["message", "callback_query"],
                 )
 
                 consecutive_errors = 0
@@ -172,6 +196,14 @@ class TelegramBot:
 
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
+        if update.callback_query:
+            # Handle callback queries immediately without cancelling conversation tasks
+            try:
+                await self._handle_callback_query(update.callback_query)
+            except Exception:
+                logger.exception("Error handling callback query")
+            return
+
         if update.message is None:
             return
 
@@ -273,6 +305,94 @@ class TelegramBot:
             await self._send_help_message(chat_id)
         elif command == "/reset":
             await self._handle_reset(chat_id, message.message_thread_id)
+        elif command == "/model":
+            await self._send_model_menu(chat_id, message.message_thread_id)
+
+    async def _send_model_menu(
+        self, chat_id: int, message_thread_id: int | None
+    ) -> None:
+        """Send inline keyboard to select a model for this chat."""
+        storage = get_preferences_storage()
+        current_model_id = await storage.get(str(chat_id), "telegram_model_override")
+
+        current_display_name = "System Default"
+        if current_model_id:
+            for _, (model_id, display_name) in MODEL_CHOICES.items():
+                if model_id == current_model_id:
+                    current_display_name = display_name
+                    break
+
+        buttons: list[list[InlineKeyboardButton]] = []
+
+        # Add buttons in rows of 2
+        row: list[InlineKeyboardButton] = []
+        for key, (_, display_name) in MODEL_CHOICES.items():
+            row.append(
+                InlineKeyboardButton(text=display_name, callback_data=f"mod:{key}")
+            )
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+        text = (
+            "⚙️ *Select AI Model for this chat:*\n\n"
+            f"Current Model: {format_for_telegram(current_display_name)}\n\n"
+            "\\(Changes take effect immediately\\)"
+        )
+        try:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                message_thread_id=message_thread_id,
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            logger.exception("Failed to send model menu")
+
+    async def _handle_callback_query(self, query: CallbackQuery) -> None:
+        """Handle incoming callback query."""
+        if not query.data or not query.data.startswith("mod:"):
+            await self.api.answer_callback_query(query.id, text="Unknown action")
+            return
+
+        model_key = query.data.removeprefix("mod:")
+        if model_key not in MODEL_CHOICES:
+            await self.api.answer_callback_query(query.id, text="Unknown model")
+            return
+
+        model_id, display_name = MODEL_CHOICES[model_key]
+        chat_id = query.message.chat.id if query.message else query.from_user.id
+
+        # Save preference
+        storage = get_preferences_storage()
+
+        pref_key = "telegram_model_override"
+        if model_id == "default":
+            await storage.delete(str(chat_id), pref_key)
+            text = "✅ Model reset to system default"
+        else:
+            await storage.set(str(chat_id), pref_key, model_id)
+            text = f"✅ Model set to: {display_name}"
+
+        await self.api.answer_callback_query(query.id, text=text)
+
+        if query.message:
+            try:
+                # remove inline keyboard
+                await self.api.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=query.message.message_id,
+                    text=format_for_telegram(
+                        f"⚙️ Selected AI Model: **{display_name}**"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+            except Exception:
+                logger.exception("Failed to edit model selection message")
 
     async def _send_start_message(self, chat_id: int) -> None:
         """Send the start/welcome message."""
@@ -324,16 +444,17 @@ class TelegramBot:
         )
 
         try:
+            state = await self._get_session_state(
+                chat_id=str(chat_id),
+                message_thread_id=message_thread_id,
+                conversation_key=session_identity.conversation_key,
+            )
             await self.runtime.create_next_session(
                 locator=SessionLocator(
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
                 ),
-                state=self._build_session_state(
-                    chat_id=str(chat_id),
-                    message_thread_id=message_thread_id,
-                    conversation_key=session_identity.conversation_key,
-                ),
+                state=state,
             )
             text = "🔄 Session reset\\. Starting a fresh ADK conversation\\."
             await self.api.send_message(
@@ -368,7 +489,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
         )
-        state = self._build_session_state(
+        state = await self._get_session_state(
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
@@ -470,17 +591,18 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
+            state = await self._get_session_state(
+                chat_id=str(chat_id),
+                message_thread_id=message_thread_id,
+                conversation_key=session_identity.conversation_key,
+            )
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
                 ),
                 message_text=user_message,
-                state=self._build_session_state(
-                    chat_id=str(chat_id),
-                    message_thread_id=message_thread_id,
-                    conversation_key=session_identity.conversation_key,
-                ),
+                state=state,
             )
             await self._send_final_response(
                 chat_id=chat_id,
@@ -526,17 +648,18 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
+            state = await self._get_session_state(
+                chat_id=chat_id_str,
+                message_thread_id=message_thread_id,
+                conversation_key=session_identity.conversation_key,
+            )
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
                 ),
                 message_text=f"[Scheduled Event] {reminder.message}",
-                state=self._build_session_state(
-                    chat_id=chat_id_str,
-                    message_thread_id=message_thread_id,
-                    conversation_key=session_identity.conversation_key,
-                ),
+                state=state,
             )
             await self._send_final_response(
                 chat_id=chat_id,
@@ -608,6 +731,30 @@ class TelegramBot:
             return f"chat-{chat_id}"
 
         return f"chat-{chat_id}-thread-{message_thread_id}"
+
+    async def _get_session_state(
+        self,
+        *,
+        chat_id: str,
+        message_thread_id: int | None,
+        conversation_key: str,
+    ) -> dict[str, str]:
+        """Build explicit session state and merge with preferences."""
+        session_state = self._build_session_state(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            conversation_key=conversation_key,
+        )
+
+        try:
+            storage = get_preferences_storage()
+            model_override = await storage.get(chat_id, "telegram_model_override")
+            if model_override:
+                session_state["telegram_model_override"] = model_override
+        except Exception:
+            logger.exception("Failed to fetch preferences for session state")
+
+        return session_state
 
     def _build_session_state(
         self,

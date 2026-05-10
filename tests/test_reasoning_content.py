@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import pytest
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_request import LlmRequest
 from google.genai import types
@@ -34,7 +35,8 @@ def _create_part(text: str, thought: bool) -> types.Part:
     return part
 
 
-def test_deepseek_reasoning_plugin_preserves_thoughts(monkeypatch: Any) -> None:
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_preserves_thoughts(monkeypatch: Any) -> None:
     """Test that the plugin converts thought parts to <think> text parts."""
     monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
     plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
@@ -53,7 +55,7 @@ def test_deepseek_reasoning_plugin_preserves_thoughts(monkeypatch: Any) -> None:
     agent = MockAgent("openrouter/deepseek/deepseek-r1")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
 
     # Verify the thought was nested in the content block
     assert len(request.contents) == 1
@@ -70,7 +72,8 @@ def test_deepseek_reasoning_plugin_preserves_thoughts(monkeypatch: Any) -> None:
         assert getattr(p, "thought", False) is False
 
 
-def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
     monkeypatch: Any,
 ) -> None:
     """Test that the plugin does nothing for non-DeepSeek models."""
@@ -89,7 +92,7 @@ def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
     agent = MockAgent("google/gemini-2.5-flash")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
 
     # Verify the thought was NOT modified
     assert request.contents[0].parts is not None
@@ -97,7 +100,8 @@ def test_deepseek_reasoning_plugin_ignores_non_deepseek_models(
     assert getattr(request.contents[0].parts[0], "thought", False) is True
 
 
-def test_deepseek_reasoning_plugin_empty_contents(monkeypatch: Any) -> None:
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_empty_contents(monkeypatch: Any) -> None:
     """Test that the plugin handles empty contents gracefully."""
     monkeypatch.setenv("MODEL_ID", "openrouter/deepseek/deepseek-r1")
     plugin = DeepSeekReasoningPlugin(name="deepseek_reasoning")
@@ -107,11 +111,12 @@ def test_deepseek_reasoning_plugin_empty_contents(monkeypatch: Any) -> None:
     agent = MockAgent("openrouter/deepseek/deepseek-r1")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
     assert len(request.contents) == 0
 
 
-def test_deepseek_reasoning_plugin_skips_non_model_roles(
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_skips_non_model_roles(
     monkeypatch: Any,
 ) -> None:
     """Test that the plugin skips content with non-model/non-assistant roles."""
@@ -127,14 +132,15 @@ def test_deepseek_reasoning_plugin_skips_non_model_roles(
     agent = MockAgent("openrouter/deepseek/deepseek-r1")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
     first_content = request.contents[0]
     first_parts = first_content.parts
     assert first_parts is not None
     assert getattr(first_parts[0], "thought", False) is True
 
 
-def test_deepseek_reasoning_plugin_no_thought_parts(
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_no_thought_parts(
     monkeypatch: Any,
 ) -> None:
     """Test that the plugin does nothing when there are no thought parts."""
@@ -150,7 +156,7 @@ def test_deepseek_reasoning_plugin_no_thought_parts(
     agent = MockAgent("openrouter/deepseek/deepseek-r1")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
     first_content = request.contents[0]
     first_parts = first_content.parts
     assert first_parts is not None
@@ -158,7 +164,8 @@ def test_deepseek_reasoning_plugin_no_thought_parts(
     assert getattr(first_parts[0], "thought", False) is False
 
 
-def test_deepseek_reasoning_plugin_thought_only_content(
+@pytest.mark.asyncio
+async def test_deepseek_reasoning_plugin_thought_only_content(
     monkeypatch: Any,
 ) -> None:
     """Test that the plugin handles content with only thought parts."""
@@ -174,7 +181,7 @@ def test_deepseek_reasoning_plugin_thought_only_content(
     agent = MockAgent("openrouter/deepseek/deepseek-r1")
     ctx = MockCallbackContext(agent)
 
-    plugin.before_model(ctx, request)
+    await plugin.before_model_callback(callback_context=ctx, llm_request=request)
     first_content = request.contents[0]
     first_parts = first_content.parts
     assert first_parts is not None

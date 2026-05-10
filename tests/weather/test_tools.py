@@ -160,8 +160,35 @@ async def test_geocode_location_error(mock_httpx_client: Any) -> None:
         "Network error", request=MagicMock()
     )  # noqa: E501
 
-    result = await _geocode_location("London", mock_httpx_client)
+    with pytest.raises(httpx.RequestError):
+        await _geocode_location("London", mock_httpx_client)
 
+
+@pytest.mark.asyncio
+async def test_geocode_location_http_status_error_not_404(
+    mock_httpx_client: Any,
+) -> None:
+    """Test geocoding API HTTP status error (not 404)."""
+    mock_response = MagicMock()
+    mock_response.status_code = 500
+    mock_httpx_client.get.side_effect = httpx.HTTPStatusError(
+        "Server error", request=MagicMock(), response=mock_response
+    )  # noqa: E501
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _geocode_location("London", mock_httpx_client)
+
+
+@pytest.mark.asyncio
+async def test_geocode_location_http_status_error_404(mock_httpx_client: Any) -> None:
+    """Test geocoding API HTTP status error (404)."""
+    mock_response = MagicMock()
+    mock_response.status_code = 404
+    mock_httpx_client.get.side_effect = httpx.HTTPStatusError(
+        "Not found", request=MagicMock(), response=mock_response
+    )  # noqa: E501
+
+    result = await _geocode_location("London", mock_httpx_client)
     assert result is None
 
 
