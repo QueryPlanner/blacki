@@ -1,4 +1,5 @@
 import asyncio
+import functools
 import os
 import sys
 import termios
@@ -17,6 +18,7 @@ from blacki.utils.config import ServerEnv, initialize_environment
 
 # Audio Recording Settings
 SAMPLE_RATE = 16000
+TTS_SAMPLE_RATE = 24000
 
 
 def wait_for_spacebar(prompt: str) -> None:
@@ -72,7 +74,7 @@ async def record_audio_until_spacebar() -> np.ndarray:
 
 async def stream_audio_response(tts_client: httpx.AsyncClient, text: str) -> None:
     """Streams audio directly from Custom TTS to the speakers."""
-    stream = sd.RawOutputStream(samplerate=24000, channels=1, dtype="int16")
+    stream = sd.RawOutputStream(samplerate=TTS_SAMPLE_RATE, channels=1, dtype="int16")
     stream.start()
     try:
         files = {
@@ -103,6 +105,8 @@ async def stream_audio_response(tts_client: httpx.AsyncClient, text: str) -> Non
                     await asyncio.get_event_loop().run_in_executor(
                         None, stream.write, chunk
                     )
+    except httpx.HTTPError as e:
+        print(f"\n❌ HTTP Error streaming TTS: {e}")
     except Exception as e:
         print(f"\n❌ Error streaming TTS: {e}")
     finally:
@@ -158,7 +162,7 @@ async def main() -> None:
 
     # Initialize TTS (Custom via httpx)
     tts_base_url = os.getenv("TTS_BASE_URL", "http://localhost:8000")
-    tts_client = httpx.AsyncClient(base_url=tts_base_url, timeout=httpx.Timeout(None))
+    tts_client = httpx.AsyncClient(base_url=tts_base_url, timeout=httpx.Timeout(60.0))
 
     print("\n✅ Speech Client Ready!")
 
@@ -181,8 +185,13 @@ async def main() -> None:
 
             # 2. Transcribe
             print("⏳ Transcribing...")
-            result = mlx_whisper.transcribe(
-                audio_data.flatten(), path_or_hf_repo=stt_model_path
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                functools.partial(
+                    mlx_whisper.transcribe,
+                    audio_data.flatten(),
+                    path_or_hf_repo=stt_model_path,
+                ),
             )
             user_text = result["text"].strip()
 

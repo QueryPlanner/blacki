@@ -57,7 +57,7 @@ class TestReturnInstructionRoot:
 
         assert "<output_verbosity_spec>" in instruction
         assert "sentences" in instruction.lower()
-        assert "bullets" in instruction.lower()
+        assert "markdown" in instruction.lower()
 
     def test_instruction_is_consistent(self) -> None:
         """Test that function returns the same instruction on multiple calls."""
