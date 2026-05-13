@@ -17,12 +17,7 @@ from blacki.adk_runtime import (
     SessionLocator,
     StreamChunk,
     TurnResponse,
-    _extract_event_text,
     _extract_session_version,
-    _extract_stream_turn_parts,
-    _extract_turn_parts,
-    _join_token,
-    _merge_stream_fragment,
     build_session_db_kwargs,
     build_session_service_uri,
     create_adk_runtime,
@@ -313,143 +308,6 @@ def test_extract_session_version_rejects_invalid_format() -> None:
         )
 
 
-def test_extract_event_text_concatenates_parts_directly() -> None:
-    """Test that event text extraction concatenates parts without breaking."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part.from_text(text="Hello "),
-                types.Part.from_text(text="world"),
-            ],
-        ),
-    )
-
-    assert _extract_event_text(event) == "Hello  world"
-
-
-def test_extract_event_text_returns_empty_without_content() -> None:
-    """Test that missing content returns an empty string."""
-    assert _extract_event_text(Event(author="root_agent")) == ""
-
-
-def test_extract_event_text_skips_parts_without_text() -> None:
-    """Test that non-text parts are ignored during extraction."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[types.Part()],
-        ),
-    )
-
-    assert _extract_event_text(event) == ""
-
-
-def test_extract_event_text_handles_leading_trailing_whitespace() -> None:
-    """Test that whitespace is stripped from the final concatenated result."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part.from_text(text="  Hello "),
-                types.Part.from_text(text="world  "),
-            ],
-        ),
-    )
-
-    assert _extract_event_text(event) == "Hello  world"
-
-
-def test_extract_turn_parts_separates_thoughts_from_content() -> None:
-    """Test that thoughts are separated from regular content."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part(text="Thinking hard...", thought=True),
-                types.Part(text="Final answer", thought=False),
-            ],
-        ),
-    )
-
-    thoughts, content = _extract_turn_parts(event)
-
-    assert thoughts == "Thinking hard..."
-    assert content == "Final answer"
-
-
-def test_extract_turn_parts_handles_only_thoughts() -> None:
-    """Test event with only thought parts."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part(text="First thought", thought=True),
-                types.Part(text="Second thought", thought=True),
-            ],
-        ),
-    )
-
-    thoughts, content = _extract_turn_parts(event)
-
-    assert thoughts == "First thought Second thought"
-    assert content == ""
-
-
-def test_extract_turn_parts_handles_only_content() -> None:
-    """Test event with only content parts (no thoughts)."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part(text="Hello "),
-                types.Part(text="world"),
-            ],
-        ),
-    )
-
-    thoughts, content = _extract_turn_parts(event)
-
-    assert thoughts == ""
-    assert content == "Hello  world"
-
-
-def test_extract_turn_parts_handles_empty_event() -> None:
-    """Test event with no content returns empty strings."""
-    event = Event(author="root_agent")
-
-    thoughts, content = _extract_turn_parts(event)
-
-    assert thoughts == ""
-    assert content == ""
-
-
-def test_extract_turn_parts_skips_empty_parts() -> None:
-    """Test that parts without text are skipped."""
-    event = Event(
-        author="root_agent",
-        content=types.Content(
-            role="model",
-            parts=[
-                types.Part(text="Content", thought=False),
-                types.Part(),
-                types.Part(text="More", thought=False),
-            ],
-        ),
-    )
-
-    thoughts, content = _extract_turn_parts(event)
-
-    assert thoughts == ""
-    assert content == "Content More"
-
-
 async def test_run_user_turn_with_thoughts_returns_structured_response() -> None:
     """Test that run_user_turn_with_thoughts separates thoughts and content."""
     runtime = AdkRuntime(InMemorySessionService())
@@ -520,364 +378,6 @@ async def test_run_user_turn_with_thoughts_handles_partial_thoughts() -> None:
 
     assert response.thoughts == "Partial thinking..."
     assert response.content == "Final answer."
-
-
-async def test_run_user_turn_streaming_yields_chunks() -> None:
-    """Test that streaming yields chunks as events arrive."""
-    runtime = AdkRuntime(InMemorySessionService())
-    locator = SessionLocator(
-        user_id="telegram-chat-123",
-        session_id_prefix="telegram-chat-123",
-    )
-
-    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
-        del kwargs
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="Thinking...", thought=True),
-                ],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="Partial answer"),
-                ],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=False,
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="Analyzing...", thought=True),
-                    types.Part(text="Final answer."),
-                ],
-            ),
-        )
-
-    chunks: list[StreamChunk] = []
-    with patch.object(runtime.runner, "run_async", fake_run_async):
-        async for chunk in runtime.run_user_turn_streaming(
-            locator=locator, message_text="Hello"
-        ):
-            chunks.append(chunk)
-
-    assert len(chunks) >= 3
-    assert chunks[-1].is_partial is False
-    assert chunks[-1].thoughts == "Thinking...Analyzing..."
-    assert chunks[-1].content == "Partial answerFinal answer."
-
-
-async def test_run_user_turn_streaming_handles_partial_content() -> None:
-    """Test that partial content is accumulated correctly."""
-    runtime = AdkRuntime(InMemorySessionService())
-    locator = SessionLocator(
-        user_id="telegram-chat-123",
-        session_id_prefix="telegram-chat-123",
-    )
-
-    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
-        del kwargs
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="Building..."),
-                ],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=False,
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="Complete."),
-                ],
-            ),
-        )
-
-    chunks: list[StreamChunk] = []
-    with patch.object(runtime.runner, "run_async", fake_run_async):
-        async for chunk in runtime.run_user_turn_streaming(
-            locator=locator, message_text="Hello"
-        ):
-            chunks.append(chunk)
-
-    assert len(chunks) >= 2
-    assert "Building..." in chunks[0].content
-    assert chunks[-1].content == "Building...Complete."
-    assert chunks[-1].is_partial is False
-
-
-async def test_run_user_turn_streaming_preserves_partial_whitespace() -> None:
-    """Test that streaming keeps token spacing when partial chunks include spaces."""
-    runtime = AdkRuntime(InMemorySessionService())
-    locator = SessionLocator(
-        user_id="telegram-chat-123",
-        session_id_prefix="telegram-chat-123",
-    )
-
-    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
-        del kwargs
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text="Hi")],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text=" Chirag")],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=False,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text="Hi Chirag!")],
-            ),
-        )
-
-    chunks: list[StreamChunk] = []
-    with patch.object(runtime.runner, "run_async", fake_run_async):
-        async for chunk in runtime.run_user_turn_streaming(
-            locator=locator, message_text="Hello"
-        ):
-            chunks.append(chunk)
-
-    assert len(chunks) >= 3
-    assert chunks[1].content == "Hi Chirag"
-    assert chunks[-1].content == "Hi Chirag!"
-
-
-async def test_run_user_turn_streaming_does_not_duplicate_final_snapshot() -> None:
-    """Test that a final full snapshot replaces partial chunks instead of appending."""
-    runtime = AdkRuntime(InMemorySessionService())
-    locator = SessionLocator(
-        user_id="telegram-chat-123",
-        session_id_prefix="telegram-chat-123",
-    )
-
-    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
-        del kwargs
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text="Hi Chir")],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=True,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text="ag!")],
-            ),
-        )
-        yield Event(
-            author="root_agent",
-            partial=False,
-            content=types.Content(
-                role="model",
-                parts=[types.Part(text="Hi Chirag!")],
-            ),
-        )
-
-    chunks: list[StreamChunk] = []
-    with patch.object(runtime.runner, "run_async", fake_run_async):
-        async for chunk in runtime.run_user_turn_streaming(
-            locator=locator, message_text="Hello"
-        ):
-            chunks.append(chunk)
-
-    assert len(chunks) >= 3
-    assert chunks[-1].content == "Hi Chirag!"
-
-
-class TestMergeStreamFragment:
-    """Tests for _merge_stream_fragment function."""
-
-    def test_returns_incoming_when_existing_is_empty(self) -> None:
-        """Test that empty existing text returns incoming."""
-        result = _merge_stream_fragment("", "Hello")
-        assert result == "Hello"
-
-    def test_returns_existing_when_incoming_is_empty(self) -> None:
-        """Test that empty incoming text returns existing."""
-        result = _merge_stream_fragment("Hello", "")
-        assert result == "Hello"
-
-    def test_returns_incoming_when_it_starts_with_existing(self) -> None:
-        """Test snapshot-style merge where incoming contains existing."""
-        result = _merge_stream_fragment("Hello", "Hello world")
-        assert result == "Hello world"
-
-    def test_returns_existing_when_it_starts_with_incoming(self) -> None:
-        """Test case where existing is longer than incoming."""
-        result = _merge_stream_fragment("Hello world", "Hello")
-        assert result == "Hello world"
-
-    def test_merges_with_overlap(self) -> None:
-        """Test delta-style merge with overlapping suffix/prefix."""
-        result = _merge_stream_fragment("Hello wor", "world!")
-        assert result == "Hello world!"
-
-    def test_concatenates_when_no_overlap(self) -> None:
-        """Test concatenation when no overlap exists."""
-        result = _merge_stream_fragment("Hello ", "world")
-        assert result == "Hello world"
-
-    def test_handles_unicode_characters(self) -> None:
-        """Test that unicode characters are merged correctly."""
-        result = _merge_stream_fragment("Hello ", "世界!")
-        assert result == "Hello 世界!"
-
-    def test_handles_emoji(self) -> None:
-        """Test that emoji characters are merged correctly."""
-        result = _merge_stream_fragment("Hello ", "👋")
-        assert result == "Hello 👋"
-
-    def test_handles_single_character(self) -> None:
-        """Test single character merges."""
-        result = _merge_stream_fragment("a", "ab")
-        assert result == "ab"
-
-    def test_handles_empty_strings(self) -> None:
-        """Test both empty strings."""
-        result = _merge_stream_fragment("", "")
-        assert result == ""
-
-    def test_full_overlap_returns_existing(self) -> None:
-        """Test when incoming is a prefix of existing."""
-        result = _merge_stream_fragment("Hello world", "Hello")
-        assert result == "Hello world"
-
-    def test_exact_match_returns_either(self) -> None:
-        """Test when strings are identical."""
-        result = _merge_stream_fragment("Hello", "Hello")
-        assert result == "Hello"
-
-
-class TestJoinToken:
-    """Tests for _join_token function."""
-
-    def test_returns_accumulated_when_token_empty(self) -> None:
-        """Test that empty token returns accumulated unchanged."""
-        result = _join_token("Hello", "")
-        assert result == "Hello"
-
-    def test_returns_token_when_accumulated_empty(self) -> None:
-        """Test that empty accumulated returns token."""
-        result = _join_token("", "world")
-        assert result == "world"
-
-    def test_no_space_before_punctuation(self) -> None:
-        """Test that no space is added before punctuation."""
-        result = _join_token("Hello", ", world!")
-        assert result == "Hello, world!"
-
-    def test_adds_space_before_non_punctuation(self) -> None:
-        """Test that space is added before non-punctuation."""
-        result = _join_token("Hello", "world")
-        assert result == "Hello world"
-
-
-class TestExtractStreamTurnParts:
-    """Tests for _extract_stream_turn_parts function."""
-
-    def test_returns_empty_when_content_is_none(self) -> None:
-        """Test that None content returns empty strings."""
-        event = Event(
-            author="model",
-            content=None,
-        )
-        thoughts, content = _extract_stream_turn_parts(event)
-        assert thoughts == ""
-        assert content == ""
-
-    def test_returns_empty_when_parts_empty(self) -> None:
-        """Test that empty parts returns empty strings."""
-        event = Event(
-            author="model",
-            content=types.Content(role="model", parts=[]),
-        )
-        thoughts, content = _extract_stream_turn_parts(event)
-        assert thoughts == ""
-        assert content == ""
-
-    def test_skips_parts_with_no_text(self) -> None:
-        """Test that parts with no text are skipped."""
-        event = Event(
-            author="model",
-            content=types.Content(
-                role="model",
-                parts=[
-                    types.Part(text="thought", thought=True),
-                    types.Part(),  # No text
-                    types.Part(text="content"),
-                ],
-            ),
-        )
-        thoughts, content = _extract_stream_turn_parts(event)
-        assert thoughts == "thought"
-        assert content == "content"
-
-
-async def test_run_user_turn_streaming_skips_empty_events() -> None:
-    """Test that streaming skips events with no thoughts or content."""
-    runtime = AdkRuntime(InMemorySessionService())
-    locator = SessionLocator(
-        user_id="telegram-chat-123",
-        session_id_prefix="telegram-chat-123",
-    )
-
-    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
-        del kwargs
-        yield Event(author="root_agent", partial=True)  # Empty event
-        yield Event(
-            author="root_agent",
-            partial=False,
-            content=types.Content(
-                role="model",
-                parts=[types.Part.from_text(text="Final answer")],
-            ),
-        )
-
-    chunks: list[StreamChunk] = []
-    with patch.object(runtime.runner, "run_async", fake_run_async):
-        async for chunk in runtime.run_user_turn_streaming(
-            locator=locator, message_text="Hello"
-        ):
-            chunks.append(chunk)
-
-    # The empty event was skipped.
-    # The final event has content, so it yields a partial chunk (line 276)
-    # and then the loop ends and it yields a final chunk (line 285).
-    assert len(chunks) == 2
-    assert chunks[0].is_partial is True
-    assert chunks[0].content == "Final answer"
-    assert chunks[1].is_partial is False
-    assert chunks[1].content == "Final answer"
 
 
 async def test_get_or_create_session_merges_state() -> None:
@@ -972,3 +472,90 @@ async def test_run_user_turn_with_thoughts_skips_function_calls() -> None:
         )
 
     assert response.content == "Final answer after fc"
+
+
+async def test_run_user_turn_streaming_basic() -> None:
+    """Basic test for simplified run_user_turn_streaming."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Thinking...", thought=True)],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Thinking...", thought=True),
+                    types.Part(text="Final answer."),
+                ],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) == 3
+    assert chunks[0].is_partial is True
+    assert chunks[0].thoughts == "Thinking..."
+    assert chunks[0].content == ""
+    assert chunks[1].is_partial is True
+    assert chunks[1].thoughts == "Thinking..."
+    assert chunks[1].content == "Final answer."
+    assert chunks[2].is_partial is False
+    assert chunks[2].thoughts == ""
+    assert chunks[2].content == ""
+
+
+async def test_run_user_turn_streaming_empty_content_and_partial_skips() -> None:
+    """Test that streaming skips events with no parts and partial without content."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        # 1. No content
+        yield Event(author="root_agent", partial=True, content=None)
+        # 2. Content with empty parts
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(role="model", parts=[]),
+        )
+        # 3. Content with parts but text is empty, and partial is True
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(role="model", parts=[types.Part()]),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="Hello"
+        ):
+            chunks.append(chunk)
+
+    assert len(chunks) == 1
+    assert chunks[0].is_partial is False
+    assert chunks[0].thoughts == ""
+    assert chunks[0].content == ""

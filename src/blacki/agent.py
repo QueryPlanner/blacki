@@ -14,7 +14,6 @@ from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.plugins.logging_plugin import LoggingPlugin
 
-from .adk_runtime import DeepSeekReasoningPlugin
 from .callbacks import (
     LoggingCallbacks,
     notify_telegram_after_model,
@@ -204,7 +203,6 @@ def create_app(agent: LlmAgent | None = None) -> App:
             TelegramModelOverridePlugin(name="telegram_model_override"),
             GlobalInstructionPlugin(return_global_instruction),
             LoggingPlugin(),
-            DeepSeekReasoningPlugin(name="deepseek_reasoning"),
         ],
         events_compaction_config=None,
         context_cache_config=None,
