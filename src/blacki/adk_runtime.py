@@ -215,12 +215,12 @@ class AdkRuntime:
             )
 
             if event.content and event.content.parts:
-                event_thoughts = "".join(
+                event_thoughts = " ".join(
                     p.text
                     for p in event.content.parts
                     if getattr(p, "thought", False) and p.text
                 )
-                event_content = "".join(
+                event_content = " ".join(
                     p.text
                     for p in event.content.parts
                     if not getattr(p, "thought", False) and p.text
@@ -268,23 +268,29 @@ class AdkRuntime:
             self._raise_on_event_error(event)
 
             if event.content and event.content.parts:
-                event_thoughts = "".join(
+                event_thoughts = " ".join(
                     p.text
                     for p in event.content.parts
                     if getattr(p, "thought", False) and p.text
                 )
-                event_content = "".join(
+                event_content = " ".join(
                     p.text
                     for p in event.content.parts
                     if not getattr(p, "thought", False) and p.text
                 )
 
-                if event_thoughts or event_content or event.partial is False:
+                if event_thoughts or event_content:
                     yield StreamChunk(
                         thoughts=event_thoughts,
                         content=event_content,
-                        is_partial=event.partial is not False,
+                        is_partial=True,
                     )
+
+        yield StreamChunk(
+            thoughts="",
+            content="",
+            is_partial=False,
+        )
 
     async def close(self) -> None:
         """Close the underlying session service when supported."""

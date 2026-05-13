@@ -471,13 +471,16 @@ async def test_run_user_turn_streaming_basic() -> None:
         ):
             chunks.append(chunk)
 
-    assert len(chunks) == 2
+    assert len(chunks) == 3
     assert chunks[0].is_partial is True
     assert chunks[0].thoughts == "Thinking..."
     assert chunks[0].content == ""
-    assert chunks[1].is_partial is False
+    assert chunks[1].is_partial is True
     assert chunks[1].thoughts == "Thinking..."
     assert chunks[1].content == "Final answer."
+    assert chunks[2].is_partial is False
+    assert chunks[2].thoughts == ""
+    assert chunks[2].content == ""
 
 
 async def test_run_user_turn_streaming_empty_content_and_partial_skips() -> None:
@@ -512,4 +515,7 @@ async def test_run_user_turn_streaming_empty_content_and_partial_skips() -> None
         ):
             chunks.append(chunk)
 
-    assert len(chunks) == 0
+    assert len(chunks) == 1
+    assert chunks[0].is_partial is False
+    assert chunks[0].thoughts == ""
+    assert chunks[0].content == ""
