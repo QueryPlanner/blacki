@@ -340,6 +340,46 @@ async def test_run_user_turn_with_thoughts_returns_structured_response() -> None
     assert response.content == "Here is my answer."
 
 
+async def test_run_user_turn_with_thoughts_handles_partial_thoughts() -> None:
+    """Test that partial thoughts are used when no final thoughts are available."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Partial thinking...", thought=True),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Final answer."),
+                ],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="Hello"
+        )
+
+    assert response.thoughts == "Partial thinking..."
+    assert response.content == "Final answer."
+
+
 async def test_get_or_create_session_merges_state() -> None:
     """Test that get_or_create_session merges state into existing sessions."""
     service = InMemorySessionService()

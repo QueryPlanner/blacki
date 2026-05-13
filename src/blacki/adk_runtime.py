@@ -194,6 +194,8 @@ class AdkRuntime:
 
         thoughts_parts: list[str] = []
         content_parts: list[str] = []
+        partial_thoughts = ""
+        partial_content = ""
 
         async for event in self.runner.run_async(
             user_id=locator.user_id,
@@ -203,14 +205,12 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
-            if event.partial:
-                continue
-
             has_function_call = (
                 event.content is not None
                 and event.content.parts
                 and any(
-                    getattr(part, "function_call", None) for part in event.content.parts
+                    getattr(p, "function_call", None) is not None
+                    for p in event.content.parts
                 )
             )
 
@@ -227,13 +227,22 @@ class AdkRuntime:
                 )
 
                 if event_thoughts:
-                    thoughts_parts.append(event_thoughts)
+                    if event.partial:
+                        partial_thoughts = event_thoughts
+                    else:
+                        thoughts_parts.append(event_thoughts)
                 if event_content and not has_function_call:
-                    content_parts.append(event_content)
+                    if event.partial:
+                        partial_content = event_content
+                    else:
+                        content_parts.append(event_content)
+
+        final_thoughts = " ".join(thoughts_parts).strip() or partial_thoughts
+        final_content = " ".join(content_parts).strip() or partial_content
 
         return TurnResponse(
-            thoughts="".join(thoughts_parts).strip(),
-            content="".join(content_parts).strip(),
+            thoughts=final_thoughts,
+            content=final_content,
         )
 
     async def run_user_turn_streaming(
