@@ -2,17 +2,13 @@
 
 import inspect
 import logging
-import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from google.adk.agents.callback_context import CallbackContext
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
-from google.adk.models.llm_request import LlmRequest
-from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.runners import Runner
 from google.adk.sessions import Session
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -20,52 +16,6 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
 from .utils.config import ServerEnv
-
-
-class DeepSeekReasoningPlugin(BasePlugin):
-    """Preserves reasoning_content for DeepSeek models by nesting it in content.
-
-    Prevents 400 Bad Request crashes by explicitly moving ADK thought parts
-    into the standard content block with <think> tags, which OpenRouter supports.
-    """
-
-    async def before_model_callback(
-        self,
-        *,
-        callback_context: CallbackContext,
-        llm_request: LlmRequest,
-    ) -> None:
-        m1 = os.getenv("OPENROUTER_MODEL", "").lower()
-        m2 = os.getenv("MODEL_ID", "").lower()
-        if "deepseek" not in m1 and "deepseek" not in m2:
-            return
-
-        if not llm_request.contents:
-            return
-
-        for content in llm_request.contents:
-            if content.role in ("model", "assistant") and content.parts:
-                thought_parts: list[str] = []
-                other_parts: list[types.Part] = []
-
-                for p in content.parts:
-                    if getattr(p, "thought", False) and p.text:
-                        thought_parts.append(p.text)
-                    else:
-                        other_parts.append(p)
-
-                if thought_parts:
-                    thoughts = "\n".join(thought_parts)
-                    think_text = f"<think>\n{thoughts}\n</think>\n"
-
-                    if other_parts and other_parts[0].text:
-                        other_parts[0].text = think_text + other_parts[0].text
-                    else:
-                        other_parts.insert(0, types.Part.from_text(text=think_text))
-
-                    # Remove thought=True so ADK LiteLlm treats it as normal text
-                    content.parts = other_parts
-
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +194,6 @@ class AdkRuntime:
 
         thoughts_parts: list[str] = []
         content_parts: list[str] = []
-        partial_thoughts = ""
-        partial_content = ""
 
         async for event in self.runner.run_async(
             user_id=locator.user_id,
@@ -255,6 +203,9 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
+            if event.partial:
+                continue
+
             has_function_call = (
                 event.content is not None
                 and event.content.parts
@@ -263,23 +214,27 @@ class AdkRuntime:
                 )
             )
 
-            event_thoughts, event_content = _extract_turn_parts(event)
-            if event_thoughts:
-                if event.partial:
-                    partial_thoughts = event_thoughts
-                else:
+            if event.content and event.content.parts:
+                event_thoughts = "".join(
+                    p.text
+                    for p in event.content.parts
+                    if getattr(p, "thought", False) and p.text
+                )
+                event_content = "".join(
+                    p.text
+                    for p in event.content.parts
+                    if not getattr(p, "thought", False) and p.text
+                )
+
+                if event_thoughts:
                     thoughts_parts.append(event_thoughts)
-            if event_content:
-                if event.partial:
-                    partial_content = event_content
-                else:
-                    if not has_function_call:
-                        content_parts.append(event_content)
+                if event_content and not has_function_call:
+                    content_parts.append(event_content)
 
-        final_thoughts = "".join(thoughts_parts) or partial_thoughts
-        final_content = "".join(content_parts) or partial_content
-
-        return TurnResponse(thoughts=final_thoughts, content=final_content)
+        return TurnResponse(
+            thoughts="".join(thoughts_parts).strip(),
+            content="".join(content_parts).strip(),
+        )
 
     async def run_user_turn_streaming(
         self,
@@ -301,11 +256,6 @@ class AdkRuntime:
             parts=[types.Part.from_text(text=message_text)],
         )
 
-        accumulated_thoughts: list[str] = []
-        accumulated_content: list[str] = []
-        partial_thoughts = ""
-        partial_content = ""
-
         streaming_config = RunConfig(streaming_mode=StreamingMode.SSE)
 
         async for event in self.runner.run_async(
@@ -317,48 +267,24 @@ class AdkRuntime:
         ):
             self._raise_on_event_error(event)
 
-            event_thoughts, event_content = _extract_stream_turn_parts(event)
-            if event_thoughts:
-                if event.partial:
-                    partial_thoughts = _merge_stream_fragment(
-                        partial_thoughts,
-                        event_thoughts,
-                    )
-                else:
-                    accumulated_thoughts.append(
-                        _merge_stream_fragment(partial_thoughts, event_thoughts)
-                    )
-                    partial_thoughts = ""
-            if event_content:
-                if event.partial:
-                    partial_content = _merge_stream_fragment(
-                        partial_content,
-                        event_content,
-                    )
-                else:
-                    accumulated_content.append(
-                        _merge_stream_fragment(partial_content, event_content)
-                    )
-                    partial_content = ""
-
-            current_thoughts = "".join(accumulated_thoughts) + partial_thoughts
-            current_content = "".join(accumulated_content) + partial_content
-
-            if current_thoughts or current_content:
-                yield StreamChunk(
-                    thoughts=current_thoughts,
-                    content=current_content,
-                    is_partial=True,
+            if event.content and event.content.parts:
+                event_thoughts = "".join(
+                    p.text
+                    for p in event.content.parts
+                    if getattr(p, "thought", False) and p.text
+                )
+                event_content = "".join(
+                    p.text
+                    for p in event.content.parts
+                    if not getattr(p, "thought", False) and p.text
                 )
 
-        final_thoughts = "".join(accumulated_thoughts) or partial_thoughts
-        final_content = "".join(accumulated_content) or partial_content
-
-        yield StreamChunk(
-            thoughts=final_thoughts,
-            content=final_content,
-            is_partial=False,
-        )
+                if event_thoughts or event_content or event.partial is False:
+                    yield StreamChunk(
+                        thoughts=event_thoughts,
+                        content=event_content,
+                        is_partial=event.partial is not False,
+                    )
 
     async def close(self) -> None:
         """Close the underlying session service when supported."""
@@ -464,99 +390,3 @@ def _extract_session_version(*, session_id: str, session_id_prefix: str) -> int:
         msg = f"Unexpected session id format: {session_id}"
         raise ValueError(msg)
     return int(version_text)
-
-
-_PUNCTUATION_START = frozenset(".,!?;:'\"-–—…)]}©®™")
-
-
-def _join_token(accumulated: str, token: str) -> str:
-    """Join a token to accumulated text with smart spacing.
-
-    Adds a space before the token unless it starts with punctuation.
-    """
-    if not token:
-        return accumulated
-    if not accumulated:
-        return token
-    if token[0] in _PUNCTUATION_START:
-        return accumulated + token
-    return accumulated + " " + token
-
-
-def _join_text_parts(parts: list[str]) -> str:
-    """Join text parts with smart spacing."""
-    result = ""
-    for part in parts:
-        result = _join_token(result, part)
-    return result
-
-
-def _extract_event_text(event: Event) -> str:
-    """Extract all text from an event (backward compatibility helper)."""
-    thoughts, content = _extract_turn_parts(event)
-    return f"{thoughts}\n{content}".strip()
-
-
-def _extract_turn_parts(event: Event) -> tuple[str, str]:
-    """Extract thoughts and content from an event.
-
-    Returns:
-        A tuple of (thoughts, content) where thoughts are from parts marked
-        with thought=True and content is from all other text parts.
-    """
-    if event.content is None or not event.content.parts:
-        return "", ""
-
-    thoughts: list[str] = []
-    content: list[str] = []
-
-    for part in event.content.parts:
-        if not part.text:
-            continue
-        if part.thought:
-            thoughts.append(part.text)
-        else:
-            content.append(part.text)
-
-    return _join_text_parts(thoughts).strip(), _join_text_parts(content).strip()
-
-
-def _extract_stream_turn_parts(event: Event) -> tuple[str, str]:
-    """Extract streaming thoughts/content while preserving exact token spacing."""
-    if event.content is None or not event.content.parts:
-        return "", ""
-
-    thoughts: list[str] = []
-    content: list[str] = []
-
-    for part in event.content.parts:
-        if not part.text:
-            continue
-        if part.thought:
-            thoughts.append(part.text)
-        else:
-            content.append(part.text)
-
-    return "".join(thoughts), "".join(content)
-
-
-def _merge_stream_fragment(existing_text: str, incoming_text: str) -> str:
-    """Merge streaming fragments that may be deltas or full snapshots."""
-    if not existing_text:
-        return incoming_text
-
-    if not incoming_text:
-        return existing_text
-
-    if incoming_text.startswith(existing_text):
-        return incoming_text
-
-    if existing_text.startswith(incoming_text):
-        return existing_text
-
-    max_overlap = min(len(existing_text), len(incoming_text))
-    for overlap_size in range(max_overlap, 0, -1):
-        if existing_text.endswith(incoming_text[:overlap_size]):
-            return existing_text + incoming_text[overlap_size:]
-
-    return existing_text + incoming_text
