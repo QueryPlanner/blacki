@@ -34,11 +34,14 @@ async def calorie_storage(mock_pool):
 
 @pytest.mark.asyncio
 async def test_initialize_creates_tables(mock_pool) -> None:
+    conn = mock_pool.acquire.return_value.__aenter__.return_value
+    conn.fetchval.return_value = "integer"
+
     storage = PostgresCalorieStorage(mock_pool)
     await storage.initialize()
 
-    conn = mock_pool.acquire.return_value.__aenter__.return_value
-    assert conn.execute.call_count == 2
+    assert conn.execute.call_count == 3
+    assert conn.fetchval.call_count == 1
     assert storage._schema_ready is True
 
 

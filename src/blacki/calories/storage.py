@@ -33,9 +33,9 @@ class CalorieEntry(BaseModel):
     user_id: str
     description: str
     calories: int
-    protein_g: int | None = None
-    carbs_g: int | None = None
-    fat_g: int | None = None
+    protein_g: float | None = None
+    carbs_g: float | None = None
+    fat_g: float | None = None
     meal_type: str | None = None  # breakfast/lunch/dinner/snack
     logged_at: str  # UTC ISO
     logged_date: str  # YYYY-MM-DD local
@@ -46,9 +46,9 @@ class DailySummary(BaseModel):
 
     date: str  # YYYY-MM-DD
     total_calories: int = 0
-    total_protein_g: int | None = None
-    total_carbs_g: int | None = None
-    total_fat_g: int | None = None
+    total_protein_g: float | None = None
+    total_carbs_g: float | None = None
+    total_fat_g: float | None = None
     entry_count: int = 0
     entries: list[CalorieEntry] = []  # populated only in single-day queries
 
@@ -66,14 +66,26 @@ class PostgresCalorieStorage(PostgresStorage):
                 user_id       TEXT      NOT NULL,
                 description   TEXT      NOT NULL,
                 calories      INTEGER   NOT NULL,
-                protein_g     INTEGER,
-                carbs_g       INTEGER,
-                fat_g         INTEGER,
+                protein_g     REAL,
+                carbs_g       REAL,
+                fat_g         REAL,
                 meal_type     TEXT,
                 logged_at     TIMESTAMPTZ NOT NULL,
                 logged_date   DATE      NOT NULL
             )
         """)
+        column_type = await conn.fetchval("""
+            SELECT data_type
+            FROM information_schema.columns
+            WHERE table_name = 'calorie_logs' AND column_name = 'protein_g'
+        """)
+        if column_type == "integer":
+            await conn.execute("""
+                ALTER TABLE calorie_logs
+                ALTER COLUMN protein_g TYPE REAL USING protein_g::REAL,
+                ALTER COLUMN carbs_g TYPE REAL USING carbs_g::REAL,
+                ALTER COLUMN fat_g TYPE REAL USING fat_g::REAL;
+            """)
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_calorie_logs_user_date
                 ON calorie_logs (user_id, logged_date)
@@ -181,13 +193,13 @@ class PostgresCalorieStorage(PostgresStorage):
                     total_calories=int(r["total_calories"])
                     if r["total_calories"] is not None
                     else 0,
-                    total_protein_g=int(r["total_protein_g"])
+                    total_protein_g=float(r["total_protein_g"])
                     if r["total_protein_g"] is not None
                     else None,
-                    total_carbs_g=int(r["total_carbs_g"])
+                    total_carbs_g=float(r["total_carbs_g"])
                     if r["total_carbs_g"] is not None
                     else None,
-                    total_fat_g=int(r["total_fat_g"])
+                    total_fat_g=float(r["total_fat_g"])
                     if r["total_fat_g"] is not None
                     else None,
                     entry_count=int(r["entry_count"]),
@@ -233,9 +245,9 @@ class PostgresCalorieStorage(PostgresStorage):
             user_id=row["user_id"],
             description=row["description"],
             calories=int(row["calories"]),
-            protein_g=int(row["protein_g"]) if row["protein_g"] is not None else None,
-            carbs_g=int(row["carbs_g"]) if row["carbs_g"] is not None else None,
-            fat_g=int(row["fat_g"]) if row["fat_g"] is not None else None,
+            protein_g=float(row["protein_g"]) if row["protein_g"] is not None else None,
+            carbs_g=float(row["carbs_g"]) if row["carbs_g"] is not None else None,
+            fat_g=float(row["fat_g"]) if row["fat_g"] is not None else None,
             meal_type=row["meal_type"],
             logged_at=(
                 row["logged_at"].isoformat()

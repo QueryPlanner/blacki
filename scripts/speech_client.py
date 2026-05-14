@@ -1,9 +1,9 @@
 import asyncio
+import collections
 import functools
 import os
+import re
 import sys
-import termios
-import tty
 from typing import Any
 
 import httpx
@@ -19,57 +19,189 @@ from blacki.utils.config import ServerEnv, initialize_environment
 # Audio Recording Settings
 SAMPLE_RATE = 16000
 TTS_SAMPLE_RATE = 24000
+SILENCE_THRESHOLD = 0.02
 
 
-def wait_for_spacebar(prompt: str) -> None:
-    """Wait for the user to press the spacebar."""
-    print(prompt, end="", flush=True)
-    if not sys.stdin.isatty():
-        # Handle cases where stdin is not a terminal (e.g., piped or backgrounded)
-        sys.stdin.readline()
-        return
+async def play_beep(frequency: float = 1000.0, duration: float = 0.15) -> None:
+    """Plays a simple beep tone to acknowledge wake word."""
+    t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
+    # Generate a sine wave
+    tone = np.sin(frequency * t * 2 * np.pi)
+    # Apply a quick envelope to prevent clicking clicks at start/end
+    envelope = np.ones_like(tone)
+    fade_len = int(SAMPLE_RATE * 0.02)
+    if fade_len > 0:
+        envelope[:fade_len] = np.linspace(0, 1, fade_len)
+        envelope[-fade_len:] = np.linspace(1, 0, fade_len)
+    tone = tone * envelope * 0.3  # Scale volume down
 
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        # Flush any pending input so it doesn't instantly trigger
-        termios.tcflush(fd, termios.TCIFLUSH)
-        while True:
-            char = sys.stdin.read(1)
-            if char == " ":
-                print()
-                break
-            elif char == "\x03":  # Ctrl+C
-                raise KeyboardInterrupt
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-async def record_audio_until_spacebar() -> np.ndarray:
-    """Records audio from microphone until the user hits Spacebar."""
     await asyncio.get_event_loop().run_in_executor(
-        None, wait_for_spacebar, "\n🎤 Press [SPACEBAR] to start recording..."
+        None, functools.partial(sd.play, tone, samplerate=SAMPLE_RATE, blocking=True)
     )
 
-    recording = []
+
+async def listen_for_wake_word(stt_model_path: str) -> str:
+    """Continuously listen for the wake word ('blacki') using a rolling buffer."""
+    print("🎧 Listening for wake word ('Blacki')...")
+
+    buffer_duration = 2.5
+    check_interval = 0.5
+    max_frames = int(SAMPLE_RATE * buffer_duration)
+
+    audio_buffer: collections.deque[np.ndarray] = collections.deque()
+    buffer_frames = 0
+
+    loop = asyncio.get_event_loop()
 
     def callback(
         indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags
     ) -> None:
         if status:
             print(status, file=sys.stderr)
-        recording.append(indata.copy())
 
-    print("🔴 Recording... (Press [SPACEBAR] to stop)")
+        nonlocal buffer_frames
+        chunk = indata.copy()
+        audio_buffer.append(chunk)
+        buffer_frames += frames
+
+        while buffer_frames > max_frames and len(audio_buffer) > 1:
+            first_chunk = audio_buffer[0]
+            if buffer_frames - len(first_chunk) >= max_frames:
+                buffer_frames -= len(first_chunk)
+                audio_buffer.popleft()
+            else:
+                break
+
     stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=callback)
     with stream:
-        await asyncio.get_event_loop().run_in_executor(None, wait_for_spacebar, "")
+        while True:
+            await asyncio.sleep(check_interval)
 
-    print("⏹️ Stopped recording. Processing...")
-    if not recording:
+            if buffer_frames < int(
+                SAMPLE_RATE * 1.0
+            ):  # Wait until we have at least 1 second
+                continue
+
+            # Safely copy the current buffer
+            current_audio = (
+                np.concatenate(list(audio_buffer), axis=0)
+                if audio_buffer
+                else np.array([])
+            )
+
+            if len(current_audio) == 0:
+                continue
+
+            # 1. Energy Gate: Skip pure silence
+            rms = np.sqrt(np.mean(current_audio**2))
+            if rms < SILENCE_THRESHOLD:
+                continue
+
+            # Transcribe chunk
+            result = await loop.run_in_executor(
+                None,
+                functools.partial(
+                    mlx_whisper.transcribe,
+                    current_audio.flatten(),
+                    path_or_hf_repo=stt_model_path,
+                ),
+            )
+
+            # 2. no_speech_prob check
+            segments = result.get("segments", [])
+            if segments:
+                avg_no_speech = sum(
+                    s.get("no_speech_prob", 0.0) for s in segments
+                ) / len(segments)
+                if avg_no_speech > 0.6:
+                    continue
+
+            text = result["text"].lower().strip()
+            # Remove punctuation to ensure easy matching
+            text = re.sub(r"[^\w\s]", "", text)
+
+            # 3. Hallucination Guard
+            words = text.split()
+            if words and len(set(words)) == 1 and len(words) > 3:
+                continue
+
+            if "blacki" in text or "blacky" in text:
+                print(
+                    f"🌟 Wake word detected! (Heard: '{str(result['text']).strip()}')"
+                )
+                await play_beep()
+                return str(result["text"]).strip()
+
+
+async def record_command_until_silence(silence_duration: float = 1.5) -> np.ndarray:
+    """Records audio from microphone until silence is detected."""
+    print("🎧 Listening for command... (Speak anytime)")
+
+    q: asyncio.Queue[np.ndarray] = asyncio.Queue()
+    loop = asyncio.get_event_loop()
+
+    def callback(
+        indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags
+    ) -> None:
+        if status:
+            print(status, file=sys.stderr)
+        # using call_soon_threadsafe to put in queue
+        loop.call_soon_threadsafe(q.put_nowait, indata.copy())
+
+    stream = sd.InputStream(samplerate=SAMPLE_RATE, channels=1, callback=callback)
+
+    recording = []
+    pre_speech_buffer: collections.deque[np.ndarray] = collections.deque()
+    pre_speech_buffer_frames = 0
+    max_pre_speech_frames = int(SAMPLE_RATE * 0.5)
+
+    has_spoken = False
+    silent_frames = 0
+    total_frames = 0
+    max_wait_frames = int(SAMPLE_RATE * 10.0)
+
+    with stream:
+        while True:
+            indata = await q.get()
+            frames = len(indata)
+            total_frames += frames
+
+            # calculate energy (RMS)
+            rms = np.sqrt(np.mean(indata**2))
+
+            if rms > SILENCE_THRESHOLD:
+                has_spoken = True
+                silent_frames = 0
+                recording.append(indata)
+            elif has_spoken:
+                silent_frames += frames
+                recording.append(indata)
+            else:
+                pre_speech_buffer.append(indata)
+                pre_speech_buffer_frames += frames
+                while (
+                    pre_speech_buffer_frames > max_pre_speech_frames
+                    and len(pre_speech_buffer) > 1
+                ):
+                    popped = pre_speech_buffer.popleft()
+                    pre_speech_buffer_frames -= len(popped)
+
+                if total_frames > max_wait_frames:
+                    print("⏳ No speech detected, timing out.")
+                    break
+
+            if has_spoken and silent_frames > int(SAMPLE_RATE * silence_duration):
+                break
+
+    print("⏹️ Command ended. Processing...")
+
+    if not has_spoken:
         return np.array([])
-    return np.concatenate(recording, axis=0)
+
+    final_audio = list(pre_speech_buffer) + recording
+    if not final_audio:
+        return np.array([])
+    return np.concatenate(final_audio, axis=0)
 
 
 async def stream_audio_response(tts_client: httpx.AsyncClient, text: str) -> None:
@@ -157,8 +289,18 @@ async def main() -> None:
         state = {"user_id": "speech-client"}
 
     # Initialize STT (mlx-whisper for native Apple MPS acceleration)
-    print("Loading MLX Whisper model (small)...")
+    print("Loading MLX Whisper model (small) and warming up MPS...")
     stt_model_path = "mlx-community/whisper-small-mlx"
+
+    # Warm up model to avoid initial delay
+    await asyncio.get_event_loop().run_in_executor(
+        None,
+        functools.partial(
+            mlx_whisper.transcribe,
+            np.zeros(SAMPLE_RATE, dtype=np.float32),
+            path_or_hf_repo=stt_model_path,
+        ),
+    )
 
     # Initialize TTS (Custom via httpx)
     tts_base_url = os.getenv("TTS_BASE_URL", "http://localhost:8000")
@@ -176,14 +318,50 @@ async def main() -> None:
         await stream_audio_response(tts_client, agent_response)
 
         while True:
-            # 1. Record Audio
-            audio_data = await record_audio_until_spacebar()
+            # Wake word logic temporarily disabled:
+            # # 1. Listen for Wake Word
+            # raw_text = await listen_for_wake_word(stt_model_path)
+            #
+            # # Extract command from wake word text
+            # command_text = re.sub(r"(?i)\bblacki\b|\bblacky\b", "", raw_text).strip()
+            # # Remove leading/trailing punctuation (like commas or periods left behind)
+            # command_text = re.sub(
+            #     r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", command_text
+            # ).strip()
+            #
+            # words = command_text.split()
+            #
+            # if len(words) < 3:
+            #     # Fallback path: command is too short, record until silence
+            #     audio_data = await record_command_until_silence()
+            #
+            #     if len(audio_data) < 1000:
+            #         print("Audio too short, skipping...")
+            #         continue
+            #
+            #     # Transcribe
+            #     print("⏳ Transcribing...")
+            #     result = await asyncio.get_event_loop().run_in_executor(
+            #         None,
+            #         functools.partial(
+            #             mlx_whisper.transcribe,
+            #             audio_data.flatten(),
+            #             path_or_hf_repo=stt_model_path,
+            #         ),
+            #     )
+            #     user_text = result["text"].strip()
+            # else:
+            #     # Fast path: use the command straight from the wake word detection
+            #     user_text = command_text
+
+            # Always record command directly
+            audio_data = await record_command_until_silence()
 
             if len(audio_data) < 1000:
                 print("Audio too short, skipping...")
                 continue
 
-            # 2. Transcribe
+            # Transcribe
             print("⏳ Transcribing...")
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -201,14 +379,14 @@ async def main() -> None:
 
             print(f"\n🗣️ You: {user_text}")
 
-            # 3. Agent Turn
+            # Agent Turn
             print("🧠 Agent is thinking...")
             agent_response = await runtime.run_user_turn(
                 locator=locator, message_text=user_text, state=state
             )
             print(f"\n🤖 Blacki: {agent_response}")
 
-            # 4. Text-to-Speech Streaming
+            # Text-to-Speech Streaming
             print("🔊 Streaming audio response...")
             await stream_audio_response(tts_client, agent_response)
 
