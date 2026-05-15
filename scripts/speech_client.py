@@ -35,7 +35,7 @@ async def play_beep(frequency: float = 1000.0, duration: float = 0.15) -> None:
         envelope[-fade_len:] = np.linspace(1, 0, fade_len)
     tone = tone * envelope * 0.3  # Scale volume down
 
-    await asyncio.get_event_loop().run_in_executor(
+    await asyncio.get_running_loop().run_in_executor(
         None, functools.partial(sd.play, tone, samplerate=SAMPLE_RATE, blocking=True)
     )
 
@@ -51,7 +51,7 @@ async def listen_for_wake_word(stt_model_path: str) -> str:
     audio_buffer: collections.deque[np.ndarray] = collections.deque()
     buffer_frames = 0
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def callback(
         indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags
@@ -138,7 +138,7 @@ async def record_command_until_silence(silence_duration: float = 1.5) -> np.ndar
     print("🎧 Listening for command... (Speak anytime)")
 
     q: asyncio.Queue[np.ndarray] = asyncio.Queue()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def callback(
         indata: np.ndarray, frames: int, time: Any, status: sd.CallbackFlags
@@ -230,11 +230,11 @@ async def stream_audio_response(tts_client: httpx.AsyncClient, text: str) -> Non
                         pcm_chunk = buffer[44:]
                         header_skipped = True
                         if pcm_chunk:
-                            await asyncio.get_event_loop().run_in_executor(
+                            await asyncio.get_running_loop().run_in_executor(
                                 None, stream.write, pcm_chunk
                             )
                 else:
-                    await asyncio.get_event_loop().run_in_executor(
+                    await asyncio.get_running_loop().run_in_executor(
                         None, stream.write, chunk
                     )
     except httpx.HTTPError as e:
@@ -293,7 +293,7 @@ async def main() -> None:
     stt_model_path = "mlx-community/whisper-small-mlx"
 
     # Warm up model to avoid initial delay
-    await asyncio.get_event_loop().run_in_executor(
+    await asyncio.get_running_loop().run_in_executor(
         None,
         functools.partial(
             mlx_whisper.transcribe,
@@ -318,42 +318,6 @@ async def main() -> None:
         await stream_audio_response(tts_client, agent_response)
 
         while True:
-            # Wake word logic temporarily disabled:
-            # # 1. Listen for Wake Word
-            # raw_text = await listen_for_wake_word(stt_model_path)
-            #
-            # # Extract command from wake word text
-            # command_text = re.sub(r"(?i)\bblacki\b|\bblacky\b", "", raw_text).strip()
-            # # Remove leading/trailing punctuation (like commas or periods left behind)
-            # command_text = re.sub(
-            #     r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", command_text
-            # ).strip()
-            #
-            # words = command_text.split()
-            #
-            # if len(words) < 3:
-            #     # Fallback path: command is too short, record until silence
-            #     audio_data = await record_command_until_silence()
-            #
-            #     if len(audio_data) < 1000:
-            #         print("Audio too short, skipping...")
-            #         continue
-            #
-            #     # Transcribe
-            #     print("⏳ Transcribing...")
-            #     result = await asyncio.get_event_loop().run_in_executor(
-            #         None,
-            #         functools.partial(
-            #             mlx_whisper.transcribe,
-            #             audio_data.flatten(),
-            #             path_or_hf_repo=stt_model_path,
-            #         ),
-            #     )
-            #     user_text = result["text"].strip()
-            # else:
-            #     # Fast path: use the command straight from the wake word detection
-            #     user_text = command_text
-
             # Always record command directly
             audio_data = await record_command_until_silence()
 
@@ -363,7 +327,7 @@ async def main() -> None:
 
             # Transcribe
             print("⏳ Transcribing...")
-            result = await asyncio.get_event_loop().run_in_executor(
+            result = await asyncio.get_running_loop().run_in_executor(
                 None,
                 functools.partial(
                     mlx_whisper.transcribe,
