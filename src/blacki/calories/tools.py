@@ -4,6 +4,7 @@ from typing import Any
 
 import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
+from pydantic import ValidationError
 
 from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
@@ -22,9 +23,9 @@ async def log_meal(
     estimated_calories: int,
     date: str | None = None,
     meal_type: str | None = None,
-    protein_g: int | None = None,
-    carbs_g: int | None = None,
-    fat_g: int | None = None,
+    protein_g: float | None = None,
+    carbs_g: float | None = None,
+    fat_g: float | None = None,
 ) -> dict[str, Any]:
     """Log a meal and estimate its calories and macros.
 
@@ -54,38 +55,44 @@ async def log_meal(
     now = now_utc()
     local_date = parse_date(date)
 
-    entry = CalorieEntry(
-        user_id=user_id,
-        description=description,
-        calories=estimated_calories,
-        protein_g=protein_g,
-        carbs_g=carbs_g,
-        fat_g=fat_g,
-        meal_type=meal_type.lower() if meal_type else None,
-        logged_at=now.isoformat(timespec="seconds"),
-        logged_date=local_date,
-    )
+    try:
+        entry = CalorieEntry(
+            user_id=user_id,
+            description=description,
+            calories=estimated_calories,
+            protein_g=protein_g,
+            carbs_g=carbs_g,
+            fat_g=fat_g,
+            meal_type=meal_type.lower() if meal_type else None,
+            logged_at=now.isoformat(timespec="seconds"),
+            logged_date=local_date,
+        )
 
-    storage = get_storage()
-    entry_id = await storage.add_entry(entry)
+        storage = get_storage()
+        entry_id = await storage.add_entry(entry)
 
-    # Get running daily total
-    summary = await storage.get_daily_summary(user_id, local_date)
+        # Get running daily total
+        summary = await storage.get_daily_summary(user_id, local_date)
 
-    # Get user goal
-    pref_storage = get_preferences_storage()
-    goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
+        # Get user goal
+        pref_storage = get_preferences_storage()
+        goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
 
-    remaining = goal - summary.total_calories
+        remaining = goal - summary.total_calories
 
-    return {
-        "status": "success",
-        "entry_id": entry_id,
-        "message": f"Logged {estimated_calories} kcal for '{description}'.",
-        "daily_total": summary.total_calories,
-        "calorie_goal": goal,
-        "remaining": remaining,
-    }
+        return {
+            "status": "success",
+            "entry_id": entry_id,
+            "message": f"Logged {estimated_calories} kcal for '{description}'.",
+            "daily_total": summary.total_calories,
+            "calorie_goal": goal,
+            "remaining": remaining,
+        }
+    except ValidationError as e:
+        return {"status": "error", "message": f"Validation failed: {str(e)}"}
+    except Exception as e:
+        logger.exception("Failed to log meal")
+        return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
 
 
 async def get_calorie_summary(
@@ -146,9 +153,9 @@ async def edit_meal(
     estimated_calories: int | None = None,
     date: str | None = None,
     meal_type: str | None = None,
-    protein_g: int | None = None,
-    carbs_g: int | None = None,
-    fat_g: int | None = None,
+    protein_g: float | None = None,
+    carbs_g: float | None = None,
+    fat_g: float | None = None,
 ) -> dict[str, Any]:
     """Edit an existing meal entry.
 
@@ -179,16 +186,20 @@ async def edit_meal(
     if not updates:  # pragma: no cover
         return {"status": "error", "message": "No fields provided to update"}
 
-    storage = get_storage()
-    updated = await storage.update_entry(entry_id, user_id, **updates)
+    try:
+        storage = get_storage()
+        updated = await storage.update_entry(entry_id, user_id, **updates)
 
-    if updated:
-        return {"status": "success", "message": f"Updated entry {entry_id}"}
-    else:  # pragma: no cover
-        return {
-            "status": "error",
-            "message": f"Entry {entry_id} not found or you don't have permission",
-        }
+        if updated:
+            return {"status": "success", "message": f"Updated entry {entry_id}"}
+        else:  # pragma: no cover
+            return {
+                "status": "error",
+                "message": f"Entry {entry_id} not found or you don't have permission",
+            }
+    except Exception as e:
+        logger.exception(f"Failed to edit meal entry {entry_id}")
+        return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
 
 
 async def delete_meal(
@@ -200,16 +211,20 @@ async def delete_meal(
     if not user_id:  # pragma: no cover
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
-    storage = get_storage()
-    deleted = await storage.delete_entry(entry_id, user_id)
+    try:
+        storage = get_storage()
+        deleted = await storage.delete_entry(entry_id, user_id)
 
-    if deleted:
-        return {"status": "success", "message": f"Deleted entry {entry_id}"}
-    else:  # pragma: no cover
-        return {
-            "status": "error",
-            "message": f"Entry {entry_id} not found or you don't have permission",
-        }
+        if deleted:
+            return {"status": "success", "message": f"Deleted entry {entry_id}"}
+        else:  # pragma: no cover
+            return {
+                "status": "error",
+                "message": f"Entry {entry_id} not found or you don't have permission",
+            }
+    except Exception as e:
+        logger.exception(f"Failed to delete meal entry {entry_id}")
+        return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
 
 
 async def set_calorie_goal(

@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, create_autospec, patch
 
 import pytest
 from google.adk.tools import ToolContext
+from pydantic import ValidationError
 
 from blacki.calories.storage import DailySummary
 from blacki.calories.tools import (
@@ -250,3 +251,68 @@ async def test_edit_meal_with_specific_date(
     assert result["status"] == "success"
     call_kwargs = mock_storage.update_entry.call_args[1]
     assert call_kwargs["logged_date"] == "2026-04-15"
+
+
+# Tests for exception handling
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+async def test_log_meal_exception(mock_get_storage, mock_tool_context) -> None:
+    """Test log_meal handles unexpected exceptions."""
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.add_entry.side_effect = RuntimeError("Database error")
+
+    result = await log_meal(
+        mock_tool_context, description="apple", estimated_calories=95
+    )
+
+    assert result["status"] == "error"
+    assert "unexpected error" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+async def test_edit_meal_exception(mock_get_storage, mock_tool_context) -> None:
+    """Test edit_meal handles unexpected exceptions."""
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.update_entry.side_effect = RuntimeError("Database error")
+
+    result = await edit_meal(mock_tool_context, entry_id=1, estimated_calories=200)
+
+    assert result["status"] == "error"
+    assert "unexpected error" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+async def test_delete_meal_exception(mock_get_storage, mock_tool_context) -> None:
+    """Test delete_meal handles unexpected exceptions."""
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    mock_storage.delete_entry.side_effect = RuntimeError("Database error")
+
+    result = await delete_meal(mock_tool_context, entry_id=1)
+
+    assert result["status"] == "error"
+    assert "unexpected error" in result["message"].lower()
+
+
+@pytest.mark.asyncio
+@patch("blacki.calories.tools.get_storage")
+@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.calories.tools.CalorieEntry")
+async def test_log_meal_pydantic_validation_error(
+    mock_entry_class, mock_get_pref, mock_get_storage, mock_tool_context
+) -> None:
+    """Test log_meal handles ValidationError from CalorieEntry creation."""
+    mock_entry_class.side_effect = ValidationError.from_exception_data(
+        "CalorieEntry", [{"type": "missing", "loc": ("description",), "input": {}}]
+    )
+
+    result = await log_meal(
+        mock_tool_context, description="apple", estimated_calories=95
+    )
+
+    assert result["status"] == "error"
+    assert "validation failed" in result["message"].lower()
