@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
 _TOOL_NOTIFY_LAST: dict[str, float] = {}
-_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.35
+_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.1
 _MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
 _TOOL_NOTIFY_LOCK = asyncio.Lock()
 
@@ -226,6 +226,7 @@ async def notify_telegram_before_tool(
 
     chat_id_raw = tool_context.state.get("telegram_chat_id")
     if not chat_id_raw:
+        logger.debug("notify_telegram_before_tool: no telegram_chat_id in state")
         return None
 
     chat_id = _parse_optional_int(chat_id_raw)
@@ -251,6 +252,12 @@ async def notify_telegram_before_tool(
             tool.name,
         )
         return None
+
+    logger.debug(
+        "notify_telegram_before_tool: sending notification for tool=%s chat_id=%s",
+        tool.name,
+        chat_id,
+    )
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -307,6 +314,7 @@ async def notify_telegram_after_model(
         if not getattr(part, "thought", False) and part.text
     ]
     text = "".join(p for p in text_parts if p).strip()
+
     if not text:
         return None
 

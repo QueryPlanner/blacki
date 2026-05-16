@@ -163,6 +163,30 @@ async def test_notify_after_model_skips_thoughts_and_think_tags(
 
 
 @pytest.mark.asyncio
+async def test_notify_after_model_skips_when_no_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Skip notification when LLM response has tool calls but no text."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MagicMock(spec=CallbackContext)
+        ctx.state = MockState({"telegram_chat_id": "1"})
+
+        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
+        response = LlmResponse(content=Content(parts=[tool_call_part]))
+
+        await callbacks_module.notify_telegram_after_model(ctx, response)
+
+    mock_client.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_notify_after_model_skips_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -179,30 +203,6 @@ async def test_notify_after_model_skips_disabled(
                 parts=[Part(function_call=FunctionCall(name="test", args={}))]
             )
         )
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_skips_no_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip Telegram notification if there is no text in response."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-
-        response = LlmResponse(content=Content(parts=[tool_call_part]))
         await callbacks_module.notify_telegram_after_model(ctx, response)
 
     mock_client.send_message.assert_not_called()
