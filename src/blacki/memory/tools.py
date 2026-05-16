@@ -8,7 +8,6 @@ from typing import Any
 from google.adk.tools import ToolContext
 
 from .config import (
-    get_default_user_id,
     get_memory_client,
     get_memory_client_error,
     get_search_limit,
@@ -60,7 +59,7 @@ async def save_memory(
             "error": "Memory text must be a non-empty string.",
         }
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
 
     try:
         result = client.add(text, user_id=user_id)
@@ -111,7 +110,7 @@ async def search_memory(
             "results": [],
         }
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
     limit = limit or get_search_limit()
 
     try:
@@ -179,7 +178,7 @@ async def get_all_memories(
     if client is None:
         return _memory_service_unavailable_response({"results": []})
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
 
     if page > 3:
         logger.warning(

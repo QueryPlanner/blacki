@@ -63,7 +63,7 @@ class TestScheduleReminder:
     async def test_schedule_reminder_no_user_id(self) -> None:
         """Should return error if user_id not in context."""
         state = MockState({})
-        tool_context = cast(MagicMock, MockToolContext(state=state))
+        tool_context = cast(MagicMock, MockToolContext(state=state, user_id=None))
 
         result = await schedule_reminder(
             tool_context=tool_context,
@@ -257,7 +257,7 @@ class TestListReminders:
     async def test_list_reminders_no_user_id(self) -> None:
         """Should return error if user_id not in context."""
         state = MockState({})
-        tool_context = cast(MagicMock, MockToolContext(state=state))
+        tool_context = cast(MagicMock, MockToolContext(state=state, user_id=None))
 
         result = await list_reminders(tool_context=tool_context)
 
@@ -323,7 +323,7 @@ class TestCancelReminder:
     async def test_cancel_reminder_no_user_id(self) -> None:
         """Should return error if user_id not in context."""
         state = MockState({})
-        tool_context = cast(MagicMock, MockToolContext(state=state))
+        tool_context = cast(MagicMock, MockToolContext(state=state, user_id=None))
 
         result = await cancel_reminder(
             tool_context=tool_context,

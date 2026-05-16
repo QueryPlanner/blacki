@@ -148,3 +148,54 @@ class TestMem0MemoryService:
 
         call_kwargs = mock_client.search.call_args[1]
         assert call_kwargs["limit"] == 10
+
+    @pytest.mark.asyncio
+    async def test_search_memory_handles_non_dict_results(self) -> None:
+        """Should skip non-dict items in results."""
+        mock_client = MagicMock()
+        mock_client.search.return_value = {
+            "results": [
+                {"id": "mem_1", "memory": "Valid memory"},
+                "invalid_string_item",
+                123,
+                None,
+            ]
+        }
+
+        service = Mem0MemoryService(mock_client)
+        response = await service.search_memory(
+            app_name="test_app", user_id="test_user", query="test"
+        )
+
+        assert len(response.memories) == 1
+        assert response.memories[0].content.parts is not None
+        assert response.memories[0].content.parts[0].text == "Valid memory"
+
+    @pytest.mark.asyncio
+    async def test_search_memory_handles_list_result(self) -> None:
+        """Should handle direct list result from Mem0."""
+        mock_client = MagicMock()
+        mock_client.search.return_value = [
+            {"id": "mem_1", "memory": "List memory 1"},
+            {"id": "mem_2", "memory": "List memory 2"},
+        ]
+
+        service = Mem0MemoryService(mock_client)
+        response = await service.search_memory(
+            app_name="test_app", user_id="test_user", query="test"
+        )
+
+        assert len(response.memories) == 2
+
+    @pytest.mark.asyncio
+    async def test_search_memory_handles_none_result(self) -> None:
+        """Should handle None result from Mem0."""
+        mock_client = MagicMock()
+        mock_client.search.return_value = None
+
+        service = Mem0MemoryService(mock_client)
+        response = await service.search_memory(
+            app_name="test_app", user_id="test_user", query="test"
+        )
+
+        assert len(response.memories) == 0

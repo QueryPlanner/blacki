@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
@@ -53,7 +54,7 @@ class Mem0MemoryService(BaseMemoryService):
         """Search memories via Mem0 and convert to ADK format.
 
         Args:
-            app_name: The application name (used as part of composite user_id).
+            app_name: The application name (unused, user_id is passed directly).
             user_id: The user identifier.
             query: The search query.
 
@@ -62,36 +63,43 @@ class Mem0MemoryService(BaseMemoryService):
         """
         from .config import get_search_limit
 
-        mem0_user_id = user_id
         limit = get_search_limit()
 
         try:
-            result = self._client.search(query=query, user_id=mem0_user_id, limit=limit)
-        except Exception:
-            logger.exception("Failed to search memories for user %s", mem0_user_id)
-            return SearchMemoryResponse(memories=[])
-
-        memories: list[MemoryEntry] = []
-        for m in result.get("results", []):
-            memory_text = m.get("memory", "")
-            if not memory_text:
-                continue
-
-            memories.append(
-                MemoryEntry(
-                    content=types.Content(
-                        role="user",
-                        parts=[types.Part(text=memory_text)],
-                    ),
-                    id=m.get("id"),
-                )
+            result = await asyncio.to_thread(
+                self._client.search, query=query, user_id=user_id, limit=limit
             )
 
-        logger.debug(
-            "Found %d memories for query '%s' (user: %s)",
-            len(memories),
-            query[:30],
-            mem0_user_id,
-        )
+            raw_results = (
+                result.get("results", []) if isinstance(result, dict) else result
+            ) or []
 
-        return SearchMemoryResponse(memories=memories)
+            memories: list[MemoryEntry] = []
+            for m in raw_results:
+                if not isinstance(m, dict):
+                    continue
+                memory_text = m.get("memory", "")
+                if not memory_text:
+                    continue
+
+                memories.append(
+                    MemoryEntry(
+                        content=types.Content(
+                            role="user",
+                            parts=[types.Part(text=memory_text)],
+                        ),
+                        id=m.get("id"),
+                    )
+                )
+
+            logger.debug(
+                "Found %d memories for query '%s' (user: %s)",
+                len(memories),
+                query[:30],
+                user_id,
+            )
+            return SearchMemoryResponse(memories=memories)
+
+        except Exception:
+            logger.exception("Failed to search memories for user %s", user_id)
+            return SearchMemoryResponse(memories=[])
