@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
 _TOOL_NOTIFY_LAST: dict[str, float] = {}
-_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.35
+_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.1
 _MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
 _TOOL_NOTIFY_LOCK = asyncio.Lock()
 
@@ -226,6 +226,7 @@ async def notify_telegram_before_tool(
 
     chat_id_raw = tool_context.state.get("telegram_chat_id")
     if not chat_id_raw:
+        logger.debug("notify_telegram_before_tool: no telegram_chat_id in state")
         return None
 
     chat_id = _parse_optional_int(chat_id_raw)
@@ -251,6 +252,12 @@ async def notify_telegram_before_tool(
             tool.name,
         )
         return None
+
+    logger.debug(
+        "notify_telegram_before_tool: sending notification for tool=%s chat_id=%s",
+        tool.name,
+        chat_id,
+    )
 
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -284,11 +291,77 @@ async def notify_telegram_before_tool(
     return None
 
 
+async def _send_tool_only_notification(
+    callback_context: CallbackContext,
+    tool_names: list[str],
+) -> None:
+    """Send a simple notification when model makes tool calls without text."""
+    chat_id_raw = callback_context.state.get("telegram_chat_id")
+    if not chat_id_raw:
+        return None
+
+    chat_id = _parse_optional_int(chat_id_raw)
+    if chat_id is None:
+        return None
+
+    chat_key = str(chat_id)
+    now = time.monotonic()
+    if not await _rate_limit_allows_notification(
+        chat_key,
+        now,
+        storage=_INTERMEDIATE_NOTIFY_LAST,
+        min_interval=_INTERMEDIATE_NOTIFY_MIN_INTERVAL_SEC,
+        max_entries=_MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES,
+        lock=_INTERMEDIATE_NOTIFY_LOCK,
+    ):
+        logger.debug(
+            "Skipping Telegram tool-only notify (rate limit) chat_id=%s",
+            chat_id,
+        )
+        return None
+
+    thread_id = _parse_optional_int(callback_context.state.get("telegram_thread_id"))
+
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        return None
+
+    # Format tool names
+    if len(tool_names) == 1:
+        tools_text = f"🔧 Using tool: *{escape_markdown(tool_names[0])}*"
+    else:
+        escaped_names = [escape_markdown(name) for name in tool_names]
+        tools_text = f"🔧 Using tools: *{', '.join(escaped_names)}*"
+
+    try:
+        client = await _shared_telegram_notify_client(token)
+        await client.send_message(
+            chat_id=chat_id,
+            text=tools_text,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            message_thread_id=thread_id,
+            disable_notification=True,
+        )
+    except TelegramApiError as exc:
+        logger.warning(
+            "Telegram tool-only notification failed: %s",
+            exc,
+        )
+    except Exception:
+        logger.exception("Unexpected error sending Telegram tool-only notification")
+
+    return None
+
+
 async def notify_telegram_after_model(
     callback_context: CallbackContext,
     llm_response: LlmResponse,
 ) -> None:
-    """Send intermediate text responses to Telegram before tool execution."""
+    """Send intermediate text responses to Telegram before tool execution.
+
+    Also sends a notification when the model makes a tool call without text,
+    to ensure users are informed that a tool is being used.
+    """
     if not telegram_tool_notifications_enabled():
         return None
 
@@ -307,6 +380,23 @@ async def notify_telegram_after_model(
         if not getattr(part, "thought", False) and part.text
     ]
     text = "".join(p for p in text_parts if p).strip()
+
+    # Extract tool names for notification when there's no text
+    tool_names: list[str] = []
+    for part in llm_response.content.parts:
+        fc = getattr(part, "function_call", None)
+        if fc is not None and fc.name:
+            tool_names.append(fc.name)
+
+    # If no text but has tool calls, send a simple tool notification
+    if not text and tool_names:
+        logger.debug(
+            "notify_telegram_after_model: tool-only response with tools=%s",
+            tool_names,
+        )
+        await _send_tool_only_notification(callback_context, tool_names)
+        return None
+
     if not text:
         return None
 
