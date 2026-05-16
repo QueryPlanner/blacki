@@ -202,7 +202,6 @@ def _build_memory_tools() -> list[Any]:
     """Build memory tools."""
     try:
         from blacki.memory import (
-            delete_all_memories,
             delete_memory,
             get_all_memories,
             get_memory,
@@ -218,7 +217,6 @@ def _build_memory_tools() -> list[Any]:
             get_memory,
             update_memory,
             delete_memory,
-            delete_all_memories,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Memory tools: %s", e)

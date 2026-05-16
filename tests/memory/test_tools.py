@@ -9,7 +9,6 @@ from google.adk.tools import ToolContext
 
 from blacki.memory.config import reset_memory_client
 from blacki.memory.tools import (
-    delete_all_memories,
     delete_memory,
     get_all_memories,
     get_memory,
@@ -323,32 +322,3 @@ class TestDeleteMemory:
 
         assert result["status"] == "error"
         assert "non-empty" in result["error"].lower()
-
-
-class TestDeleteAllMemories:
-    """Tests for delete_all_memories function."""
-
-    @staticmethod
-    def _tool_context() -> ToolContext:
-        return cast(ToolContext, MockToolContext(state=MockState({})))
-
-    @pytest.fixture(autouse=True)
-    def reset_client(self) -> None:
-        """Reset the memory client before each test."""
-        reset_memory_client()
-
-    @pytest.mark.asyncio
-    async def test_delete_all_memories_success(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Should delete all memories for a user."""
-        monkeypatch.setenv("MEM0_API_KEY", "test_key")
-        tool_context = self._tool_context()
-
-        mock_client = MagicMock()
-
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
-            result = await delete_all_memories(tool_context, user_id="test_user")
-
-        assert result["status"] == "success"
-        mock_client.delete_all.assert_called_once_with(user_id="test_user")

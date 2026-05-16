@@ -92,8 +92,6 @@ def return_instruction_root() -> str:
   information. You need the memory_id from search or list operations.
 - Use delete_memory when the user asks to forget specific information.
   You need the memory_id from search or list operations.
-- Use delete_all_memories with caution when the user wants to wipe all
-  their stored memories. Confirm before executing.
 - All memory operations are scoped to the user_id. Memories are private
   and isolated per user.
 </memory_spec>

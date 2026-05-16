@@ -10,10 +10,13 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
+from google.adk.cli.service_registry import get_service_registry
+from google.adk.memory.base_memory_service import BaseMemoryService
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import (
@@ -133,12 +136,35 @@ AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 session_uri = build_session_service_uri(env)
 session_db_kwargs = build_session_db_kwargs(env)
 
+
+def _create_mem0_memory_service(uri: str, **kwargs: Any) -> BaseMemoryService:
+    """Factory for mem0:// URI scheme.
+
+    Returns Mem0MemoryService if client is available, InMemoryMemoryService otherwise.
+    """
+    from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+
+    from blacki.memory.config import get_memory_client
+
+    client = get_memory_client()
+    if client is None:
+        logger.info("Mem0 client not available, using in-memory memory service")
+        return InMemoryMemoryService()
+
+    from blacki.memory.mem0_memory_service import Mem0MemoryService
+
+    logger.info("Mem0 memory service initialized")
+    return Mem0MemoryService(client)
+
+
+get_service_registry().register_memory_service("mem0", _create_mem0_memory_service)
+
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,
     session_service_uri=session_uri,
     session_db_kwargs=session_db_kwargs,
     artifact_service_uri=None,
-    memory_service_uri=None,
+    memory_service_uri="mem0://",
     allow_origins=env.allow_origins_list,
     web=env.serve_web_interface,
     reload_agents=env.reload_agents,
@@ -195,22 +221,30 @@ app.router.lifespan_context = lifespan
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     """Health check endpoint for container orchestration.
 
     Returns:
         dict with status key indicating service health.
     """
-    checks: list[str] = []
+    from blacki.memory.config import get_memory_client
+
+    checks: dict[str, str] = {}
+
     if _container is not None:
         try:
             await _container.pool.fetchval("SELECT 1")
+            checks["database"] = "healthy"
         except Exception:
-            checks.append("database:unreachable")
+            checks["database"] = "unhealthy"
 
-    if checks:
-        return {"status": "degraded", "details": "; ".join(checks)}
-    return {"status": "ok"}
+    client = get_memory_client()
+    checks["memory_service"] = "healthy" if client else "unavailable"
+
+    all_ok = all(v in ("healthy", "unavailable") for v in checks.values())
+    status = "ok" if all_ok else "degraded"
+
+    return {"status": status, "checks": checks}
 
 
 def main() -> None:
