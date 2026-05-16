@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.cli.service_registry import get_service_registry
 from google.adk.events import Event
+from google.adk.memory.base_memory_service import BaseMemoryService
 from google.adk.runners import Runner
 from google.adk.sessions import Session
 from google.adk.sessions.base_session_service import BaseSessionService
@@ -18,6 +20,29 @@ from google.genai import types
 from .utils.config import ServerEnv
 
 logger = logging.getLogger(__name__)
+
+
+def _create_mem0_memory_service(uri: str, **kwargs: Any) -> BaseMemoryService:
+    """Factory for mem0:// URI scheme.
+
+    Returns Mem0MemoryService if client is available, InMemoryMemoryService otherwise.
+    """
+    from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
+
+    from blacki.memory.config import get_memory_client
+
+    client = get_memory_client()
+    if client is None:
+        logger.info("Mem0 client not available, using in-memory memory service")
+        return InMemoryMemoryService()
+
+    from blacki.memory.mem0_memory_service import Mem0MemoryService
+
+    logger.info("Mem0 memory service initialized")
+    return Mem0MemoryService(client)
+
+
+get_service_registry().register_memory_service("mem0", _create_mem0_memory_service)
 
 DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."
 SESSION_VERSION_SEPARATOR = "-v"
@@ -99,7 +124,11 @@ class SessionLocator:
 class AdkRuntime:
     """Small helper around ADK Runner and SessionService."""
 
-    def __init__(self, session_service: BaseSessionService) -> None:
+    def __init__(
+        self,
+        session_service: BaseSessionService,
+        memory_service: BaseMemoryService | None = None,
+    ) -> None:
         from .agent import app as agent_app
 
         self.app = agent_app
@@ -109,6 +138,7 @@ class AdkRuntime:
             app=self.app,
             app_name=self.app_name,
             session_service=self.session_service,
+            memory_service=memory_service,
             auto_create_session=False,
         )
 
@@ -377,7 +407,13 @@ def create_adk_runtime(env: ServerEnv) -> AdkRuntime:
         session_db_kwargs=session_db_kwargs,
         agent_dir=env.agent_dir,
     )
-    return AdkRuntime(session_service=session_service)
+    memory_service = get_service_registry().create_memory_service(
+        "mem0://", agents_dir=str(Path(env.agent_dir).resolve())
+    )
+    return AdkRuntime(
+        session_service=session_service,
+        memory_service=memory_service,
+    )
 
 
 def _build_session_state(

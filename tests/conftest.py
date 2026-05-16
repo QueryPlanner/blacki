@@ -129,6 +129,7 @@ class MockToolContext:
         state: MockState | None = None,
         user_content: MockContent | None = None,
         actions: MockEventActions | None = None,
+        user_id: str | None = "test_user",
     ) -> None:
         """Initialize mock tool context."""
         self.agent_name = agent_name
@@ -136,6 +137,7 @@ class MockToolContext:
         self.state = state if state is not None else MockState()
         self.user_content = user_content
         self.actions = actions if actions is not None else MockEventActions()
+        self.user_id = user_id
 
 
 class MockBaseTool:

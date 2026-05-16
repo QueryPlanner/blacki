@@ -155,8 +155,11 @@ def create_agent() -> LlmAgent:
     Returns:
         Configured LlmAgent instance.
     """
+    from google.adk.tools.preload_memory_tool import preload_memory_tool
+
     tool_config = build_tool_config_from_env()
     agent_tools = build_tools(tool_config)
+    agent_tools.append(preload_memory_tool)
 
     before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
     after_model_callbacks: list[Any] = [logging_callbacks.after_model]

@@ -6,7 +6,6 @@ from .config import (
     reset_memory_client,
 )
 from .tools import (
-    delete_all_memories,
     delete_memory,
     get_all_memories,
     get_memory,
@@ -16,7 +15,6 @@ from .tools import (
 )
 
 __all__ = [
-    "delete_all_memories",
     "delete_memory",
     "get_all_memories",
     "get_memory",

@@ -8,7 +8,6 @@ from typing import Any
 from google.adk.tools import ToolContext
 
 from .config import (
-    get_default_user_id,
     get_memory_client,
     get_memory_client_error,
     get_search_limit,
@@ -60,7 +59,7 @@ async def save_memory(
             "error": "Memory text must be a non-empty string.",
         }
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
 
     try:
         result = client.add(text, user_id=user_id)
@@ -111,7 +110,7 @@ async def search_memory(
             "results": [],
         }
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
     limit = limit or get_search_limit()
 
     try:
@@ -179,7 +178,7 @@ async def get_all_memories(
     if client is None:
         return _memory_service_unavailable_response({"results": []})
 
-    user_id = user_id or get_default_user_id()
+    user_id = user_id or tool_context.user_id
 
     if page > 3:
         logger.warning(
@@ -381,43 +380,4 @@ async def delete_memory(
         return {
             "status": "error",
             "error": f"Failed to delete memory: {e}",
-        }
-
-
-async def delete_all_memories(
-    tool_context: ToolContext,
-    user_id: str | None = None,
-) -> dict[str, Any]:
-    """Delete all memories for a user.
-
-    Use this tool with caution when a user wants to wipe all their stored
-    memories. This operation cannot be undone.
-
-    Args:
-        tool_context: ADK tool context.
-        user_id: Unique identifier for the user. Defaults to MEM0_USER_ID env var.
-
-    Returns:
-        Dictionary with status and result message.
-    """
-    _ = tool_context
-
-    client = get_memory_client()
-    if client is None:
-        return _memory_service_unavailable_response()
-
-    user_id = user_id or get_default_user_id()
-
-    try:
-        client.delete_all(user_id=user_id)
-        logger.warning("Deleted all memories for user %s", user_id)
-        return {
-            "status": "success",
-            "message": f"All memories deleted for user {user_id}.",
-        }
-    except Exception as e:
-        logger.exception("Failed to delete all memories for user %s", user_id)
-        return {
-            "status": "error",
-            "error": f"Failed to delete all memories: {e}",
         }

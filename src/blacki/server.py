@@ -10,6 +10,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -138,7 +139,7 @@ app: FastAPI = get_fast_api_app(
     session_service_uri=session_uri,
     session_db_kwargs=session_db_kwargs,
     artifact_service_uri=None,
-    memory_service_uri=None,
+    memory_service_uri="mem0://",
     allow_origins=env.allow_origins_list,
     web=env.serve_web_interface,
     reload_agents=env.reload_agents,
@@ -195,22 +196,37 @@ app.router.lifespan_context = lifespan
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     """Health check endpoint for container orchestration.
 
     Returns:
         dict with status key indicating service health.
     """
-    checks: list[str] = []
+    from blacki.memory.config import get_memory_client, get_memory_client_error
+
+    checks: dict[str, str] = {}
+
     if _container is not None:
         try:
             await _container.pool.fetchval("SELECT 1")
+            checks["database"] = "healthy"
         except Exception:
-            checks.append("database:unreachable")
+            checks["database"] = "unhealthy"
 
-    if checks:
-        return {"status": "degraded", "details": "; ".join(checks)}
-    return {"status": "ok"}
+    client = get_memory_client()
+    error = get_memory_client_error()
+
+    if client:
+        checks["memory_service"] = "healthy"
+    elif error:
+        checks["memory_service"] = "degraded"
+    else:
+        checks["memory_service"] = "unavailable"
+
+    all_ok = all(v == "healthy" for v in checks.values())
+    status = "ok" if all_ok else "degraded"
+
+    return {"status": status, "checks": checks}
 
 
 def main() -> None:
