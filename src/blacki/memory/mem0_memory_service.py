@@ -62,7 +62,7 @@ class Mem0MemoryService(BaseMemoryService):
         """
         from .config import get_search_limit
 
-        mem0_user_id = f"{app_name}/{user_id}"
+        mem0_user_id = user_id
         limit = get_search_limit()
 
         try:

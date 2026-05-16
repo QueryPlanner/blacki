@@ -51,7 +51,7 @@ class TestMem0MemoryService:
         mock_client.search.assert_called_once()
         call_kwargs = mock_client.search.call_args[1]
         assert call_kwargs["query"] == "food preferences"
-        assert call_kwargs["user_id"] == "test_app/test_user"
+        assert call_kwargs["user_id"] == "test_user"
 
     @pytest.mark.asyncio
     async def test_search_memory_empty_results(self) -> None:
