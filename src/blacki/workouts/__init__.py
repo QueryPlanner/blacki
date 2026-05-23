@@ -1,7 +1,3 @@
-from .storage import (
-    close_workout_storage,
-    init_workout_storage,
-)
 from .tools import (
     delete_workout,
     get_exercise_progress,
@@ -13,8 +9,6 @@ from .tools import (
 )
 
 __all__ = [
-    "close_workout_storage",
-    "init_workout_storage",
     "delete_workout",
     "get_exercise_progress",
     "get_last_workout",

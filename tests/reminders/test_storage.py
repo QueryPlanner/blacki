@@ -1,18 +1,40 @@
+# mypy: disable-error-code="no-untyped-def"
 """Unit tests for reminder storage."""
 
-from unittest.mock import AsyncMock, MagicMock
+import asyncio
 
-import asyncpg  # type: ignore[import-untyped]
+import aiosqlite
 import pytest
 
 from blacki.reminders.storage import (
     DUE_REMINDERS_FETCH_LIMIT,
-    PostgresReminderStorage,
     Reminder,
-    close_reminder_storage,
-    get_storage,
-    init_reminder_storage,
+    SqliteReminderStorage,
 )
+
+
+@pytest.fixture
+async def conn():
+    """Create an in-memory SQLite connection for testing."""
+    conn = await aiosqlite.connect(":memory:")
+    conn.row_factory = aiosqlite.Row
+    yield conn
+    await conn.close()
+
+
+@pytest.fixture
+def lock():
+    """Create a lock for write operations."""
+    return asyncio.Lock()
+
+
+@pytest.fixture
+async def storage(conn, lock):
+    """Create a storage instance with the test connection."""
+    storage = SqliteReminderStorage(conn, lock)
+    await storage.initialize()
+    yield storage
+    await storage.close()
 
 
 class TestReminder:
@@ -61,49 +83,26 @@ class TestReminder:
         assert reminder.is_recurring is True
 
 
-class TestPostgresReminderStorage:
-    """Tests for PostgresReminderStorage."""
-
-    @pytest.fixture
-    def mock_pool(self) -> MagicMock:
-        """Create a mock asyncpg Pool."""
-        pool = MagicMock(spec=asyncpg.Pool)
-        pool.acquire = MagicMock()
-        pool.fetch = AsyncMock()
-        pool.fetchval = AsyncMock()
-        pool.execute = AsyncMock()
-        return pool
-
-    @pytest.fixture
-    def mock_connection(self) -> MagicMock:
-        """Create a mock asyncpg Connection."""
-        conn = MagicMock(spec=asyncpg.Connection)
-        conn.execute = AsyncMock()
-        return conn
+class TestSqliteReminderStorage:
+    """Tests for SqliteReminderStorage."""
 
     @pytest.mark.asyncio
-    async def test_initialize_creates_tables(
-        self, mock_pool: MagicMock, mock_connection: MagicMock
-    ) -> None:
+    async def test_initialize_creates_tables(self, conn, lock) -> None:
         """Should create tables on initialization."""
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(
-            return_value=mock_connection
-        )
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
-
-        storage = PostgresReminderStorage(mock_pool)
+        storage = SqliteReminderStorage(conn, lock)
         await storage.initialize()
 
-        assert mock_connection.execute.call_count >= 1
+        assert storage.is_initialized is True
+
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='reminders'"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
 
     @pytest.mark.asyncio
-    async def test_add_reminder(self, mock_pool: MagicMock) -> None:
+    async def test_add_reminder(self, storage) -> None:
         """Should add a reminder and return its ID."""
-        mock_pool.fetchval.return_value = 42
-
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
-
         reminder = Reminder(
             user_id="user1",
             message="Test reminder",
@@ -113,90 +112,103 @@ class TestPostgresReminderStorage:
 
         result = await storage.add_reminder(reminder)
 
-        assert result == 42
-        mock_pool.fetchval.assert_called_once()
+        assert result == 1
 
     @pytest.mark.asyncio
-    async def test_get_due_reminders(self, mock_pool: MagicMock) -> None:
+    async def test_get_due_reminders(self, storage) -> None:
         """Should fetch due reminders."""
-        mock_pool.fetch.return_value = [
-            {
-                "id": 1,
-                "user_id": "user1",
-                "message": "Test",
-                "trigger_time": "2026-04-18T12:00:00+00:00",
-                "is_sent": False,
-                "recurrence_rule": None,
-                "recurrence_text": None,
-                "timezone_name": None,
-                "created_at": "2026-04-18T10:00:00+00:00",
-            }
-        ]
-
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2020-01-01T00:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        await storage.add_reminder(reminder)
 
         result = await storage.get_due_reminders()
 
         assert len(result) == 1
-        assert result[0].id == 1
         assert result[0].message == "Test"
-        fetch_sql = mock_pool.fetch.call_args[0][0]
-        assert "LIMIT $2" in fetch_sql
-        assert mock_pool.fetch.call_args[0][2] == DUE_REMINDERS_FETCH_LIMIT
 
     @pytest.mark.asyncio
-    async def test_mark_sent(self, mock_pool: MagicMock) -> None:
+    async def test_get_due_reminders_respects_limit(self, conn, lock) -> None:
+        """Should limit the number of due reminders fetched."""
+        storage = SqliteReminderStorage(conn, lock)
+        await storage.initialize()
+
+        for i in range(DUE_REMINDERS_FETCH_LIMIT + 10):
+            reminder = Reminder(
+                user_id="user1",
+                message=f"Test {i}",
+                trigger_time="2020-01-01T00:00:00+00:00",
+                created_at="2026-04-18T10:00:00+00:00",
+            )
+            await storage.add_reminder(reminder)
+
+        result = await storage.get_due_reminders()
+
+        assert len(result) == DUE_REMINDERS_FETCH_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_mark_sent(self, storage) -> None:
         """Should mark a reminder as sent."""
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
 
-        await storage.mark_sent(42)
+        await storage.mark_sent(rid)
 
-        mock_pool.execute.assert_called_once()
+        rows = await storage.get_user_reminders("user1", include_sent=True)
+        assert rows[0].is_sent is True
 
     @pytest.mark.asyncio
-    async def test_reschedule_reminder(self, mock_pool: MagicMock) -> None:
+    async def test_reschedule_reminder(self, storage) -> None:
         """Should reschedule a recurring reminder."""
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
 
-        await storage.reschedule_reminder(42, "2026-04-19T12:00:00+00:00")
+        await storage.reschedule_reminder(rid, "2026-04-19T12:00:00+00:00")
 
-        mock_pool.execute.assert_called_once()
+        rows = await storage.get_user_reminders("user1")
+        assert rows[0].trigger_time == "2026-04-19T12:00:00+00:00"
+        assert rows[0].is_sent is False
 
     @pytest.mark.asyncio
-    async def test_get_user_reminders(self, mock_pool: MagicMock) -> None:
+    async def test_get_user_reminders(self, storage) -> None:
         """Should get reminders for a user."""
-        mock_pool.fetch.return_value = []
-
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        await storage.add_reminder(reminder)
 
         result = await storage.get_user_reminders("user1")
 
-        assert result == []
-        mock_pool.fetch.assert_called_once()
+        assert len(result) == 1
+        assert result[0].message == "Test"
 
     @pytest.mark.asyncio
-    async def test_get_user_reminders_include_sent(self, mock_pool: MagicMock) -> None:
+    async def test_get_user_reminders_include_sent(self, storage) -> None:
         """Should include sent reminders when requested."""
-        mock_pool.fetch.return_value = [
-            {
-                "id": 1,
-                "user_id": "user1",
-                "message": "Test",
-                "trigger_time": "2026-04-18T12:00:00+00:00",
-                "is_sent": True,
-                "recurrence_rule": None,
-                "recurrence_text": None,
-                "timezone_name": None,
-                "created_at": "2026-04-18T10:00:00+00:00",
-            }
-        ]
-
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
+        await storage.mark_sent(rid)
 
         result = await storage.get_user_reminders("user1", include_sent=True)
 
@@ -204,135 +216,117 @@ class TestPostgresReminderStorage:
         assert result[0].is_sent is True
 
     @pytest.mark.asyncio
-    async def test_delete_reminder_found(self, mock_pool: MagicMock) -> None:
-        """Should delete a reminder and return True."""
-        mock_pool.execute.return_value = "DELETE 1"
+    async def test_get_user_reminders_excludes_sent_by_default(self, storage) -> None:
+        """Should exclude sent reminders by default."""
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
+        await storage.mark_sent(rid)
 
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        result = await storage.get_user_reminders("user1")
 
-        result = await storage.delete_reminder(42, "user1")
-
-        assert result is True
+        assert len(result) == 0
 
     @pytest.mark.asyncio
-    async def test_delete_reminder_not_found(self, mock_pool: MagicMock) -> None:
+    async def test_delete_reminder_found(self, storage) -> None:
+        """Should delete a reminder and return True."""
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
+
+        result = await storage.delete_reminder(rid, "user1")
+
+        assert result is True
+        rows = await storage.get_user_reminders("user1")
+        assert len(rows) == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_reminder_not_found(self, storage) -> None:
         """Should return False if reminder not found."""
-        mock_pool.execute.return_value = "DELETE 0"
-
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
-
-        result = await storage.delete_reminder(42, "user1")
+        result = await storage.delete_reminder(999, "user1")
 
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_initialize_returns_early_if_schema_ready(
-        self, mock_pool: MagicMock
-    ) -> None:
+    async def test_delete_reminder_wrong_user(self, storage) -> None:
+        """Should return False if reminder belongs to different user."""
+        reminder = Reminder(
+            user_id="user1",
+            message="Test",
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+        rid = await storage.add_reminder(reminder)
+
+        result = await storage.delete_reminder(rid, "user2")
+
+        assert result is False
+        rows = await storage.get_user_reminders("user1")
+        assert len(rows) == 1
+
+    @pytest.mark.asyncio
+    async def test_initialize_returns_early_if_schema_ready(self, conn, lock) -> None:
         """Should return early if schema already ready."""
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        storage = SqliteReminderStorage(conn, lock)
+        await storage.initialize()
 
         await storage.initialize()
 
-        mock_pool.acquire.assert_not_called()
+        assert storage.is_initialized is True
 
     @pytest.mark.asyncio
-    async def test_close_resets_schema_ready(self, mock_pool: MagicMock) -> None:
+    async def test_close_resets_schema_ready(self, storage) -> None:
         """Should reset schema ready flag on close."""
-        storage = PostgresReminderStorage(mock_pool)
-        storage._schema_ready = True
+        assert storage.is_initialized is True
 
         await storage.close()
 
-        assert storage._schema_ready is False
+        assert storage.is_initialized is False
 
 
-class TestStorageSingleton:
-    """Tests for storage singleton management."""
+class TestGetStorage:
+    """Tests for get_storage function."""
 
     @pytest.mark.asyncio
-    async def test_get_storage_raises_if_not_initialized(self) -> None:
-        """Should raise RuntimeError if storage not initialized."""
-        import blacki.reminders.storage as storage_module
+    async def test_get_storage_raises_when_not_initialized(self, conn, lock) -> None:
+        """Should raise RuntimeError when storage is not initialized."""
+        from blacki.container import (
+            reset_container_for_tests,
+            set_container_from_connection,
+        )
+        from blacki.reminders.storage import get_storage
 
-        storage_module._storage = None
+        set_container_from_connection(conn, lock)
 
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(RuntimeError, match="Reminder storage not initialized"):
             get_storage()
 
-    @pytest.mark.asyncio
-    async def test_init_and_get_storage(self) -> None:
-        """Should initialize and return storage singleton."""
-        import blacki.reminders.storage as storage_module
-
-        storage_module._storage = None
-
-        mock_pool = MagicMock(spec=asyncpg.Pool)
-        mock_pool.acquire = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.execute = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
-
-        storage = await init_reminder_storage(mock_pool)
-
-        assert storage is not None
-        assert get_storage() is storage
-
-        storage_module._storage = None
+        reset_container_for_tests()
 
     @pytest.mark.asyncio
-    async def test_close_reminder_storage(self) -> None:
-        """Should close and reset storage singleton."""
-        import blacki.reminders.storage as storage_module
+    async def test_get_storage_returns_storage_when_initialized(
+        self, conn, lock
+    ) -> None:
+        """Should return storage when initialized."""
+        from blacki.container import (
+            reset_container_for_tests,
+            set_container_from_connection,
+        )
+        from blacki.reminders.storage import get_storage
 
-        mock_pool = MagicMock(spec=asyncpg.Pool)
-        mock_pool.acquire = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.execute = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
+        container = set_container_from_connection(conn, lock)
+        await container.reminder_storage.initialize()
 
-        storage = await init_reminder_storage(mock_pool)
-        assert storage is not None
+        result = get_storage()
 
-        await close_reminder_storage()
+        assert result is container.reminder_storage
 
-        assert storage_module._storage is None
-
-    @pytest.mark.asyncio
-    async def test_reinit_reminder_storage_closes_existing(self) -> None:
-        """init_reminder_storage closes existing storage before replacing."""
-        import blacki.reminders.storage as storage_module
-
-        mock_pool = MagicMock(spec=asyncpg.Pool)
-        mock_pool.acquire = MagicMock()
-        mock_conn = MagicMock()
-        mock_conn.execute = AsyncMock()
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock()
-
-        existing = PostgresReminderStorage(mock_pool)
-        existing.close = AsyncMock()  # type: ignore[method-assign]
-        storage_module._storage = existing
-
-        new = await init_reminder_storage(mock_pool)
-
-        existing.close.assert_awaited_once()
-        assert storage_module._storage is new
-
-        storage_module._storage = None
-
-    @pytest.mark.asyncio
-    async def test_close_reminder_storage_when_none(self) -> None:
-        """Should do nothing if storage is already None."""
-        import blacki.reminders.storage as storage_module
-
-        storage_module._storage = None
-
-        await close_reminder_storage()
-
-        assert storage_module._storage is None
+        reset_container_for_tests()

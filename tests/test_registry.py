@@ -14,7 +14,7 @@ class TestToolConfig:
         config = ToolConfig()
 
         assert config.brave_search_api_key is None
-        assert config.database_url is None
+        assert config.sqlite_path is None
         assert config.sandbox_enabled is False
         assert config.skills_dir is None
 
@@ -23,13 +23,13 @@ class TestToolConfig:
         skills_path = Path("/tmp/skills")
         config = ToolConfig(
             brave_search_api_key="test-key",
-            database_url="postgres://localhost/test",
+            sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
             skills_dir=skills_path,
         )
 
         assert config.brave_search_api_key == "test-key"
-        assert config.database_url == "postgres://localhost/test"
+        assert config.sqlite_path == "/tmp/blacki.db"
         assert config.sandbox_enabled is True
         assert config.skills_dir == skills_path
 
@@ -53,8 +53,8 @@ class TestBuildTools:
         assert len(tools) == 9
 
     def test_database_tools_added(self) -> None:
-        """Should add database-backed tools when database URL provided."""
-        config = ToolConfig(database_url="postgres://localhost/test")
+        """Should add database-backed tools when sqlite path provided."""
+        config = ToolConfig(sqlite_path="/tmp/blacki.db")
 
         tools = build_tools(config)
 
@@ -80,7 +80,7 @@ class TestBuildTools:
         """Should include all tools with full configuration."""
         config = ToolConfig(
             brave_search_api_key="test-key",
-            database_url="postgres://localhost/test",
+            sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
             skills_dir=Path(__file__).parent.parent / "src" / "blacki" / "skills",
         )
@@ -110,7 +110,7 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
             assert config.brave_search_api_key is None
-            assert config.database_url is None
+            assert config.sqlite_path is None
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
 
@@ -139,14 +139,12 @@ class TestBuildToolConfigFromEnv:
 
             assert config.brave_search_api_key is None
 
-    def test_database_url_from_env(self) -> None:
-        """Should read DATABASE_URL from env."""
-        with patch.dict(
-            "os.environ", {"DATABASE_URL": "postgres://localhost/test"}, clear=False
-        ):
+    def test_sqlite_path_from_env(self) -> None:
+        """Should read SQLITE_PATH from env."""
+        with patch.dict("os.environ", {"SQLITE_PATH": "/tmp/blacki.db"}, clear=False):
             config = build_tool_config_from_env()
 
-            assert config.database_url == "postgres://localhost/test"
+            assert config.sqlite_path == "/tmp/blacki.db"
 
     def test_sandbox_enabled_from_env_true(self) -> None:
         """Should enable sandbox when SANDBOX_ENABLED is true."""

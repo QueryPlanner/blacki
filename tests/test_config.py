@@ -45,7 +45,7 @@ class TestServerEnv:
         assert env.serve_web_interface is False
         assert env.reload_agents is False
         assert env.agent_engine is None
-        assert env.database_url is None
+        assert env.sqlite_path is None
         assert env.openrouter_api_key is None
         assert env.allow_origins == '["http://127.0.0.1", "http://127.0.0.1:8080"]'
         assert env.host == "127.0.0.1"
@@ -108,7 +108,7 @@ class TestServerEnv:
             "SERVE_WEB_INTERFACE": "true",
             "RELOAD_AGENTS": "true",
             "AGENT_ENGINE": "test-engine-id",
-            "DATABASE_URL": "postgresql://user:pass@localhost/db",
+            "SQLITE_PATH": "/tmp/blacki.db",
             "OPENROUTER_API_KEY": "sk-or-v1-test",
             "ALLOW_ORIGINS": '["http://localhost:3000"]',
             "HOST": "0.0.0.0",  # noqa: S104
@@ -122,7 +122,7 @@ class TestServerEnv:
         assert env.serve_web_interface is True
         assert env.reload_agents is True
         assert env.agent_engine == "test-engine-id"
-        assert env.database_url == "postgresql://user:pass@localhost/db"
+        assert env.sqlite_path == "/tmp/blacki.db"
         assert env.openrouter_api_key == "sk-or-v1-test"
         assert env.allow_origins == '["http://localhost:3000"]'
         assert env.host == "0.0.0.0"  # noqa: S104
@@ -142,9 +142,9 @@ class TestServerEnv:
     def test_session_uri_property(self, valid_server_env: dict[str, str]) -> None:
         """Test that session_uri property uses agent_engine_uri only.
 
-        DATABASE_URL is ignored for sessions (reserved for Reminders system).
+        SQLITE_PATH is used for SQLite storage, not for ADK sessions.
         """
-        # Case 1: Neither database_url nor agent_engine -> in-memory (None)
+        # Case 1: Neither sqlite_path nor agent_engine -> in-memory (None)
         env = ServerEnv.model_validate(valid_server_env)
         assert env.session_uri is None
 
@@ -153,16 +153,15 @@ class TestServerEnv:
         env = ServerEnv.model_validate(data)
         assert env.session_uri == "agentengine://test-engine-id"
 
-        # Case 3: Only database_url -> ignored, returns None (in-memory)
-        db_url = "postgresql://user:pass@localhost/db?sslmode=require"
-        data = {**valid_server_env, "DATABASE_URL": db_url}
+        # Case 3: Only sqlite_path -> ignored for sessions, returns None
+        data = {**valid_server_env, "SQLITE_PATH": "/tmp/blacki.db"}
         env = ServerEnv.model_validate(data)
         assert env.session_uri is None
 
-        # Case 4: Both database_url and agent_engine -> agent_engine wins
+        # Case 4: Both sqlite_path and agent_engine -> agent_engine wins
         data = {
             **valid_server_env,
-            "DATABASE_URL": "postgresql://user:pass@localhost/db",
+            "SQLITE_PATH": "/tmp/blacki.db",
             "AGENT_ENGINE": "test-engine-id",
         }
         env = ServerEnv.model_validate(data)
@@ -226,13 +225,13 @@ class TestServerEnv:
         assert "AGENT_NAME" in output
         assert "LOG_LEVEL" in output
 
-    def test_server_env_print_config_with_db(
+    def test_server_env_print_config_with_sqlite(
         self, valid_server_env: dict[str, str], capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Test print_config outputs DB pool settings when DATABASE_URL is set."""
+        """Test print_config outputs SQLite path when SQLITE_PATH is set."""
         data = {
             **valid_server_env,
-            "DATABASE_URL": "postgresql://user:pass@localhost/db",
+            "SQLITE_PATH": "/tmp/blacki.db",
         }
         env = ServerEnv.model_validate(data)
         env.print_config()
@@ -240,11 +239,7 @@ class TestServerEnv:
         captured = capsys.readouterr()
         output = captured.out
 
-        assert "DB_POOL_PRE_PING" in output
-        assert "DB_POOL_RECYCLE" in output
-        assert "DB_POOL_SIZE" in output
-        assert "DB_MAX_OVERFLOW" in output
-        assert "DB_POOL_TIMEOUT" in output
+        assert "SQLITE_PATH" in output
 
     def test_server_env_ignores_extra_fields(
         self, valid_server_env: dict[str, str]
@@ -425,3 +420,10 @@ class TestEdgeCases:
         env = ServerEnv.model_validate(data)
         assert env.port == 9000
         assert isinstance(env.port, int)
+
+    def test_sqlite_path_can_be_set(self, valid_server_env: dict[str, str]) -> None:
+        """Test that SQLITE_PATH can be configured."""
+        data = {**valid_server_env, "SQLITE_PATH": "/var/data/blacki.db"}
+
+        env = ServerEnv.model_validate(data)
+        assert env.sqlite_path == "/var/data/blacki.db"

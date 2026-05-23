@@ -1,8 +1,10 @@
+# mypy: disable-error-code="no-untyped-def,method-assign"
 """Tests for the dependency injection container."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg  # type: ignore[import-untyped]
+import aiosqlite
 import pytest
 
 from blacki.container import (
@@ -12,7 +14,7 @@ from blacki.container import (
     init_container,
     reset_container_for_tests,
     set_container,
-    set_container_from_pool,
+    set_container_from_connection,
 )
 
 
@@ -56,20 +58,36 @@ class TestContainerGlobals:
             get_container()
 
 
-class TestSetContainerFromPool:
-    """Tests for set_container_from_pool function."""
+class TestSetContainerFromConnection:
+    """Tests for set_container_from_connection function."""
 
     def teardown_method(self) -> None:
         """Reset container after each test."""
         reset_container_for_tests()
 
-    def test_creates_container_from_pool(self) -> None:
-        """Should create and set container from existing pool."""
-        mock_pool = MagicMock(spec=asyncpg.Pool)
-        container = set_container_from_pool(mock_pool)
+    @pytest.mark.asyncio
+    async def test_creates_container_from_connection(self) -> None:
+        """Should create and set container from existing connection."""
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            container = set_container_from_connection(conn)
 
-        assert container.pool is mock_pool
-        assert get_container() is container
+            assert container.conn is conn
+            assert get_container() is container
+        finally:
+            await conn.close()
+
+    @pytest.mark.asyncio
+    async def test_creates_container_with_custom_lock(self) -> None:
+        """Should use provided lock."""
+        conn = await aiosqlite.connect(":memory:")
+        try:
+            custom_lock = asyncio.Lock()
+            container = set_container_from_connection(conn, lock=custom_lock)
+
+            assert container.lock is custom_lock
+        finally:
+            await conn.close()
 
 
 class TestCloseContainer:
@@ -115,24 +133,11 @@ class TestInitContainer:
             mock_container = MagicMock(spec=AppContainer)
             mock_create.return_value = mock_container
 
-            result = await init_container("postgres://localhost/test")
+            result = await init_container("/tmp/test.db")
 
-            mock_create.assert_called_once_with("postgres://localhost/test", 5)
+            mock_create.assert_called_once_with("/tmp/test.db")
             assert result is mock_container
             assert get_container() is mock_container
-
-    @pytest.mark.asyncio
-    async def test_init_container_with_custom_pool_size(self) -> None:
-        """Should pass custom pool size to create."""
-        with patch.object(
-            AppContainer, "create", new_callable=AsyncMock
-        ) as mock_create:
-            mock_container = MagicMock(spec=AppContainer)
-            mock_create.return_value = mock_container
-
-            await init_container("postgres://localhost/test", pool_size=10)
-
-            mock_create.assert_called_once_with("postgres://localhost/test", 10)
 
 
 class TestAppContainer:
@@ -143,61 +148,69 @@ class TestAppContainer:
         reset_container_for_tests()
 
     @pytest.fixture
-    def mock_pool(self) -> MagicMock:
-        """Create a mock asyncpg Pool."""
-        pool = MagicMock(spec=asyncpg.Pool)
-        pool.close = AsyncMock()
-        return pool
+    async def conn(self):
+        """Create an in-memory SQLite connection for testing."""
+        conn = await aiosqlite.connect(":memory:")
+        yield conn
+        await conn.close()
 
-    def test_container_properties_lazy_instantiate(self, mock_pool: MagicMock) -> None:
+    @pytest.fixture
+    def lock(self) -> asyncio.Lock:
+        """Create a lock for write operations."""
+        return asyncio.Lock()
+
+    @pytest.mark.asyncio
+    async def test_container_properties_lazy_instantiate(self, conn, lock) -> None:
         """Should lazily instantiate storage on first access."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         assert container._reminder_storage is None
         storage = container.reminder_storage
         assert container._reminder_storage is storage
 
-    def test_calorie_storage_property(self, mock_pool: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_calorie_storage_property(self, conn, lock) -> None:
         """Should lazily instantiate calorie storage."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         storage = container.calorie_storage
         assert storage is not None
         assert container._calorie_storage is storage
 
-    def test_workout_storage_property(self, mock_pool: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_workout_storage_property(self, conn, lock) -> None:
         """Should lazily instantiate workout storage."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         storage = container.workout_storage
         assert storage is not None
         assert container._workout_storage is storage
 
-    def test_preferences_storage_property(self, mock_pool: MagicMock) -> None:
+    @pytest.mark.asyncio
+    async def test_preferences_storage_property(self, conn, lock) -> None:
         """Should lazily instantiate preferences storage."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         storage = container.preferences_storage
         assert storage is not None
         assert container._preferences_storage is storage
 
     @pytest.mark.asyncio
-    async def test_close_closes_pool_and_storages(self, mock_pool: MagicMock) -> None:
-        """Should close pool and all storage instances."""
-        container = AppContainer(pool=mock_pool)
+    async def test_close_closes_connection_and_storages(self, conn, lock) -> None:
+        """Should close connection and all storage instances."""
+        container = AppContainer(conn=conn, _lock=lock)
 
         reminder = container.reminder_storage
-        reminder.close = AsyncMock()  # type: ignore[method-assign]
+        reminder.close = AsyncMock()
 
         await container.close()
 
         reminder.close.assert_called_once()
-        mock_pool.close.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_close_storages_resets_references(self, mock_pool: MagicMock) -> None:
+    async def test_close_storages_resets_references(self, conn, lock) -> None:
         """Should reset storage references after close."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         _ = container.reminder_storage
         _ = container.calorie_storage
@@ -212,9 +225,9 @@ class TestAppContainer:
         assert container._preferences_storage is None
 
     @pytest.mark.asyncio
-    async def test_close_storages_partial(self, mock_pool: MagicMock) -> None:
+    async def test_close_storages_partial(self, conn, lock) -> None:
         """Should handle partial storage initialization."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         _ = container.calorie_storage
         _ = container.workout_storage
@@ -228,19 +241,19 @@ class TestAppContainer:
         assert container._preferences_storage is None
 
     @pytest.mark.asyncio
-    async def test_initialize_all_storages(self, mock_pool: MagicMock) -> None:
+    async def test_initialize_all_storages(self, conn, lock) -> None:
         """Should initialize all storage instances."""
-        container = AppContainer(pool=mock_pool)
+        container = AppContainer(conn=conn, _lock=lock)
 
         reminder = container.reminder_storage
         calorie = container.calorie_storage
         workout = container.workout_storage
         preferences = container.preferences_storage
 
-        reminder.initialize = AsyncMock()  # type: ignore[method-assign]
-        calorie.initialize = AsyncMock()  # type: ignore[method-assign]
-        workout.initialize = AsyncMock()  # type: ignore[method-assign]
-        preferences.initialize = AsyncMock()  # type: ignore[method-assign]
+        reminder.initialize = AsyncMock()
+        calorie.initialize = AsyncMock()
+        workout.initialize = AsyncMock()
+        preferences.initialize = AsyncMock()
 
         await container.initialize_all_storages()
 
@@ -248,3 +261,19 @@ class TestAppContainer:
         calorie.initialize.assert_called_once()
         workout.initialize.assert_called_once()
         preferences.initialize.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_creates_container_with_connection(self) -> None:
+        """Should create container with SQLite connection."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+
+            container = await AppContainer.create(db_path)
+
+            assert container.conn is not None
+            assert container.lock is not None
+
+            await container.close()

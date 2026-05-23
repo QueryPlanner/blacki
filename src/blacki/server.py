@@ -17,11 +17,7 @@ from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from .adk_runtime import (
-    build_session_db_kwargs,
-    build_session_service_uri,
-    create_adk_runtime,
-)
+from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
 from .utils import (
     ConfigurationError,
@@ -131,13 +127,11 @@ async def _stop_reminder_scheduler() -> None:
 
 AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 
-session_uri = build_session_service_uri(env)
-session_db_kwargs = build_session_db_kwargs(env)
+DEFAULT_SQLITE_PATH = str(Path(AGENT_DIR) / ".adk" / "tools.db")
 
 app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,
-    session_service_uri=session_uri,
-    session_db_kwargs=session_db_kwargs,
+    session_service_uri=None,
     artifact_service_uri=None,
     memory_service_uri="mem0://",
     allow_origins=env.allow_origins_list,
@@ -156,9 +150,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     """
     global _container
 
-    if env.database_url:
-        _container = await init_container(env.database_url)
-        await _container.initialize_all_storages()
+    sqlite_path = env.sqlite_path or DEFAULT_SQLITE_PATH
+    _container = await init_container(sqlite_path)
+    await _container.initialize_all_storages()
 
     logger.info("Validating configuration...")
     try:
@@ -208,7 +202,8 @@ async def health() -> dict[str, Any]:
 
     if _container is not None:
         try:
-            await _container.pool.fetchval("SELECT 1")
+            async with _container.conn.execute("SELECT 1") as cursor:
+                await cursor.fetchone()
             checks["database"] = "healthy"
         except Exception:
             checks["database"] = "unhealthy"
@@ -246,7 +241,7 @@ def main() -> None:
         SERVE_WEB_INTERFACE: Whether to serve the web interface (true/false)
         RELOAD_AGENTS: Whether to reload agents on file changes (true/false)
         AGENT_ENGINE: Agent Engine instance for session and memory
-        DATABASE_URL: Postgres URL for session and memory
+        SQLITE_PATH: Path to SQLite database (default: {AGENT_DIR}/.adk/tools.db)
         OPENROUTER_API_KEY: Key for LiteLLM/OpenRouter
         ALLOW_ORIGINS: JSON array string of allowed CORS origins
         HOST: Server host (default: 127.0.0.1, set to 0.0.0.0 for containers)

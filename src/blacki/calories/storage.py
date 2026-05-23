@@ -1,14 +1,18 @@
+"""Persistent storage for calorie tracking backed by SQLite."""
+
+from __future__ import annotations
+
 import logging
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
-from blacki.storage.base import PostgresStorage
+from blacki.storage.base import SqlStorage
 
 if TYPE_CHECKING:
-    pass
+    import asyncio
+
+    import aiosqlite
 
 _ALLOWED_UPDATE_COLUMNS = frozenset(
     {
@@ -36,96 +40,83 @@ class CalorieEntry(BaseModel):
     protein_g: float | None = None
     carbs_g: float | None = None
     fat_g: float | None = None
-    meal_type: str | None = None  # breakfast/lunch/dinner/snack
-    logged_at: str  # UTC ISO
-    logged_date: str  # YYYY-MM-DD local
+    meal_type: str | None = None
+    logged_at: str
+    logged_date: str
 
 
 class DailySummary(BaseModel):
     """Summary of calorie intake for a specific date."""
 
-    date: str  # YYYY-MM-DD
+    date: str
     total_calories: int = 0
     total_protein_g: float | None = None
     total_carbs_g: float | None = None
     total_fat_g: float | None = None
     entry_count: int = 0
-    entries: list[CalorieEntry] = []  # populated only in single-day queries
+    entries: list[CalorieEntry] = []
 
 
-class PostgresCalorieStorage(PostgresStorage):
-    """Storage for calorie tracking using Postgres via asyncpg."""
+class SqliteCalorieStorage(SqlStorage):
+    """Storage for calorie tracking using SQLite via aiosqlite."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        super().__init__(pool)
+    def __init__(self, conn: aiosqlite.Connection, lock: asyncio.Lock) -> None:
+        super().__init__(conn, lock)
 
-    async def _create_tables(self, conn: asyncpg.Connection) -> None:
-        await conn.execute("""
+    async def _create_tables(self) -> None:
+        await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS calorie_logs (
-                id            BIGSERIAL PRIMARY KEY,
-                user_id       TEXT      NOT NULL,
-                description   TEXT      NOT NULL,
-                calories      INTEGER   NOT NULL,
-                protein_g     REAL,
-                carbs_g       REAL,
-                fat_g         REAL,
-                meal_type     TEXT,
-                logged_at     TIMESTAMPTZ NOT NULL,
-                logged_date   DATE      NOT NULL
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                description TEXT NOT NULL,
+                calories INTEGER NOT NULL,
+                protein_g REAL,
+                carbs_g REAL,
+                fat_g REAL,
+                meal_type TEXT,
+                logged_at TEXT NOT NULL,
+                logged_date TEXT NOT NULL
             )
         """)
-        column_type = await conn.fetchval("""
-            SELECT data_type
-            FROM information_schema.columns
-            WHERE table_name = 'calorie_logs' AND column_name = 'protein_g'
-        """)
-        if column_type == "integer":
-            await conn.execute("""
-                ALTER TABLE calorie_logs
-                ALTER COLUMN protein_g TYPE REAL USING protein_g::REAL,
-                ALTER COLUMN carbs_g TYPE REAL USING carbs_g::REAL,
-                ALTER COLUMN fat_g TYPE REAL USING fat_g::REAL;
-            """)
-        await conn.execute("""
+        await self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_calorie_logs_user_date
                 ON calorie_logs (user_id, logged_date)
         """)
 
     async def add_entry(self, entry: CalorieEntry) -> int:
         """Insert a calorie entry and return its new row ID."""
-        rid = await self._pool.fetchval(
+        rid = await self._execute(
             """
             INSERT INTO calorie_logs
                 (
                     user_id, description, calories, protein_g, carbs_g, fat_g,
                     meal_type, logged_at, logged_date
                 )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id
-
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            entry.user_id,
-            entry.description,
-            entry.calories,
-            entry.protein_g,
-            entry.carbs_g,
-            entry.fat_g,
-            entry.meal_type,
-            entry.logged_at,
-            entry.logged_date,
+            (
+                entry.user_id,
+                entry.description,
+                entry.calories,
+                entry.protein_g,
+                entry.carbs_g,
+                entry.fat_g,
+                entry.meal_type,
+                entry.logged_at,
+                entry.logged_date,
+            ),
         )
-        return int(rid)
+        return rid
 
     async def get_daily_summary(self, user_id: str, date_str: str) -> DailySummary:
         """Get summary and up to 50 entries for a specific day."""
-        rows = await self._pool.fetch(
+        rows = await self._fetch_all(
             """
             SELECT * FROM calorie_logs
-            WHERE user_id = $1 AND logged_date = $2
+            WHERE user_id = ? AND logged_date = ?
             ORDER BY logged_at ASC
             """,
-            user_id,
-            date_str,
+            (user_id, date_str),
         )
 
         entries = [self._row_to_entry(r) for r in rows]
@@ -152,11 +143,11 @@ class PostgresCalorieStorage(PostgresStorage):
                 has_fat = True
                 summary.total_fat_g += e.fat_g
 
-        if not has_protein:  # pragma: no cover
+        if not has_protein:
             summary.total_protein_g = None
-        if not has_carbs:  # pragma: no cover
+        if not has_carbs:
             summary.total_carbs_g = None
-        if not has_fat:  # pragma: no cover
+        if not has_fat:
             summary.total_fat_g = None
 
         return summary
@@ -165,7 +156,7 @@ class PostgresCalorieStorage(PostgresStorage):
         self, user_id: str, start_date: str, end_date: str
     ) -> list[DailySummary]:
         """Get summaries for a date range, capped at 30 days (no individual entries)."""
-        rows = await self._pool.fetch(
+        rows = await self._fetch_all(
             """
             SELECT
                 logged_date,
@@ -175,14 +166,12 @@ class PostgresCalorieStorage(PostgresStorage):
                 SUM(carbs_g) as total_carbs_g,
                 SUM(fat_g) as total_fat_g
             FROM calorie_logs
-            WHERE user_id = $1 AND logged_date >= $2 AND logged_date <= $3
+            WHERE user_id = ? AND logged_date >= ? AND logged_date <= ?
             GROUP BY logged_date
             ORDER BY logged_date DESC
             LIMIT 30
             """,
-            user_id,
-            start_date,
-            end_date,
+            (user_id, start_date, end_date),
         )
 
         summaries = []
@@ -210,36 +199,38 @@ class PostgresCalorieStorage(PostgresStorage):
 
     async def update_entry(self, entry_id: int, user_id: str, **fields: Any) -> bool:
         """Update a specific calorie entry."""
-        if not fields:  # pragma: no cover
+        if not fields:
             return False
 
         set_clauses = []
-        values: list[Any] = [entry_id, user_id]
+        values: list[Any] = []
 
-        for i, (key, value) in enumerate(fields.items(), start=3):
+        for key, value in fields.items():
             if key not in _ALLOWED_UPDATE_COLUMNS:
                 raise ValueError(
                     f"Column '{key}' is not allowed in calorie_logs UPDATE"
                 )
-            set_clauses.append(f"{key} = ${i}")
+            set_clauses.append(f"{key} = ?")
             values.append(value)
 
+        values.extend([entry_id, user_id])
         updates_str = ", ".join(set_clauses)
-        query = f"UPDATE calorie_logs SET {updates_str} WHERE id = $1 AND user_id = $2"  # noqa: S608
+        query = f"UPDATE calorie_logs SET {updates_str} WHERE id = ? AND user_id = ?"  # noqa: S608
 
-        result = await self._pool.execute(query, *values)
-        return bool(result == "UPDATE 1")
+        async with self._lock:
+            cursor = await self._conn.execute(query, values)
+            return cursor.rowcount > 0
 
     async def delete_entry(self, entry_id: int, user_id: str) -> bool:
         """Delete a calorie entry."""
-        result = await self._pool.execute(
-            "DELETE FROM calorie_logs WHERE id = $1 AND user_id = $2",
-            entry_id,
-            user_id,
-        )
-        return bool(result == "DELETE 1")
+        async with self._lock:
+            cursor = await self._conn.execute(
+                "DELETE FROM calorie_logs WHERE id = ? AND user_id = ?",
+                (entry_id, user_id),
+            )
+            return cursor.rowcount > 0
 
-    def _row_to_entry(self, row: Mapping[str, Any]) -> CalorieEntry:
+    def _row_to_entry(self, row: dict[str, Any]) -> CalorieEntry:
         return CalorieEntry(
             id=int(row["id"]),
             user_id=row["user_id"],
@@ -249,20 +240,16 @@ class PostgresCalorieStorage(PostgresStorage):
             carbs_g=float(row["carbs_g"]) if row["carbs_g"] is not None else None,
             fat_g=float(row["fat_g"]) if row["fat_g"] is not None else None,
             meal_type=row["meal_type"],
-            logged_at=(
-                row["logged_at"].isoformat()
-                if hasattr(row["logged_at"], "isoformat")
-                else str(row["logged_at"])
-            ),
+            logged_at=row["logged_at"],
             logged_date=str(row["logged_date"]),
         )
 
 
-_storage: PostgresCalorieStorage | None = None
+_storage: SqliteCalorieStorage | None = None
 
 
-def get_storage() -> PostgresCalorieStorage:
-    """Return the process-wide singleton PostgresCalorieStorage instance.
+def get_storage() -> SqliteCalorieStorage:
+    """Return the process-wide singleton SqliteCalorieStorage instance.
 
     Uses the AppContainer for dependency injection.
     """
@@ -272,51 +259,6 @@ def get_storage() -> PostgresCalorieStorage:
     storage = container.calorie_storage
     if not storage.is_initialized:
         raise RuntimeError(
-            "Calorie storage not initialized. Call init_calorie_storage() first."
+            "Calorie storage not initialized. Call storage.initialize() first."
         )
     return storage
-
-
-async def init_calorie_storage(pool: asyncpg.Pool) -> PostgresCalorieStorage:
-    """Initialize the calorie storage with a Postgres pool.
-
-    Note: This function is provided for backward compatibility.
-    Prefer using AppContainer directly for new code.
-    """
-    global _storage
-    import blacki.container as container_module
-
-    if container_module._container is None:  # pragma: no cover
-        container_module.set_container_from_pool(pool)
-
-    if _storage is not None:
-        await _storage.close()
-        _storage = None
-
-    container = container_module._container
-    if container is None:  # pragma: no cover
-        raise RuntimeError("Container not initialized")
-    if container._calorie_storage is not None:  # pragma: no cover
-        await container._calorie_storage.close()
-
-    storage = container.calorie_storage
-    await storage.initialize()
-    _storage = storage
-    return storage
-
-
-async def close_calorie_storage() -> None:
-    """Close the singleton calorie storage.
-
-    Note: This function is provided for backward compatibility.
-    Prefer using AppContainer.close() for new code.
-    """
-    global _storage
-    import blacki.container as container_module
-
-    if container_module._container is not None:  # pragma: no cover
-        container = container_module._container
-        if container._calorie_storage is not None:
-            await container._calorie_storage.close()
-            container._calorie_storage = None
-    _storage = None
