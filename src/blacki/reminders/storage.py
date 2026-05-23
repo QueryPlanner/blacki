@@ -185,23 +185,25 @@ class SqliteReminderStorage(SqlStorage):
         return [self._row_to_reminder(r) for r in rows]
 
     async def mark_sent(self, reminder_id: int) -> None:
-        await self._execute(
-            "UPDATE reminders SET is_sent = 1 WHERE id = ?",
-            (reminder_id,),
-        )
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE reminders SET is_sent = 1 WHERE id = ?",
+                (reminder_id,),
+            )
         logger.info("Marked reminder %s as sent (SQLite)", reminder_id)
 
     async def reschedule_reminder(
         self, reminder_id: int, next_trigger_time: str
     ) -> None:
-        await self._execute(
-            """
-            UPDATE reminders
-            SET trigger_time = ?, is_sent = 0
-            WHERE id = ?
-            """,
-            (next_trigger_time, reminder_id),
-        )
+        async with self._lock:
+            await self._conn.execute(
+                """
+                UPDATE reminders
+                SET trigger_time = ?, is_sent = 0
+                WHERE id = ?
+                """,
+                (next_trigger_time, reminder_id),
+            )
         logger.info(
             "Rescheduled recurring reminder %s for %s (SQLite)",
             reminder_id,
@@ -211,38 +213,17 @@ class SqliteReminderStorage(SqlStorage):
     async def get_user_reminders(
         self, user_id: str, include_sent: bool = False
     ) -> list[Reminder]:
-        if include_sent:
-            query = """
-                SELECT
-                    id,
-                    user_id,
-                    message,
-                    trigger_time,
-                    is_sent,
-                    recurrence_rule,
-                    recurrence_text,
-                    timezone_name,
-                    created_at
-                FROM reminders WHERE user_id = ?
-                ORDER BY trigger_time ASC
-            """
-            rows = await self._fetch_all(query, (user_id,))
-        else:
-            query = """
-                SELECT
-                    id,
-                    user_id,
-                    message,
-                    trigger_time,
-                    is_sent,
-                    recurrence_rule,
-                    recurrence_text,
-                    timezone_name,
-                    created_at
-                FROM reminders WHERE user_id = ? AND is_sent = 0
-                ORDER BY trigger_time ASC
-            """
-            rows = await self._fetch_all(query, (user_id,))
+        query = """
+            SELECT
+                id, user_id, message, trigger_time, is_sent,
+                recurrence_rule, recurrence_text, timezone_name, created_at
+            FROM reminders WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if not include_sent:
+            query += " AND is_sent = 0"
+        query += " ORDER BY trigger_time ASC"
+        rows = await self._fetch_all(query, tuple(params))
         return [self._row_to_reminder(r) for r in rows]
 
     async def delete_reminder(self, reminder_id: int, user_id: str) -> bool:

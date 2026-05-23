@@ -48,15 +48,16 @@ class SqlitePreferencesStorage(SqlStorage):
         """Set a preference value."""
         now = now_utc().isoformat(timespec="seconds")
         value_json = json.dumps(value)
-        await self._execute(
-            """
-            INSERT INTO user_preferences (user_id, key, value, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT (user_id, key) DO UPDATE
-            SET value = excluded.value, updated_at = excluded.updated_at
-            """,
-            (user_id, key, value_json, now),
-        )
+        async with self._lock:
+            await self._conn.execute(
+                """
+                INSERT INTO user_preferences (user_id, key, value, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (user_id, key) DO UPDATE
+                SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (user_id, key, value_json, now),
+            )
         logger.info("Updated preference %s for user %s", key, user_id)
 
     async def delete(self, user_id: str, key: str) -> bool:
