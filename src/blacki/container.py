@@ -4,7 +4,7 @@ This module provides a lightweight DI container to manage singleton lifecycles,
 replacing the global singleton pattern with explicit dependency injection.
 
 Usage:
-    container = await AppContainer.create(database_url)
+    container = await AppContainer.create(sqlite_path)
     await container.initialize_all_storages()
     set_container(container)
     try:
@@ -17,17 +17,19 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 if TYPE_CHECKING:
-    import asyncpg  # type: ignore[import-untyped]
+    import aiosqlite
 
-    from blacki.calories.storage import PostgresCalorieStorage
-    from blacki.reminders.storage import PostgresReminderStorage
-    from blacki.utils.preferences import PostgresPreferencesStorage
-    from blacki.workouts.storage import PostgresWorkoutStorage
+    from blacki.calories.storage import SqliteCalorieStorage
+    from blacki.reminders.storage import SqliteReminderStorage
+    from blacki.utils.preferences import SqlitePreferencesStorage
+    from blacki.workouts.storage import SqliteWorkoutStorage
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +53,16 @@ def set_container(container: AppContainer | None) -> None:
     _container = container
 
 
-async def init_container(database_url: str, pool_size: int = 5) -> AppContainer:
+async def init_container(sqlite_path: str | Path) -> AppContainer:
     """Create and set the global container.
 
     Args:
-        database_url: Postgres connection string.
-        pool_size: Maximum number of connections (default: 5).
+        sqlite_path: Path to the SQLite database file.
 
     Returns:
-        Initialized container with database pool.
+        Initialized container with database connection.
     """
-    container = await AppContainer.create(database_url, pool_size)
+    container = await AppContainer.create(sqlite_path)
     set_container(container)
     return container
 
@@ -84,19 +85,26 @@ def reset_container_for_tests() -> None:
     _container = None
 
 
-def set_container_from_pool(pool: asyncpg.Pool) -> AppContainer:
-    """Create and set a container from an existing pool.
+def set_container_from_connection(
+    conn: aiosqlite.Connection,
+    lock: asyncio.Lock | None = None,
+) -> AppContainer:
+    """Create and set a container from an existing connection.
 
-    Useful for tests that create their own mock pool.
+    Useful for tests that create their own mock connection.
 
     Args:
-        pool: An existing asyncpg pool.
+        conn: An existing aiosqlite connection.
+        lock: Optional lock for write operations. If None, creates a new one.
 
     Returns:
-        Container instance using the provided pool.
+        Container instance using the provided connection.
     """
     global _container
-    _container = AppContainer(pool=pool)
+    _container = AppContainer(
+        conn=conn,
+        _lock=lock or asyncio.Lock(),
+    )
     return _container
 
 
@@ -104,53 +112,48 @@ def set_container_from_pool(pool: asyncpg.Pool) -> AppContainer:
 class AppContainer:
     """Container for managing application-wide resources.
 
-    Manages the lifecycle of the database pool and storage singletons.
+    Manages the lifecycle of the database connection and storage singletons.
     All storages are lazily instantiated on first access.
 
     Attributes:
-        pool: The asyncpg connection pool.
+        conn: The aiosqlite connection.
+        _lock: Shared lock for write operations.
     """
 
-    pool: asyncpg.Pool
-    _reminder_storage: PostgresReminderStorage | None = field(
+    conn: aiosqlite.Connection
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _reminder_storage: SqliteReminderStorage | None = field(
         default=None, init=False, repr=False
     )
-    _calorie_storage: PostgresCalorieStorage | None = field(
+    _calorie_storage: SqliteCalorieStorage | None = field(
         default=None, init=False, repr=False
     )
-    _workout_storage: PostgresWorkoutStorage | None = field(
+    _workout_storage: SqliteWorkoutStorage | None = field(
         default=None, init=False, repr=False
     )
-    _preferences_storage: PostgresPreferencesStorage | None = field(
+    _preferences_storage: SqlitePreferencesStorage | None = field(
         default=None, init=False, repr=False
     )
 
     @classmethod
-    async def create(
-        cls, database_url: str, pool_size: int = 5
-    ) -> Self:  # pragma: no cover
-        """Create and initialize the container with a database pool.
+    async def create(cls, sqlite_path: str | Path) -> Self:
+        """Create and initialize the container with a SQLite database.
 
         Args:
-            database_url: Postgres connection string.
-            pool_size: Maximum number of connections (default: 5).
+            sqlite_path: Path to the SQLite database file.
 
         Returns:
-            Initialized container with database pool.
+            Initialized container with database connection.
         """
-        import asyncpg
+        from blacki.storage.sqlite import create_connection
 
-        pool = await asyncpg.create_pool(
-            database_url,
-            min_size=1,
-            max_size=pool_size,
-        )
-        return cls(pool=pool)
+        conn = await create_connection(sqlite_path)
+        return cls(conn=conn)
 
     async def close(self) -> None:
-        """Close all storage instances and the pool."""
+        """Close all storage instances and the connection."""
         await self._close_storages()
-        await self.pool.close()
+        await self.conn.close()
         logger.info("AppContainer closed")
 
     async def _close_storages(self) -> None:
@@ -183,37 +186,42 @@ class AppContainer:
         await self.preferences_storage.initialize()
 
     @property
-    def reminder_storage(self) -> PostgresReminderStorage:
+    def lock(self) -> asyncio.Lock:
+        """Get the shared write lock."""
+        return self._lock
+
+    @property
+    def reminder_storage(self) -> SqliteReminderStorage:
         """Get or create the reminder storage instance."""
         if self._reminder_storage is None:
-            from blacki.reminders.storage import PostgresReminderStorage
+            from blacki.reminders.storage import SqliteReminderStorage
 
-            self._reminder_storage = PostgresReminderStorage(self.pool)
+            self._reminder_storage = SqliteReminderStorage(self.conn, self._lock)
         return self._reminder_storage
 
     @property
-    def calorie_storage(self) -> PostgresCalorieStorage:
+    def calorie_storage(self) -> SqliteCalorieStorage:
         """Get or create the calorie storage instance."""
         if self._calorie_storage is None:
-            from blacki.calories.storage import PostgresCalorieStorage
+            from blacki.calories.storage import SqliteCalorieStorage
 
-            self._calorie_storage = PostgresCalorieStorage(self.pool)
+            self._calorie_storage = SqliteCalorieStorage(self.conn, self._lock)
         return self._calorie_storage
 
     @property
-    def workout_storage(self) -> PostgresWorkoutStorage:
+    def workout_storage(self) -> SqliteWorkoutStorage:
         """Get or create the workout storage instance."""
         if self._workout_storage is None:
-            from blacki.workouts.storage import PostgresWorkoutStorage
+            from blacki.workouts.storage import SqliteWorkoutStorage
 
-            self._workout_storage = PostgresWorkoutStorage(self.pool)
+            self._workout_storage = SqliteWorkoutStorage(self.conn, self._lock)
         return self._workout_storage
 
     @property
-    def preferences_storage(self) -> PostgresPreferencesStorage:
+    def preferences_storage(self) -> SqlitePreferencesStorage:
         """Get or create the preferences storage instance."""
         if self._preferences_storage is None:
-            from blacki.utils.preferences import PostgresPreferencesStorage
+            from blacki.utils.preferences import SqlitePreferencesStorage
 
-            self._preferences_storage = PostgresPreferencesStorage(self.pool)
+            self._preferences_storage = SqlitePreferencesStorage(self.conn, self._lock)
         return self._preferences_storage

@@ -78,14 +78,12 @@ def build_session_service_uri(env: ServerEnv) -> str | None:
 
 
 def build_session_db_kwargs(env: ServerEnv) -> dict[str, Any]:
-    """Build shared SQLAlchemy kwargs for database-backed ADK sessions."""
-    return {
-        "pool_pre_ping": env.db_pool_pre_ping,
-        "pool_recycle": env.db_pool_recycle,
-        "pool_size": env.db_pool_size,
-        "max_overflow": env.db_max_overflow,
-        "pool_timeout": env.db_pool_timeout,
-    }
+    """Build shared SQLAlchemy kwargs for database-backed ADK sessions.
+
+    Note: Pool settings are only relevant for PostgreSQL. SQLite uses
+    a single connection and ignores pool settings.
+    """
+    return {}
 
 
 def create_session_service(

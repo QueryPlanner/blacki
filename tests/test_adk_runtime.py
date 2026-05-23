@@ -55,23 +55,26 @@ def test_build_session_service_uri_keeps_agentengine_scheme() -> None:
     assert build_session_service_uri(env) == "agentengine://test-engine-id"
 
 
-def test_build_session_db_kwargs_uses_env_values() -> None:
-    """Test that session DB kwargs are derived from ServerEnv."""
-    env = _build_server_env(
-        DB_POOL_PRE_PING="false",
-        DB_POOL_RECYCLE="99",
-        DB_POOL_SIZE="7",
-        DB_MAX_OVERFLOW="8",
-        DB_POOL_TIMEOUT="9",
-    )
+def test_build_session_service_uri_converts_postgresql_to_asyncpg() -> None:
+    """Test that postgresql:// URIs are converted to postgresql+asyncpg://."""
+    env = _build_server_env()
 
-    assert build_session_db_kwargs(env) == {
-        "pool_pre_ping": False,
-        "pool_recycle": 99,
-        "pool_size": 7,
-        "max_overflow": 8,
-        "pool_timeout": 9,
-    }
+    with patch.object(
+        type(env),
+        "session_uri",
+        property(lambda self: "postgresql://user:pass@localhost/db"),
+    ):
+        assert (
+            build_session_service_uri(env)
+            == "postgresql+asyncpg://user:pass@localhost/db"
+        )
+
+
+def test_build_session_db_kwargs_returns_empty_dict() -> None:
+    """Test that session DB kwargs returns empty dict for SQLite."""
+    env = _build_server_env()
+
+    assert build_session_db_kwargs(env) == {}
 
 
 def test_create_session_service_without_uri_uses_sqlite(tmp_path: Path) -> None:
@@ -81,10 +84,11 @@ def test_create_session_service_without_uri_uses_sqlite(tmp_path: Path) -> None:
     assert isinstance(session_service, DatabaseSessionService)
 
 
-def test_create_session_service_with_postgres_uri() -> None:
-    """Test that Postgres session services use DatabaseSessionService."""
+def test_create_session_service_with_sqlite_uri(tmp_path: Path) -> None:
+    """Test that SQLite session services use DatabaseSessionService."""
+    db_path = tmp_path / "sessions.db"
     session_service = create_session_service(
-        "postgresql+asyncpg://user:pass@localhost/db",
+        f"sqlite+aiosqlite:///{db_path}",
         {},
     )
 

@@ -23,13 +23,13 @@ class ToolConfig:
 
     Attributes:
         brave_search_api_key: API key for Brave Search.
-        database_url: Postgres connection string for storage-backed tools.
+        sqlite_path: Path to SQLite database for storage-backed tools.
         sandbox_enabled: Whether to enable sandbox tools.
         skills_dir: Directory containing skill definitions.
     """
 
     brave_search_api_key: str | None = None
-    database_url: str | None = None
+    sqlite_path: str | None = None
     sandbox_enabled: bool = False
     skills_dir: Path | None = None
     weather_enabled: bool = True
@@ -50,7 +50,7 @@ def build_tools(config: ToolConfig) -> list[Any]:
         tools.extend(_build_brave_search_tools())
         logger.info("Brave Search tool enabled")
 
-    if config.database_url:
+    if config.sqlite_path:
         tools.extend(_build_reminder_tools())
         tools.extend(_build_calorie_tools())
         tools.extend(_build_workout_tools())
@@ -235,7 +235,7 @@ def build_tool_config_from_env() -> ToolConfig:
 
     return ToolConfig(
         brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None,
-        database_url=os.getenv("DATABASE_URL", "").strip() or None,
+        sqlite_path=os.getenv("SQLITE_PATH", "").strip() or None,
         sandbox_enabled=os.getenv("SANDBOX_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
         skills_dir=skills_dir,

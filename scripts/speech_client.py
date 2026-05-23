@@ -4,6 +4,7 @@ import functools
 import os
 import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -259,11 +260,11 @@ async def main() -> None:
     # Initialize Blacki ADK Runtime
     env = initialize_environment(ServerEnv)
 
-    # Initialize global container so tools that depend on Postgres can function
+    # Initialize global container so tools that depend on SQLite can function
     container = None
-    if env.database_url:
-        container = await init_container(env.database_url)
-        await container.initialize_all_storages()
+    sqlite_path = env.sqlite_path or str(Path(env.agent_dir) / ".adk" / "tools.db")
+    container = await init_container(sqlite_path)
+    await container.initialize_all_storages()
 
     runtime = create_adk_runtime(env)
 

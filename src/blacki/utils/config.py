@@ -125,40 +125,10 @@ class ServerEnv(BaseModel):
         description="Agent Engine instance ID for session and memory persistence",
     )
 
-    database_url: str | None = Field(
+    sqlite_path: str | None = Field(
         default=None,
-        alias="DATABASE_URL",
-        description="Database URL for session storage (e.g., postgresql://...)",
-    )
-
-    db_pool_pre_ping: bool = Field(
-        default=True,
-        alias="DB_POOL_PRE_PING",
-        description="Validate DB connections before use",
-    )
-
-    db_pool_recycle: int = Field(
-        default=1800,
-        alias="DB_POOL_RECYCLE",
-        description="Recycle connections after this many seconds",
-    )
-
-    db_pool_size: int = Field(
-        default=5,
-        alias="DB_POOL_SIZE",
-        description="Number of connections to keep open inside the connection pool",
-    )
-
-    db_max_overflow: int = Field(
-        default=10,
-        alias="DB_MAX_OVERFLOW",
-        description="Number of connections to allow beyond pool_size",
-    )
-
-    db_pool_timeout: int = Field(
-        default=30,
-        alias="DB_POOL_TIMEOUT",
-        description="Seconds to wait before giving up on getting a connection",
+        alias="SQLITE_PATH",
+        description="Path to SQLite database file (default: {AGENT_DIR}/.adk/tools.db)",
     )
 
     openrouter_api_key: str | None = Field(
@@ -219,13 +189,7 @@ class ServerEnv(BaseModel):
         print(f"SERVE_WEB_INTERFACE:   {self.serve_web_interface}")
         print(f"RELOAD_AGENTS:         {self.reload_agents}")
         print(f"AGENT_ENGINE:          {self.agent_engine}")
-        print(f"DATABASE_URL:          {self.database_url}")
-        if self.database_url:
-            print(f"DB_POOL_PRE_PING:      {self.db_pool_pre_ping}")
-            print(f"DB_POOL_RECYCLE:       {self.db_pool_recycle}")
-            print(f"DB_POOL_SIZE:          {self.db_pool_size}")
-            print(f"DB_MAX_OVERFLOW:       {self.db_max_overflow}")
-            print(f"DB_POOL_TIMEOUT:       {self.db_pool_timeout}")
+        print(f"SQLITE_PATH:          {self.sqlite_path}")
         masked_key = "********" if self.openrouter_api_key else "[not set]"
         print(f"OPENROUTER_KEY:        {masked_key}")
         print(f"HOST:                  {self.host}")
@@ -246,7 +210,7 @@ class ServerEnv(BaseModel):
         """Session service URI (Agent Engine or in-memory).
 
         Returns agent_engine_uri for ADK sessions, defaulting to None for
-        in-memory sessions. DATABASE_URL is reserved for the Reminders system.
+        in-memory sessions.
         """
         return self.agent_engine_uri
 

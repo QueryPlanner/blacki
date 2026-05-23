@@ -1,22 +1,23 @@
-"""Persistent storage for scheduled reminders backed by Postgres via asyncpg.
+"""Persistent storage for scheduled reminders backed by SQLite.
 
-A single asyncpg pool is used for all database operations. The pool is shared
-with the ADK session service when DATABASE_URL is configured.
+A single aiosqlite connection is used for all database operations.
 """
+
+from __future__ import annotations
 
 import abc
 import logging
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-import asyncpg  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
-from blacki.storage.base import PostgresStorage
+from blacki.storage.base import SqlStorage
 from blacki.utils.timezone import now_utc
 
 if TYPE_CHECKING:
-    pass
+    import asyncio
+
+    import aiosqlite
 
 logger = logging.getLogger(__name__)
 
@@ -95,39 +96,37 @@ class BaseReminderStorage(abc.ABC):
         """Delete a reminder if it belongs to the given user."""
 
 
-class PostgresReminderStorage(PostgresStorage):
-    """Storage for reminders using Postgres via asyncpg."""
+class SqliteReminderStorage(SqlStorage):
+    """Storage for reminders using SQLite via aiosqlite."""
 
-    def __init__(self, pool: asyncpg.Pool) -> None:
-        super().__init__(pool)
+    def __init__(self, conn: aiosqlite.Connection, lock: asyncio.Lock) -> None:
+        super().__init__(conn, lock)
 
-    async def _create_tables(self, conn: asyncpg.Connection) -> None:
-        await conn.execute("""
+    async def _create_tables(self) -> None:
+        await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS reminders (
-                id           BIGSERIAL PRIMARY KEY,
-                user_id      TEXT    NOT NULL,
-                message      TEXT    NOT NULL,
-                trigger_time TEXT    NOT NULL,
-                is_sent      BOOLEAN NOT NULL DEFAULT FALSE,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                message TEXT NOT NULL,
+                trigger_time TEXT NOT NULL,
+                is_sent INTEGER NOT NULL DEFAULT 0,
                 recurrence_rule TEXT,
                 recurrence_text TEXT,
                 timezone_name TEXT,
-                created_at   TEXT    NOT NULL
+                created_at TEXT NOT NULL
             )
         """)
-        await conn.execute("DROP INDEX IF EXISTS idx_reminders_trigger_time_sent")
-        await conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_reminders_due_reminders
-            ON reminders (trigger_time)
-            WHERE is_sent = FALSE
+        await self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_reminders_due
+            ON reminders (is_sent, trigger_time)
         """)
-        await conn.execute("""
+        await self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_reminders_user_id
             ON reminders (user_id)
         """)
 
     async def add_reminder(self, reminder: Reminder) -> int:
-        rid = await self._pool.fetchval(
+        rid = await self._execute(
             """
             INSERT INTO reminders
                 (
@@ -140,30 +139,31 @@ class PostgresReminderStorage(PostgresStorage):
                     timezone_name,
                     created_at
                 )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            RETURNING id
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            reminder.user_id,
-            reminder.message,
-            reminder.trigger_time,
-            reminder.is_sent,
-            reminder.recurrence_rule,
-            reminder.recurrence_text,
-            reminder.timezone_name,
-            reminder.created_at,
+            (
+                reminder.user_id,
+                reminder.message,
+                reminder.trigger_time,
+                int(reminder.is_sent),
+                reminder.recurrence_rule,
+                reminder.recurrence_text,
+                reminder.timezone_name,
+                reminder.created_at,
+            ),
         )
         logger.info(
-            "Added reminder %s for user %s: '%s...' at %s (Postgres)",
+            "Added reminder %s for user %s: '%s...' at %s (SQLite)",
             rid,
             reminder.user_id,
             reminder.message[:30],
             reminder.trigger_time,
         )
-        return int(rid)
+        return rid
 
     async def get_due_reminders(self) -> list[Reminder]:
         now = now_utc().isoformat(timespec="seconds")
-        rows = await self._pool.fetch(
+        rows = await self._fetch_all(
             """
             SELECT
                 id,
@@ -176,35 +176,36 @@ class PostgresReminderStorage(PostgresStorage):
                 timezone_name,
                 created_at
             FROM reminders
-            WHERE trigger_time <= $1 AND is_sent = FALSE
+            WHERE trigger_time <= ? AND is_sent = 0
             ORDER BY trigger_time ASC
-            LIMIT $2
+            LIMIT ?
             """,
-            now,
-            DUE_REMINDERS_FETCH_LIMIT,
+            (now, DUE_REMINDERS_FETCH_LIMIT),
         )
         return [self._row_to_reminder(r) for r in rows]
 
     async def mark_sent(self, reminder_id: int) -> None:
-        await self._pool.execute(
-            "UPDATE reminders SET is_sent = TRUE WHERE id = $1", reminder_id
-        )
-        logger.info("Marked reminder %s as sent (Postgres)", reminder_id)
+        async with self._lock:
+            await self._conn.execute(
+                "UPDATE reminders SET is_sent = 1 WHERE id = ?",
+                (reminder_id,),
+            )
+        logger.info("Marked reminder %s as sent (SQLite)", reminder_id)
 
     async def reschedule_reminder(
         self, reminder_id: int, next_trigger_time: str
     ) -> None:
-        await self._pool.execute(
-            """
-            UPDATE reminders
-            SET trigger_time = $1, is_sent = FALSE
-            WHERE id = $2
-            """,
-            next_trigger_time,
-            reminder_id,
-        )
+        async with self._lock:
+            await self._conn.execute(
+                """
+                UPDATE reminders
+                SET trigger_time = ?, is_sent = 0
+                WHERE id = ?
+                """,
+                (next_trigger_time, reminder_id),
+            )
         logger.info(
-            "Rescheduled recurring reminder %s for %s (Postgres)",
+            "Rescheduled recurring reminder %s for %s (SQLite)",
             reminder_id,
             next_trigger_time,
         )
@@ -214,36 +215,29 @@ class PostgresReminderStorage(PostgresStorage):
     ) -> list[Reminder]:
         query = """
             SELECT
-                id,
-                user_id,
-                message,
-                trigger_time,
-                is_sent,
-                recurrence_rule,
-                recurrence_text,
-                timezone_name,
-                created_at
-            FROM reminders WHERE user_id = $1
+                id, user_id, message, trigger_time, is_sent,
+                recurrence_rule, recurrence_text, timezone_name, created_at
+            FROM reminders WHERE user_id = ?
         """
+        params: list[Any] = [user_id]
         if not include_sent:
-            query += " AND is_sent = FALSE"
+            query += " AND is_sent = 0"
         query += " ORDER BY trigger_time ASC"
-
-        rows = await self._pool.fetch(query, user_id)
+        rows = await self._fetch_all(query, tuple(params))
         return [self._row_to_reminder(r) for r in rows]
 
     async def delete_reminder(self, reminder_id: int, user_id: str) -> bool:
-        result = await self._pool.execute(
-            "DELETE FROM reminders WHERE id = $1 AND user_id = $2",
-            reminder_id,
-            user_id,
-        )
-        deleted = bool(result == "DELETE 1")
+        async with self._lock:
+            cursor = await self._conn.execute(
+                "DELETE FROM reminders WHERE id = ? AND user_id = ?",
+                (reminder_id, user_id),
+            )
+            deleted = cursor.rowcount > 0
         if deleted:
-            logger.info("Deleted reminder %s (Postgres)", reminder_id)
+            logger.info("Deleted reminder %s (SQLite)", reminder_id)
         return deleted
 
-    def _row_to_reminder(self, row: Mapping[str, Any]) -> Reminder:
+    def _row_to_reminder(self, row: dict[str, Any]) -> Reminder:
         return Reminder(
             id=int(row["id"]),
             user_id=row["user_id"],
@@ -257,10 +251,10 @@ class PostgresReminderStorage(PostgresStorage):
         )
 
 
-_storage: PostgresReminderStorage | None = None
+_storage: SqliteReminderStorage | None = None
 
 
-def get_storage() -> PostgresReminderStorage:
+def get_storage() -> SqliteReminderStorage:
     """Return the process-wide singleton ReminderStorage instance.
 
     Uses the AppContainer for dependency injection.
@@ -271,51 +265,6 @@ def get_storage() -> PostgresReminderStorage:
     storage = container.reminder_storage
     if not storage.is_initialized:
         raise RuntimeError(
-            "Reminder storage not initialized. Call init_reminder_storage() first."
+            "Reminder storage not initialized. Call storage.initialize() first."
         )
     return storage
-
-
-async def init_reminder_storage(pool: asyncpg.Pool) -> PostgresReminderStorage:
-    """Initialize the reminder storage with a Postgres pool.
-
-    Note: This function is provided for backward compatibility.
-    Prefer using AppContainer directly for new code.
-    """
-    global _storage
-    import blacki.container as container_module
-
-    if container_module._container is None:  # pragma: no cover
-        container_module.set_container_from_pool(pool)
-
-    if _storage is not None:
-        await _storage.close()
-        _storage = None
-
-    container = container_module._container
-    if container is None:  # pragma: no cover
-        raise RuntimeError("Container not initialized")
-    if container._reminder_storage is not None:  # pragma: no cover
-        await container._reminder_storage.close()
-
-    storage = container.reminder_storage
-    await storage.initialize()
-    _storage = storage
-    return storage
-
-
-async def close_reminder_storage() -> None:
-    """Close the singleton reminder storage.
-
-    Note: This function is provided for backward compatibility.
-    Prefer using AppContainer.close() for new code.
-    """
-    global _storage
-    import blacki.container as container_module
-
-    if container_module._container is not None:  # pragma: no cover
-        container = container_module._container
-        if container._reminder_storage is not None:
-            await container._reminder_storage.close()
-            container._reminder_storage = None
-    _storage = None
