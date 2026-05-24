@@ -25,6 +25,7 @@ from .utils import (
     configure_otel_resource,
     initialize_environment,
     setup_logging,
+    setup_tracing,
     validation,
 )
 
@@ -39,6 +40,7 @@ configure_otel_resource(
 GoogleADKInstrumentor().instrument()
 
 setup_logging(log_level=env.log_level)
+setup_tracing()
 
 _telegram_bot = None
 _container: AppContainer | None = None
