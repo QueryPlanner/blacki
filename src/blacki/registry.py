@@ -232,11 +232,11 @@ def build_tool_config_from_env() -> ToolConfig:
     import os
 
     skills_dir = Path(__file__).parent / "skills"
+    # Match server.py AGENT_DIR calculation (points to src/, not project root)
     agent_dir = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
     default_sqlite_path = str(Path(agent_dir) / ".adk" / "tools.db")
 
-    sqlite_path_env = os.getenv("SQLITE_PATH", "").strip() or None
-    sqlite_path = sqlite_path_env or default_sqlite_path
+    sqlite_path = os.getenv("SQLITE_PATH", "").strip() or default_sqlite_path
 
     return ToolConfig(
         brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None,
