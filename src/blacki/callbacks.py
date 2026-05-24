@@ -27,10 +27,6 @@ from .telegram.types import ParseMode
 logger = logging.getLogger(__name__)
 
 # Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
-_TOOL_NOTIFY_LAST: dict[str, float] = {}
-_TOOL_NOTIFY_MIN_INTERVAL_SEC = 0.1
-_MAX_TOOL_NOTIFY_RATE_ENTRIES = 8192
-_TOOL_NOTIFY_LOCK = asyncio.Lock()
 
 _INTERMEDIATE_NOTIFY_LAST: dict[str, float] = {}
 _INTERMEDIATE_NOTIFY_MIN_INTERVAL_SEC = 0.35
@@ -130,8 +126,6 @@ async def _shared_telegram_notify_client(token: str) -> TelegramApiClient:
 
 async def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
     """Clear per-chat rate limit state and env lookup cache (tests only)."""
-    async with _TOOL_NOTIFY_LOCK:
-        _TOOL_NOTIFY_LAST.clear()
     async with _INTERMEDIATE_NOTIFY_LOCK:
         _INTERMEDIATE_NOTIFY_LAST.clear()
     _telegram_tool_notifications_enabled_impl.cache_clear()
@@ -235,23 +229,6 @@ async def notify_telegram_before_tool(
         return None
 
     thread_id = _parse_optional_int(tool_context.state.get("telegram_thread_id"))
-
-    chat_key = str(chat_id)
-    now = time.monotonic()
-    if not await _rate_limit_allows_notification(
-        chat_key,
-        now,
-        storage=_TOOL_NOTIFY_LAST,
-        min_interval=_TOOL_NOTIFY_MIN_INTERVAL_SEC,
-        max_entries=_MAX_TOOL_NOTIFY_RATE_ENTRIES,
-        lock=_TOOL_NOTIFY_LOCK,
-    ):
-        logger.debug(
-            "Skipping Telegram tool notify (rate limit) chat_id=%s tool=%s",
-            chat_id,
-            tool.name,
-        )
-        return None
 
     logger.debug(
         "notify_telegram_before_tool: sending notification for tool=%s chat_id=%s",
