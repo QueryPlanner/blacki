@@ -105,12 +105,13 @@ class TestBuildToolConfigFromEnv:
     """Tests for build_tool_config_from_env function."""
 
     def test_empty_env(self) -> None:
-        """Should return default config with empty env."""
+        """Should return default config with default sqlite path."""
         with patch.dict("os.environ", {}, clear=True):
             config = build_tool_config_from_env()
 
             assert config.brave_search_api_key is None
-            assert config.sqlite_path is None
+            assert config.sqlite_path is not None
+            assert config.sqlite_path.endswith(".adk/tools.db")
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
 
