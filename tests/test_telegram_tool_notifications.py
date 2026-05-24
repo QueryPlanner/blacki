@@ -387,10 +387,10 @@ async def test_notify_sends_to_telegram_with_chat_and_thread(
 
 
 @pytest.mark.asyncio
-async def test_notify_rate_limits_per_chat(
+async def test_notify_sends_for_each_tool_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two tool calls within the throttle window only produce one Telegram send."""
+    """Each tool call gets its own Telegram notification (no rate limiting)."""
     monkeypatch.setenv("TELEGRAM_ENABLED", "true")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
@@ -416,7 +416,8 @@ async def test_notify_rate_limits_per_chat(
             cast(ToolContext, ctx),
         )
 
-    assert len(mock_client.send_message.await_args_list) == 1
+    # Both tool calls should send notifications
+    assert len(mock_client.send_message.await_args_list) == 2
 
 
 @pytest.mark.asyncio
