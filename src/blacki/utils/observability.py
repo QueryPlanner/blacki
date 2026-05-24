@@ -10,6 +10,7 @@ import os
 import sys
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from opentelemetry import trace
@@ -47,17 +48,24 @@ def configure_otel_resource(agent_name: str) -> None:
     )
 
 
+def get_log_dir() -> Path:
+    """Get the appropriate log directory based on environment."""
+    return Path("/app/logs") if Path("/.dockerenv").exists() else Path("./logs")
+
+
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_record = {
-            "timestamp": self.formatTime(record, self.datefmt),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "name": record.name,
             "message": record.getMessage(),
+            "process_id": record.process,
+            "thread_id": record.thread,
         }
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_record)
+        return json.dumps(log_record, default=str)
 
 
 def setup_logging(log_level: str) -> None:
@@ -79,11 +87,10 @@ def setup_logging(log_level: str) -> None:
     handlers: list[logging.Handler] = [console_handler]
 
     # Configure local JSON file handler
-    # We use ./logs locally and /app/logs inside Docker, so check both
-    log_dir = "/app/logs" if Path("/.dockerenv").exists() else "./logs"
+    log_dir = get_log_dir()
     try:
-        Path(log_dir).mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(Path(log_dir) / "blacki-telemetry.log")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(log_dir / "blacki-telemetry.log")
         file_handler.setFormatter(JSONFormatter())
         handlers.append(file_handler)
     except OSError as e:
@@ -114,9 +121,20 @@ class JSONFileSpanExporter(SpanExporter):
                             "trace_id": format(span.context.trace_id, "032x"),
                             "span_id": format(span.context.span_id, "016x"),
                         },
+                        "parent_id": format(span.parent.span_id, "016x")
+                        if span.parent
+                        else None,
                         "kind": span.kind.name if span.kind else None,
-                        "start_time": span.start_time,
-                        "end_time": span.end_time,
+                        "start_time": datetime.fromtimestamp(
+                            span.start_time / 1e9, tz=UTC
+                        ).isoformat()
+                        if span.start_time
+                        else None,
+                        "end_time": datetime.fromtimestamp(
+                            span.end_time / 1e9, tz=UTC
+                        ).isoformat()
+                        if span.end_time
+                        else None,
                         "status": {
                             "status_code": span.status.status_code.name
                             if span.status
@@ -129,7 +147,11 @@ class JSONFileSpanExporter(SpanExporter):
                         "events": [
                             {
                                 "name": event.name,
-                                "timestamp": event.timestamp,
+                                "timestamp": datetime.fromtimestamp(
+                                    event.timestamp / 1e9, tz=UTC
+                                ).isoformat()
+                                if event.timestamp
+                                else None,
                                 "attributes": dict(event.attributes)
                                 if event.attributes
                                 else {},
@@ -139,7 +161,7 @@ class JSONFileSpanExporter(SpanExporter):
                         if span.events
                         else [],
                     }
-                    f.write(json.dumps(span_data) + "\n")
+                    f.write(json.dumps(span_data, default=str) + "\n")
             return SpanExportResult.SUCCESS
         except Exception as e:
             print(f"⚠️ Failed to write trace to {self.log_path}: {e}")
@@ -151,24 +173,17 @@ class JSONFileSpanExporter(SpanExporter):
 
 def setup_tracing() -> None:
     """Set up OpenTelemetry tracing with local JSON file export."""
-    log_dir = "/app/logs" if Path("/.dockerenv").exists() else "./logs"
-    log_path = Path(log_dir) / "blacki-traces.log"
+    log_dir = get_log_dir()
+    log_path = log_dir / "blacki-traces.log"
 
     try:
-        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print(f"⚠️ Failed to create trace directory: {e}")
         return
 
-    # Extract resource attributes if they exist
-    resource_attrs = {}
-    if "OTEL_RESOURCE_ATTRIBUTES" in os.environ:
-        for pair in os.environ["OTEL_RESOURCE_ATTRIBUTES"].split(","):
-            if "=" in pair:
-                key, value = pair.split("=", 1)
-                resource_attrs[key] = value
-
-    resource = Resource.create(resource_attrs)
+    # Resource automatically reads OTEL_RESOURCE_ATTRIBUTES from environment variables
+    resource = Resource.create()
 
     # Set up tracer provider
     provider = TracerProvider(resource=resource)
