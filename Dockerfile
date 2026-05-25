@@ -61,9 +61,6 @@ ENV VIRTUAL_ENV=/app/.venv \
     HOST=0.0.0.0 \
     PORT=8080
 
-# Switch to non-root user
-USER app
-
 # Expose port (default 8080)
 EXPOSE 8080
 
