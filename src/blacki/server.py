@@ -19,6 +19,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
+from .telemetry import get_telemetry_queries
 from .utils import (
     ConfigurationError,
     ServerEnv,
@@ -224,6 +225,36 @@ async def health() -> dict[str, Any]:
     status = "ok" if all_ok else "degraded"
 
     return {"status": status, "checks": checks}
+
+
+@app.get("/api/telemetry/stats")
+async def telemetry_stats(hours: int = 24) -> dict[str, Any]:
+    """Get aggregated telemetry statistics.
+
+    Args:
+        hours: Number of hours to look back for time-based metrics (default: 24).
+
+    Returns:
+        Dict containing latency, tokens, errors, tools, agent, and SRE metrics.
+    """
+    queries = get_telemetry_queries()
+    return queries.get_summary(hours=max(1, min(hours, 168)))
+
+
+DASHBOARD_HTML_PATH = Path(__file__).parent / "static" / "dashboard.html"
+
+
+@app.get("/dashboard")
+async def dashboard() -> Any:
+    """Serve the telemetry dashboard HTML page.
+
+    Returns:
+        HTML page with embedded Chart.js dashboard.
+    """
+    from fastapi.responses import HTMLResponse
+
+    html_content = DASHBOARD_HTML_PATH.read_text()
+    return HTMLResponse(content=html_content)
 
 
 def main() -> None:

@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blacki Telemetry Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+            line-height: 1.5;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+        .header-left h1 { color: #58a6ff; font-size: 1.8rem; margin-bottom: 5px; }
+        .header-left .subtitle { color: #8b949e; font-size: 0.9rem; }
+        .header-right { display: flex; gap: 15px; align-items: center; flex-wrap: wrap; }
+        .time-filter { display: flex; align-items: center; gap: 8px; }
+        .time-filter label { color: #8b949e; font-size: 0.85rem; }
+        .time-filter select {
+            background: #21262d;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .time-filter select:focus { outline: none; border-color: #58a6ff; }
+        .refresh-info { font-size: 0.8rem; color: #8b949e; }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .metric-card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        .metric-card.highlight { border-color: #58a6ff; }
+        .metric-label { font-size: 0.75rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+        .metric-value { font-size: 1.6rem; font-weight: 600; color: #58a6ff; margin: 5px 0; }
+        .metric-value.good { color: #3fb950; }
+        .metric-value.warning { color: #d29922; }
+        .metric-value.error { color: #f85149; }
+        .metric-sub { font-size: 0.75rem; color: #8b949e; }
+
+        .section { margin-bottom: 25px; }
+        .section-title {
+            font-size: 1.1rem;
+            color: #58a6ff;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #30363d;
+        }
+
+        .charts-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+            gap: 20px;
+            margin-bottom: 25px;
+        }
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .card h3 {
+            font-size: 0.95rem;
+            color: #8b949e;
+            margin-bottom: 15px;
+        }
+        .chart-container { height: 280px; position: relative; }
+        .chart-container.small { height: 200px; }
+
+        .data-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .data-table th, .data-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid #30363d;
+        }
+        .data-table th { color: #8b949e; font-weight: 500; background: #21262d; }
+        .data-table td { color: #c9d1d9; }
+        .data-table tr:hover { background: #21262d; }
+        .status-ok { color: #3fb950; }
+        .status-error { color: #f85149; }
+        .status-unknown { color: #8b949e; }
+
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+        .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #30363d; }
+        .stat-row:last-child { border-bottom: none; }
+        .stat-label { color: #8b949e; }
+        .stat-value { color: #c9d1d9; font-weight: 500; }
+
+        .agent-info { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 10px; }
+        .agent-info span { color: #8b949e; }
+        .agent-info strong { color: #c9d1d9; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-left">
+            <h1>Blacki Telemetry</h1>
+            <div class="subtitle" id="agentInfo">Loading...</div>
+        </div>
+        <div class="header-right">
+            <div class="time-filter">
+                <label for="timeRange">Time Range:</label>
+                <select id="timeRange">
+                    <option value="1">Last 1 hour</option>
+                    <option value="6">Last 6 hours</option>
+                    <option value="12">Last 12 hours</option>
+                    <option value="24" selected>Last 24 hours</option>
+                    <option value="48">Last 48 hours</option>
+                    <option value="72">Last 72 hours</option>
+                    <option value="168">Last 7 days</option>
+                </select>
+            </div>
+            <div class="refresh-info">Last updated: <span id="lastUpdate">-</span></div>
+        </div>
+    </div>
+
+    <div class="metrics-grid" id="metricsGrid">
+        <div class="metric-card">
+            <div class="metric-label">Total Invocations</div>
+            <div class="metric-value" id="totalInvocations">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">LLM Calls</div>
+            <div class="metric-value" id="totalLlmCalls">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Total Tokens</div>
+            <div class="metric-value" id="totalTokens">-</div>
+            <div class="metric-sub" id="tokenBreakdown">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">P95 Latency</div>
+            <div class="metric-value" id="p95Latency">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Availability</div>
+            <div class="metric-value" id="availability">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Error Rate</div>
+            <div class="metric-value" id="errorRate">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Tool Calls</div>
+            <div class="metric-value" id="totalToolCalls">-</div>
+            <div class="metric-sub" id="toolSuccessRate">-</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-label">Active Users</div>
+            <div class="metric-value" id="activeUsers">-</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Latency by Operation</div>
+        <div class="charts-row">
+            <div class="card">
+                <h3>P95 Latency (ms)</h3>
+                <div class="chart-container">
+                    <canvas id="latencyChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Operation Distribution</h3>
+                <div class="chart-container">
+                    <canvas id="operationDistChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Token Metrics</div>
+        <div class="charts-row">
+            <div class="card">
+                <h3>Token Burn Rate Over Time</h3>
+                <div class="chart-container">
+                    <canvas id="tokenChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Token Usage by User</h3>
+                <div class="chart-container">
+                    <canvas id="userTokenChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Errors Over Time</div>
+        <div class="charts-row">
+            <div class="card">
+                <h3>Error Count by Hour</h3>
+                <div class="chart-container">
+                    <canvas id="errorChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Log Level Distribution</h3>
+                <div class="chart-container">
+                    <canvas id="logLevelChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Tool Inspector</div>
+        <div class="charts-row">
+            <div class="card">
+                <h3>Recent Tool Executions</h3>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Tool</th>
+                            <th>Duration</th>
+                            <th>Status</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="toolInspectorTable">
+                        <tr><td colspan="4">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h3>Tool Statistics</h3>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Tool</th>
+                            <th>Calls</th>
+                            <th>Avg (ms)</th>
+                            <th>P95 (ms)</th>
+                            <th>Success</th>
+                        </tr>
+                    </thead>
+                    <tbody id="toolStatsTable">
+                        <tr><td colspan="5">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Recent Errors</div>
+        <div class="card">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Source</th>
+                        <th>Message</th>
+                    </tr>
+                </thead>
+                <tbody id="recentErrorsTable">
+                    <tr><td colspan="3">No recent errors</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let latencyChart, operationDistChart, tokenChart, userTokenChart, errorChart, logLevelChart;
+        let currentHours = 24;
+
+        async function fetchStats(hours) {
+            const response = await fetch(`/api/telemetry/stats?hours=${hours}`);
+            return response.json();
+        }
+
+        function formatNumber(num) {
+            if (num === null || num === undefined) return '-';
+            if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+            if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+            return num.toString();
+        }
+
+        function formatDuration(ms) {
+            if (ms === null || ms === undefined) return '-';
+            if (ms < 1000) return ms.toFixed(0) + ' ms';
+            return (ms / 1000).toFixed(2) + ' s';
+        }
+
+        function formatTimestamp(epoch) {
+            if (!epoch) return '-';
+            const date = new Date(epoch * 1000);
+            return date.toLocaleTimeString();
+        }
+
+        function formatHoursAgo(epoch, currentEpoch) {
+            if (!epoch) return '-';
+            const diff = currentEpoch - epoch;
+            const mins = Math.floor(diff / 60);
+            if (mins < 60) return `${mins}m ago`;
+            const hours = Math.floor(mins / 60);
+            return `${hours}h ago`;
+        }
+
+        function updateMetricCards(data) {
+            document.getElementById('totalInvocations').textContent = data.agent.total_invocations || 0;
+            document.getElementById('totalLlmCalls').textContent = data.agent.total_llm_calls || 0;
+
+            const totalTokens = data.tokens.total || 0;
+            document.getElementById('totalTokens').textContent = formatNumber(totalTokens);
+            document.getElementById('tokenBreakdown').textContent =
+                `${formatNumber(data.tokens.total_input)} in / ${formatNumber(data.tokens.total_output)} out`;
+
+            const p95 = data.latency.overall.p95_ms;
+            const p95El = document.getElementById('p95Latency');
+            p95El.textContent = formatDuration(p95);
+            p95El.className = 'metric-value' + (p95 > 10000 ? ' warning' : p95 > 30000 ? ' error' : '');
+
+            const avail = data.sre.availability;
+            const availEl = document.getElementById('availability');
+            availEl.textContent = (avail * 100).toFixed(1) + '%';
+            availEl.className = 'metric-value' + (avail >= 0.99 ? ' good' : avail >= 0.95 ? ' warning' : ' error');
+
+            const errorRate = data.errors.rate;
+            const errorEl = document.getElementById('errorRate');
+            errorEl.textContent = (errorRate * 100).toFixed(2) + '%';
+            errorEl.className = 'metric-value' + (errorRate < 0.01 ? ' good' : errorRate < 0.05 ? ' warning' : ' error');
+
+            const toolCalls = data.tools.statistics.total_calls;
+            document.getElementById('totalToolCalls').textContent = toolCalls;
+            document.getElementById('toolSuccessRate').textContent =
+                ((data.tools.statistics.success_rate || 0) * 100).toFixed(0) + '% success';
+
+            document.getElementById('activeUsers').textContent = data.sre.active_users_24h || 0;
+
+            const agentInfo = document.getElementById('agentInfo');
+            const agentName = data.agent.name || 'blacki';
+            const models = data.agent.models.length > 0 ? data.agent.models.join(', ') : 'Unknown';
+            agentInfo.innerHTML = `Agent: <strong>${agentName}</strong> | Models: <strong>${models}</strong>`;
+        }
+
+        function createLatencyChart(data) {
+            const ctx = document.getElementById('latencyChart').getContext('2d');
+            if (latencyChart) latencyChart.destroy();
+
+            const operations = data.latency.by_operation.filter(o => o.operation !== 'other');
+
+            latencyChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: operations.map(o => o.operation),
+                    datasets: [{
+                        label: 'P95 Latency (ms)',
+                        data: operations.map(o => o.p95_ms || 0),
+                        backgroundColor: '#238636',
+                        borderColor: '#3fb950',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+                        y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
+                    }
+                }
+            });
+        }
+
+        function createOperationDistChart(data) {
+            const ctx = document.getElementById('operationDistChart').getContext('2d');
+            if (operationDistChart) operationDistChart.destroy();
+
+            const operations = data.latency.by_operation.filter(o => o.operation !== 'other');
+
+            operationDistChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: operations.map(o => o.operation),
+                    datasets: [{
+                        data: operations.map(o => o.count || 0),
+                        backgroundColor: ['#238636', '#1f6feb', '#8957e5', '#d29922', '#f85149']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#c9d1d9', padding: 15 }
+                        }
+                    }
+                }
+            });
+        }
+
+        function createTokenChart(data) {
+            const ctx = document.getElementById('tokenChart').getContext('2d');
+            if (tokenChart) tokenChart.destroy();
+
+            const timeData = data.tokens.over_time;
+
+            tokenChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: timeData.map(d => d.hour ? new Date(d.hour).toLocaleTimeString() : ''),
+                    datasets: [
+                        {
+                            label: 'Input Tokens',
+                            data: timeData.map(d => d.input_tokens || 0),
+                            borderColor: '#1f6feb',
+                            backgroundColor: 'rgba(31, 107, 235, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        },
+                        {
+                            label: 'Output Tokens',
+                            data: timeData.map(d => d.output_tokens || 0),
+                            borderColor: '#8957e5',
+                            backgroundColor: 'rgba(137, 87, 229, 0.1)',
+                            fill: true,
+                            tension: 0.3
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { labels: { color: '#c9d1d9' } } },
+                    scales: {
+                        x: { ticks: { color: '#8b949e', maxTicksLimit: 10 }, grid: { color: '#21262d' } },
+                        y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
+                    }
+                }
+            });
+        }
+
+        function createUserTokenChart(data) {
+            const ctx = document.getElementById('userTokenChart').getContext('2d');
+            if (userTokenChart) userTokenChart.destroy();
+
+            const users = data.tokens.by_user.slice(0, 10);
+            const labels = users.map(u => u.user_id ? u.user_id.replace('telegram-chat-', '').substring(0, 15) : 'Unknown');
+
+            userTokenChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'Input',
+                            data: users.map(u => u.input_tokens || 0),
+                            backgroundColor: '#1f6feb'
+                        },
+                        {
+                            label: 'Output',
+                            data: users.map(u => u.output_tokens || 0),
+                            backgroundColor: '#8957e5'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    indexAxis: 'y',
+                    plugins: { legend: { labels: { color: '#c9d1d9' } } },
+                    scales: {
+                        x: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+                        y: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } }
+                    }
+                }
+            });
+        }
+
+        function createErrorChart(data) {
+            const ctx = document.getElementById('errorChart').getContext('2d');
+            if (errorChart) errorChart.destroy();
+
+            const errorData = data.errors.over_time;
+
+            errorChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: errorData.map(d => d.hour ? new Date(d.hour).toLocaleTimeString() : ''),
+                    datasets: [{
+                        label: 'Errors',
+                        data: errorData.map(d => d.count || 0),
+                        borderColor: '#f85149',
+                        backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                        fill: true,
+                        tension: 0.3
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { ticks: { color: '#8b949e', maxTicksLimit: 10 }, grid: { color: '#21262d' } },
+                        y: { ticks: { color: '#8b949e' }, grid: { color: '#21262d' }, beginAtZero: true }
+                    }
+                }
+            });
+        }
+
+        function createLogLevelChart(data) {
+            const ctx = document.getElementById('logLevelChart').getContext('2d');
+            if (logLevelChart) logLevelChart.destroy();
+
+            const colors = {
+                'ERROR': '#f85149',
+                'WARNING': '#d29922',
+                'INFO': '#58a6ff',
+                'DEBUG': '#8957e5'
+            };
+
+            logLevelChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.log_levels.map(l => l.level || 'Unknown'),
+                    datasets: [{
+                        data: data.log_levels.map(l => l.count || 0),
+                        backgroundColor: data.log_levels.map(l => colors[l.level] || '#8b949e')
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#c9d1d9', padding: 15 }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateToolInspector(data, currentEpoch) {
+            const tbody = document.getElementById('toolInspectorTable');
+            if (!data.tools.inspector.length) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#8b949e;">No tool executions</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.tools.inspector.slice(0, 10).map(tool => {
+                const statusClass = tool.status === 'OK' ? 'status-ok' : tool.status === 'ERROR' ? 'status-error' : 'status-unknown';
+                return `
+                    <tr>
+                        <td>${tool.name || '-'}</td>
+                        <td>${formatDuration(tool.duration_ms)}</td>
+                        <td class="${statusClass}">${tool.status}</td>
+                        <td>${formatHoursAgo(tool.timestamp, currentEpoch)}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateToolStats(data) {
+            const tbody = document.getElementById('toolStatsTable');
+            if (!data.tools.statistics.by_tool.length) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#8b949e;">No tool data</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.tools.statistics.by_tool.map(tool => {
+                const successPct = (tool.success_rate * 100).toFixed(0);
+                const successClass = tool.success_rate >= 0.99 ? 'status-ok' : tool.success_rate >= 0.9 ? 'status-warning' : 'status-error';
+                return `
+                    <tr>
+                        <td>${tool.name || '-'}</td>
+                        <td>${tool.calls}</td>
+                        <td>${formatDuration(tool.avg_ms)}</td>
+                        <td>${formatDuration(tool.p95_ms)}</td>
+                        <td class="${successClass}">${successPct}%</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateRecentErrors(data) {
+            const tbody = document.getElementById('recentErrorsTable');
+            if (!data.errors.recent.length) {
+                tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#8b949e;">No recent errors</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = data.errors.recent.map(err => `
+                <tr>
+                    <td>${err.timestamp || '-'}</td>
+                    <td>${err.name || '-'}</td>
+                    <td>${err.message || '-'}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function refreshDashboard() {
+            try {
+                const data = await fetchStats(currentHours);
+                const currentEpoch = Date.now() / 1000;
+
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
+
+                updateMetricCards(data);
+                createLatencyChart(data);
+                createOperationDistChart(data);
+                createTokenChart(data);
+                createUserTokenChart(data);
+                createErrorChart(data);
+                createLogLevelChart(data);
+                updateToolInspector(data, currentEpoch);
+                updateToolStats(data);
+                updateRecentErrors(data);
+            } catch (error) {
+                console.error('Failed to fetch telemetry data:', error);
+            }
+        }
+
+        document.getElementById('timeRange').addEventListener('change', (e) => {
+            currentHours = parseInt(e.target.value, 10);
+            refreshDashboard();
+        });
+
+        refreshDashboard();
+        setInterval(refreshDashboard, 30000);
+    </script>
+</body>
+</html>

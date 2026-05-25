@@ -29,6 +29,7 @@ dependencies = [
     "opensandbox>=0.1.7",
     "mem0ai>=0.1.0,<1.0.0",
     "opensandbox-code-interpreter>=0.1.2",
+    "duckdb>=1.0.0,<2.0.0",
 ]
 
 [project.scripts]
@@ -83,6 +84,7 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["S101", "S106", "S108"]  # Allow assert, hardcoded passwords, and tmp paths in tests
+"src/blacki/telemetry/queries.py" = ["E501", "S608", "E741"]  # SQL queries are long, use parameterized queries, and 'l' is fine for log level
 
 [tool.mypy]
 python_version = "3.11"
