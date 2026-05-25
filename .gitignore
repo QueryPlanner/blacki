@@ -85,11 +85,13 @@ pip-wheel-metadata/
 # Logs
 # ---------------------------------------------------------------------------
 *.log
+logs/
 
 # ---------------------------------------------------------------------------
 # Local runtime state (Google ADK / agent sessions, etc.)
 # ---------------------------------------------------------------------------
 **/.adk/
+.adk_state/
 
 # Local runtime data (Qdrant vector store, etc.)
 data/
