@@ -15,7 +15,6 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI
 from google.adk.cli.fast_api import get_fast_api_app
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
@@ -38,7 +37,15 @@ configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-GoogleADKInstrumentor().instrument()
+try:
+    from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+    GoogleADKInstrumentor().instrument()
+except (ImportError, AttributeError) as e:
+    logger.warning(
+        f"OpenInference ADK instrumentation skipped: {e}. "
+        "This may be due to ADK version incompatibility."
+    )
 
 setup_logging(log_level=env.log_level)
 setup_tracing()

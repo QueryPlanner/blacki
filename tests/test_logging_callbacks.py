@@ -16,6 +16,7 @@ from conftest import (
     MockLoggingCallbackContext,
     MockState,
     MockToolContext,
+    MockUsageMetadata,
 )
 
 from blacki.callbacks import LoggingCallbacks
@@ -237,6 +238,84 @@ class TestModelCallbacks:
         assert result is None
         assert "*** After LLM call" in caplog.text
         assert "LLM response:" not in caplog.text
+
+    def test_after_model_captures_cached_tokens(
+        self,
+        mock_logging_callback_context: MockLoggingCallbackContext,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Verify after_model captures cached tokens to OpenTelemetry span."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+
+        usage_metadata = MockUsageMetadata(cached_content_token_count=1408)
+        llm_response = MockLlmResponse(
+            content=MockContent({"text": "response"}),
+            usage_metadata=usage_metadata,
+        )
+
+        from unittest.mock import MagicMock, patch
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with patch("blacki.callbacks.trace.get_current_span", return_value=mock_span):
+            callbacks.after_model(mock_logging_callback_context, llm_response)  # type: ignore
+
+        mock_span.set_attribute.assert_called_once_with("llm.usage.cached_tokens", 1408)
+        assert "Captured 1408 cached tokens to trace span" in caplog.text
+
+    def test_after_model_no_cached_tokens(
+        self,
+        mock_logging_callback_context: MockLoggingCallbackContext,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Verify after_model handles response without cached tokens."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+
+        usage_metadata = MockUsageMetadata(cached_content_token_count=None)
+        llm_response = MockLlmResponse(
+            content=MockContent({"text": "response"}),
+            usage_metadata=usage_metadata,
+        )
+
+        from unittest.mock import MagicMock, patch
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = True
+
+        with patch("blacki.callbacks.trace.get_current_span", return_value=mock_span):
+            callbacks.after_model(mock_logging_callback_context, llm_response)  # type: ignore
+
+        mock_span.set_attribute.assert_not_called()
+        assert "cached tokens" not in caplog.text
+
+    def test_after_model_span_not_recording(
+        self,
+        mock_logging_callback_context: MockLoggingCallbackContext,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Verify after_model handles span not recording."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+
+        usage_metadata = MockUsageMetadata(cached_content_token_count=1408)
+        llm_response = MockLlmResponse(
+            content=MockContent({"text": "response"}),
+            usage_metadata=usage_metadata,
+        )
+
+        from unittest.mock import MagicMock, patch
+
+        mock_span = MagicMock()
+        mock_span.is_recording.return_value = False
+
+        with patch("blacki.callbacks.trace.get_current_span", return_value=mock_span):
+            callbacks.after_model(mock_logging_callback_context, llm_response)  # type: ignore
+
+        mock_span.set_attribute.assert_not_called()
+        assert "cached tokens" not in caplog.text
 
 
 class TestToolCallbacks:

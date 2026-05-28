@@ -99,12 +99,25 @@ class MockLlmRequest:
         self.contents = contents
 
 
+class MockUsageMetadata:
+    """Mock GenerateContentResponseUsageMetadata for LLM response testing."""
+
+    def __init__(self, cached_content_token_count: int | None = None) -> None:
+        """Initialize mock usage metadata."""
+        self.cached_content_token_count = cached_content_token_count
+
+
 class MockLlmResponse:
     """Mock LlmResponse for model callbacks."""
 
-    def __init__(self, content: MockContent | None = None) -> None:
+    def __init__(
+        self,
+        content: MockContent | None = None,
+        usage_metadata: MockUsageMetadata | None = None,
+    ) -> None:
         """Initialize mock LLM response."""
         self.content = content
+        self.usage_metadata = usage_metadata
 
 
 class MockEventActions:

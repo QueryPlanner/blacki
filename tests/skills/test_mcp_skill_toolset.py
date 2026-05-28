@@ -14,6 +14,7 @@ from google.adk.tools.tool_context import ToolContext
 from blacki.skills.mcp_skill_toolset import (
     SKILL_STATE_PREFIX,
     McpSkillToolset,
+    _format_skills_as_xml,
     _LoadSkillResourceTool,
     _LoadSkillTool,
     load_skill_from_dir,
@@ -25,7 +26,7 @@ def sample_skill() -> Skill:
     """Create a sample skill for testing."""
     return Skill(
         frontmatter=Frontmatter(
-            name="test_skill",
+            name="test-skill",
             description="A test skill for unit testing",
             metadata={"version": "1.0.0"},
         ),
@@ -39,7 +40,7 @@ def second_skill() -> Skill:
     """Create a second skill for testing multiple skills."""
     return Skill(
         frontmatter=Frontmatter(
-            name="second_skill",
+            name="second-skill",
             description="A second test skill",
         ),
         instructions="# Second Skill\n\nThis is another test skill.",
@@ -64,17 +65,53 @@ def mock_tool_context() -> ToolContext:
     return mock_context  # type: ignore[no-any-return]
 
 
+class TestFormatSkillsAsXml:
+    """Tests for _format_skills_as_xml function."""
+
+    def test_returns_empty_string_for_empty_list(self) -> None:
+        """Test returns empty string when no skills provided."""
+        result = _format_skills_as_xml([])
+        assert result == ""
+
+    def test_formats_single_skill(self) -> None:
+        """Test formatting a single skill."""
+        frontmatter = Frontmatter(
+            name="test-skill",
+            description="A test skill",
+        )
+        result = _format_skills_as_xml([frontmatter])
+
+        assert "<available_skills>" in result
+        assert "</available_skills>" in result
+        assert "<skill>" in result
+        assert "</skill>" in result
+        assert "<name>test-skill</name>" in result
+        assert "<description>A test skill</description>" in result
+
+    def test_formats_multiple_skills(self) -> None:
+        """Test formatting multiple skills."""
+        frontmatters = [
+            Frontmatter(name="skill-one", description="First skill"),
+            Frontmatter(name="skill-two", description="Second skill"),
+        ]
+        result = _format_skills_as_xml(frontmatters)
+
+        assert result.count("<skill>") == 2
+        assert "<name>skill-one</name>" in result
+        assert "<name>skill-two</name>" in result
+
+
 class TestLoadSkillFromDir:
     """Tests for load_skill_from_dir function."""
 
     def test_loads_skill_from_valid_directory(self, tmp_path: Path) -> None:
         """Test loading a valid skill from directory."""
-        skill_dir = tmp_path / "test_skill"
+        skill_dir = tmp_path / "test-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(
             """---
-name: test_skill
+name: test-skill
 description: Test skill description
 version: 1.0.0
 ---
@@ -88,7 +125,7 @@ This is the skill body.
         skill = load_skill_from_dir(skill_dir)
 
         assert skill is not None
-        assert skill.frontmatter.name == "test_skill"
+        assert skill.frontmatter.name == "test-skill"
         assert skill.frontmatter.description == "Test skill description"
         assert "Test Skill Instructions" in skill.instructions
 
@@ -114,7 +151,7 @@ This is the skill body.
 
     def test_uses_directory_name_as_default(self, tmp_path: Path) -> None:
         """Test uses directory name when name not in frontmatter."""
-        skill_dir = tmp_path / "my_custom_skill"
+        skill_dir = tmp_path / "my-custom-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(
@@ -129,16 +166,16 @@ description: Skill without name
         skill = load_skill_from_dir(skill_dir)
 
         assert skill is not None
-        assert skill.frontmatter.name == "my_custom_skill"
+        assert skill.frontmatter.name == "my-custom-skill"
 
     def test_handles_list_metadata(self, tmp_path: Path) -> None:
         """Test handles list values in frontmatter metadata."""
-        skill_dir = tmp_path / "list_skill"
+        skill_dir = tmp_path / "list-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(
             """---
-name: list_skill
+name: list-skill
 description: Skill with list metadata
 tags:
   - tag1
@@ -189,12 +226,12 @@ only one delimiter
 
     def test_handles_numeric_metadata(self, tmp_path: Path) -> None:
         """Test handles numeric values in frontmatter metadata."""
-        skill_dir = tmp_path / "numeric_skill"
+        skill_dir = tmp_path / "numeric-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(
             """---
-name: numeric_skill
+name: numeric-skill
 description: Skill with numeric metadata
 count: 42
 pi: 3.14
@@ -238,7 +275,7 @@ description: broken yaml
         skill_md = skill_dir / "SKILL.md"
         skill_md.write_text(
             """---
-name: non_primitive_skill
+name: non-primitive-skill
 description: Skill with non-primitive metadata
 nested:
   key: value
@@ -288,13 +325,13 @@ class TestLoadSkillTool:
         tool = _LoadSkillTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill"}, tool_context=mock_tool_context
+            args={"name": "test-skill"}, tool_context=mock_tool_context
         )
 
-        assert result["skill_name"] == "test_skill"
+        assert result["skill_name"] == "test-skill"
         assert "instructions" in result
         assert "frontmatter" in result
-        state_key = f"{SKILL_STATE_PREFIX}test_skill"
+        state_key = f"{SKILL_STATE_PREFIX}test-skill"
         assert mock_tool_context.state[state_key] is True
 
     @pytest.mark.asyncio
@@ -310,7 +347,7 @@ class TestLoadSkillTool:
         assert "error" in result
         assert result["error_code"] == "MISSING_SKILL_NAME"
         assert "available_skills" in result
-        assert "test_skill" in result["available_skills"]
+        assert "test-skill" in result["available_skills"]
 
     @pytest.mark.asyncio
     async def test_unknown_skill_name_returns_error(
@@ -327,7 +364,7 @@ class TestLoadSkillTool:
         assert "error" in result
         assert result["error_code"] == "SKILL_NOT_FOUND"
         assert "available_skills" in result
-        assert "test_skill" in result["available_skills"]
+        assert "test-skill" in result["available_skills"]
 
     @pytest.mark.asyncio
     async def test_loads_correct_skill_with_multiple_skills(
@@ -343,10 +380,10 @@ class TestLoadSkillTool:
         tool = _LoadSkillTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "second_skill"}, tool_context=mock_tool_context
+            args={"name": "second-skill"}, tool_context=mock_tool_context
         )
 
-        assert result["skill_name"] == "second_skill"
+        assert result["skill_name"] == "second-skill"
         assert "Second Skill" in result["instructions"]
 
 
@@ -399,7 +436,7 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill"}, tool_context=mock_tool_context
+            args={"name": "test-skill"}, tool_context=mock_tool_context
         )
 
         assert "error" in result
@@ -430,7 +467,7 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill", "path": "invalid/path.txt"},
+            args={"name": "test-skill", "path": "invalid/path.txt"},
             tool_context=mock_tool_context,
         )
 
@@ -446,7 +483,7 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill", "path": "references/missing.md"},
+            args={"name": "test-skill", "path": "references/missing.md"},
             tool_context=mock_tool_context,
         )
 
@@ -462,7 +499,7 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill", "path": "assets/missing.txt"},
+            args={"name": "test-skill", "path": "assets/missing.txt"},
             tool_context=mock_tool_context,
         )
 
@@ -474,7 +511,7 @@ class TestLoadSkillResourceTool:
         """Test loading an existing asset."""
         skill = Skill(
             frontmatter=Frontmatter(
-                name="test_skill",
+                name="test-skill",
                 description="Test skill",
             ),
             instructions="Test instructions",
@@ -486,11 +523,11 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill", "path": "assets/template.txt"},
+            args={"name": "test-skill", "path": "assets/template.txt"},
             tool_context=mock_tool_context,
         )
 
-        assert result["skill_name"] == "test_skill"
+        assert result["skill_name"] == "test-skill"
         assert result["path"] == "assets/template.txt"
         assert result["content"] == "Hello, World!"
 
@@ -501,7 +538,7 @@ class TestLoadSkillResourceTool:
         """Test loading an existing reference."""
         skill = Skill(
             frontmatter=Frontmatter(
-                name="test_skill",
+                name="test-skill",
                 description="Test skill",
             ),
             instructions="Test instructions",
@@ -513,11 +550,11 @@ class TestLoadSkillResourceTool:
         tool = _LoadSkillResourceTool(toolset)
 
         result = await tool.run_async(
-            args={"name": "test_skill", "path": "references/guide.md"},
+            args={"name": "test-skill", "path": "references/guide.md"},
             tool_context=mock_tool_context,
         )
 
-        assert result["skill_name"] == "test_skill"
+        assert result["skill_name"] == "test-skill"
         assert result["path"] == "references/guide.md"
         assert "# Guide" in result["content"]
 
@@ -551,7 +588,7 @@ class TestMcpSkillToolset:
         toolset = McpSkillToolset(skills=[(sample_skill, mock_mcp_toolset)])
 
         mock_readonly_context = MagicMock()
-        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test_skill": True}
+        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test-skill": True}
 
         tools = await toolset.get_tools(readonly_context=mock_readonly_context)
 
@@ -568,7 +605,7 @@ class TestMcpSkillToolset:
         toolset = McpSkillToolset(skills=[(sample_skill, mock_mcp_toolset)])
 
         mock_readonly_context = MagicMock()
-        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test_skill": True}
+        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test-skill": True}
 
         tools = await toolset.get_tools(readonly_context=mock_readonly_context)
 
@@ -603,7 +640,7 @@ class TestMcpSkillToolset:
         skills = toolset._list_skills()
 
         assert len(skills) == 1
-        assert skills[0].name == "test_skill"
+        assert skills[0].name == "test-skill"
 
     def test_get_skill_by_name(
         self, sample_skill: Skill, mock_mcp_toolset: McpToolset
@@ -611,10 +648,10 @@ class TestMcpSkillToolset:
         """Test _get_skill returns skill by name."""
         toolset = McpSkillToolset(skills=[(sample_skill, mock_mcp_toolset)])
 
-        skill = toolset._get_skill("test_skill")
+        skill = toolset._get_skill("test-skill")
 
         assert skill is not None
-        assert skill.frontmatter.name == "test_skill"
+        assert skill.frontmatter.name == "test-skill"
 
     def test_get_skill_unknown_name_returns_none(
         self, sample_skill: Skill, mock_mcp_toolset: McpToolset
@@ -645,7 +682,7 @@ class TestMcpSkillToolset:
 
         mock_llm_request.append_instructions.assert_called_once()
         injected_instruction = mock_llm_request.append_instructions.call_args[0][0][0]
-        assert "test_skill" in injected_instruction
+        assert "test-skill" in injected_instruction
         assert "load_skill" in injected_instruction
 
     @pytest.mark.asyncio
@@ -663,8 +700,8 @@ class TestMcpSkillToolset:
         skills = toolset._list_skills()
         assert len(skills) == 2
         skill_names = [s.name for s in skills]
-        assert "test_skill" in skill_names
-        assert "second_skill" in skill_names
+        assert "test-skill" in skill_names
+        assert "second-skill" in skill_names
 
     @pytest.mark.asyncio
     async def test_skill_without_mcp_toolset(self, sample_skill: Skill) -> None:
@@ -686,7 +723,7 @@ class TestMcpSkillToolset:
         toolset = McpSkillToolset(skills=[(sample_skill, None)])
 
         mock_readonly_context = MagicMock()
-        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test_skill": True}
+        mock_readonly_context.state = {f"{SKILL_STATE_PREFIX}test-skill": True}
 
         tools = await toolset.get_tools(readonly_context=mock_readonly_context)
 
@@ -742,8 +779,8 @@ class TestMcpSkillToolset:
 
         mock_readonly_context = MagicMock()
         mock_readonly_context.state = {
-            f"{SKILL_STATE_PREFIX}test_skill": True,
-            f"{SKILL_STATE_PREFIX}second_skill": True,
+            f"{SKILL_STATE_PREFIX}test-skill": True,
+            f"{SKILL_STATE_PREFIX}second-skill": True,
         }
 
         tools = await toolset.get_tools(readonly_context=mock_readonly_context)

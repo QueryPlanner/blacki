@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 import yaml
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.models.llm_request import LlmRequest
-from google.adk.skills import format_skills_as_xml
 from google.adk.skills.models import Frontmatter, Resources, Skill
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
@@ -27,6 +26,29 @@ from google.genai import types
 
 if TYPE_CHECKING:
     pass
+
+
+def _format_skills_as_xml(skills: list[Frontmatter]) -> str:
+    """Format skills as XML for system instruction.
+
+    Args:
+        skills: List of skill frontmatters to format.
+
+    Returns:
+        XML string representation of skills.
+    """
+    if not skills:
+        return ""
+
+    lines = ["<available_skills>"]
+    for skill in skills:
+        lines.append("<skill>")
+        lines.append(f"<name>{skill.name}</name>")
+        lines.append(f"<description>{skill.description or ''}</description>")
+        lines.append("</skill>")
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
 
 logger = logging.getLogger(__name__)
 
@@ -386,7 +408,7 @@ class McpSkillToolset(BaseToolset):
     ) -> None:
         """Adds available skills to the system instruction."""
         skill_frontmatters = self._list_skills()
-        skills_xml = format_skills_as_xml(skill_frontmatters)
+        skills_xml = _format_skills_as_xml(skill_frontmatters)
 
         skill_si = f"""
 You can use specialized 'skills' to help you with complex tasks.

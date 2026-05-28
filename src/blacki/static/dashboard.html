@@ -243,6 +243,12 @@
             margin-bottom: var(--spacing-md);
         }
 
+        .section-subtitle {
+            font-size: 14px;
+            color: var(--muted);
+            margin-bottom: var(--spacing-md);
+        }
+
         .charts-row {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
@@ -278,6 +284,10 @@
 
         .chart-container.small {
             height: 200px;
+        }
+
+        .chart-container.tall {
+            height: 400px;
         }
 
         .data-table {
@@ -329,6 +339,103 @@
             padding: var(--spacing-xl);
             font-size: 14px;
         }
+
+        .tool-detail-row {
+            cursor: pointer;
+        }
+
+        .tool-detail-row:hover {
+            background: var(--surface-soft);
+        }
+
+        .tool-detail-expand {
+            display: none;
+            background: var(--canvas);
+            padding: var(--spacing-md);
+            border-bottom: 1px solid var(--hairline);
+        }
+
+        .tool-detail-expand.visible {
+            display: block;
+        }
+
+        .tool-detail-expand pre {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin: var(--spacing-xs) 0;
+            background: var(--surface-card);
+            padding: var(--spacing-sm);
+            border-radius: var(--rounded-sm);
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .tool-detail-expand .label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: var(--spacing-xs);
+        }
+
+        .context-bloat-warning {
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid var(--warning);
+            border-radius: var(--rounded-md);
+            padding: var(--spacing-sm) var(--spacing-md);
+            margin-bottom: var(--spacing-md);
+            font-size: 13px;
+            color: var(--body);
+        }
+
+        .context-bloat-warning strong {
+            color: var(--warning);
+        }
+
+        .error-tabs {
+            display: flex;
+            gap: var(--spacing-xs);
+            margin-bottom: var(--spacing-md);
+        }
+
+        .error-tab {
+            padding: var(--spacing-xs) var(--spacing-md);
+            border-radius: var(--rounded-pill);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--hairline);
+            background: var(--canvas);
+            color: var(--body);
+            transition: all 0.2s ease;
+        }
+
+        .error-tab:hover {
+            border-color: var(--muted);
+        }
+
+        .error-tab.active {
+            background: var(--ink);
+            color: var(--on-dark);
+            border-color: var(--ink);
+        }
+
+        .error-badge {
+            display: inline-block;
+            background: var(--error);
+            color: white;
+            font-size: 11px;
+            padding: 1px 6px;
+            border-radius: var(--rounded-pill);
+            margin-left: var(--spacing-xs);
+        }
+
+        .full-width {
+            grid-column: 1 / -1;
+        }
     </style>
 </head>
 <body>
@@ -377,8 +484,8 @@
             <div class="metric-value" id="availability">-</div>
         </div>
         <div class="metric-card metric-card--pink">
-            <div class="metric-label">Error Rate</div>
-            <div class="metric-value" id="errorRate">-</div>
+            <div class="metric-label">Cognitive Errors</div>
+            <div class="metric-value" id="cognitiveErrors">-</div>
         </div>
         <div class="metric-card metric-card--teal">
             <div class="metric-label">Tool Calls</div>
@@ -386,8 +493,64 @@
             <div class="metric-sub" id="toolSuccessRate">-</div>
         </div>
         <div class="metric-card metric-card--cream">
-            <div class="metric-label">Active Users</div>
-            <div class="metric-value" id="activeUsers">-</div>
+            <div class="metric-label">Cache Hit Rate</div>
+            <div class="metric-value" id="cacheHitRate">-</div>
+            <div class="metric-sub" id="cachedTokens">-</div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Context Bloat Analysis</div>
+        <p class="section-subtitle">Track token accumulation per conversation turn. High growth rate indicates context bloat.</p>
+        <div id="contextBloatWarning"></div>
+        <div class="charts-row">
+            <div class="card">
+                <h3>Token Accumulation by Conversation</h3>
+                <div class="chart-container tall">
+                    <canvas id="contextBloatChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <h3>Top Conversations by Token Usage</h3>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Conversation</th>
+                            <th>Turns</th>
+                            <th>Total Input</th>
+                            <th>Avg/Turn</th>
+                            <th>Growth</th>
+                        </tr>
+                    </thead>
+                    <tbody id="contextBloatTable">
+                        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Tool Inspector</div>
+        <p class="section-subtitle">Click on a tool execution to see input/output payloads for debugging.</p>
+        <div class="charts-row">
+            <div class="card full-width">
+                <h3>Recent Tool Executions with Payloads</h3>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Tool</th>
+                            <th>Duration</th>
+                            <th>Status</th>
+                            <th>Time</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="toolInspectorTable">
+                        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
 
@@ -428,82 +591,91 @@
     </div>
 
     <div class="section">
-        <div class="section-title">Errors Over Time</div>
+        <div class="section-title">Generation Speed</div>
+        <p class="section-subtitle">Tokens per second by model and request. Higher is better.</p>
         <div class="charts-row">
             <div class="card">
-                <h3>Error Count by Hour</h3>
+                <h3>Tokens/Second by Model</h3>
                 <div class="chart-container">
-                    <canvas id="errorChart"></canvas>
+                    <canvas id="tokensPerSecondChart"></canvas>
                 </div>
             </div>
             <div class="card">
-                <h3>Log Level Distribution</h3>
-                <div class="chart-container">
-                    <canvas id="logLevelChart"></canvas>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="section">
-        <div class="section-title">Tool Inspector</div>
-        <div class="charts-row">
-            <div class="card">
-                <h3>Recent Tool Executions</h3>
+                <h3>Fastest Generations</h3>
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th>Tool</th>
+                            <th>Model</th>
+                            <th>Output</th>
                             <th>Duration</th>
-                            <th>Status</th>
-                            <th>Time</th>
+                            <th>Tokens/sec</th>
                         </tr>
                     </thead>
-                    <tbody id="toolInspectorTable">
+                    <tbody id="tokensPerSecondTable">
                         <tr><td colspan="4" class="empty-state">Loading...</td></tr>
                     </tbody>
                 </table>
             </div>
-            <div class="card">
-                <h3>Tool Statistics</h3>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="section-title">Errors</div>
+        <div class="error-tabs">
+            <div class="error-tab active" data-tab="cognitive">Cognitive Errors<span class="error-badge" id="cognitiveErrorBadge">0</span></div>
+            <div class="error-tab" data-tab="infrastructure">Infrastructure Errors<span class="error-badge" id="infraErrorBadge">0</span></div>
+            <div class="error-tab" data-tab="logs">Recent Logs</div>
+        </div>
+        <div class="card">
+            <div id="cognitiveErrorsTab">
                 <table class="data-table">
                     <thead>
                         <tr>
+                            <th>Type</th>
                             <th>Tool</th>
-                            <th>Calls</th>
-                            <th>Avg (ms)</th>
-                            <th>P95 (ms)</th>
-                            <th>Success</th>
+                            <th>Error</th>
+                            <th>Time</th>
                         </tr>
                     </thead>
-                    <tbody id="toolStatsTable">
-                        <tr><td colspan="5" class="empty-state">Loading...</td></tr>
+                    <tbody id="cognitiveErrorsTable">
+                        <tr><td colspan="4" class="empty-state">No cognitive errors</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="infrastructureErrorsTab" style="display:none;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Operation</th>
+                            <th>Error Type</th>
+                            <th>Message</th>
+                            <th>Time</th>
+                        </tr>
+                    </thead>
+                    <tbody id="infraErrorsTable">
+                        <tr><td colspan="4" class="empty-state">No infrastructure errors</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="logsTab" style="display:none;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Timestamp</th>
+                            <th>Source</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recentErrorsTable">
+                        <tr><td colspan="3" class="empty-state">No recent errors</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <div class="section">
-        <div class="section-title">Recent Errors</div>
-        <div class="card">
-            <table class="data-table">
-                <thead>
-                    <tr>
-                        <th>Timestamp</th>
-                        <th>Source</th>
-                        <th>Message</th>
-                    </tr>
-                </thead>
-                <tbody id="recentErrorsTable">
-                    <tr><td colspan="3" class="empty-state">No recent errors</td></tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-
     <script>
-        let latencyChart, operationDistChart, tokenChart, userTokenChart, errorChart, logLevelChart;
+        let latencyChart, operationDistChart, tokenChart, userTokenChart, contextBloatChart, tokensPerSecondChart;
         let currentHours = 24;
 
         const clayColors = {
@@ -586,22 +758,205 @@
             availEl.textContent = (avail * 100).toFixed(1) + '%';
             availEl.className = 'metric-value' + (avail >= 0.99 ? ' metric-value--success' : avail >= 0.95 ? ' metric-value--warning' : ' metric-value--error');
 
-            const errorRate = data.errors.rate;
-            const errorEl = document.getElementById('errorRate');
-            errorEl.textContent = (errorRate * 100).toFixed(2) + '%';
-            errorEl.className = 'metric-value' + (errorRate < 0.01 ? ' metric-value--success' : errorRate < 0.05 ? ' metric-value--warning' : ' metric-value--error');
+            const cognitiveCount = data.errors.cognitive.summary.total_cognitive || 0;
+            const cognitiveEl = document.getElementById('cognitiveErrors');
+            cognitiveEl.textContent = cognitiveCount;
+            cognitiveEl.className = 'metric-value' + (cognitiveCount === 0 ? ' metric-value--success' : cognitiveCount < 5 ? ' metric-value--warning' : ' metric-value--error');
 
             const toolCalls = data.tools.statistics.total_calls;
             document.getElementById('totalToolCalls').textContent = toolCalls;
             document.getElementById('toolSuccessRate').textContent =
                 ((data.tools.statistics.success_rate || 0) * 100).toFixed(0) + '% success';
 
-            document.getElementById('activeUsers').textContent = data.sre.active_users_24h || 0;
+            const cacheHitRate = data.tokens.cache_hit_rate || 0;
+            const cacheEl = document.getElementById('cacheHitRate');
+            cacheEl.textContent = (cacheHitRate * 100).toFixed(1) + '%';
+            cacheEl.className = 'metric-value' + (cacheHitRate > 0.3 ? ' metric-value--success' : '');
+            document.getElementById('cachedTokens').textContent = `${formatNumber(data.tokens.total_cached)} cached`;
 
             const agentInfo = document.getElementById('agentInfo');
             const agentName = data.agent.name || 'blacki';
             const models = data.agent.models.length > 0 ? data.agent.models.join(', ') : 'Unknown';
             agentInfo.innerHTML = `Agent: <strong>${agentName}</strong> | Models: <strong>${models}</strong>`;
+        }
+
+        function updateToolInspectorWithPayloads(data, currentEpoch) {
+            const tbody = document.getElementById('toolInspectorTable');
+            if (!data.tools.inspector.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No tool executions</td></tr>';
+                return;
+            }
+
+            let html = '';
+            data.tools.inspector.slice(0, 10).forEach((tool, idx) => {
+                const statusClass = tool.status === 'OK' ? 'status-ok' : tool.status === 'ERROR' ? 'status-error' : 'status-unknown';
+                const hasPayload = tool.input || tool.output;
+
+                html += `
+                    <tr class="tool-detail-row" data-idx="${idx}">
+                        <td>${tool.name || '-'}</td>
+                        <td>${formatDuration(tool.duration_ms)}</td>
+                        <td class="${statusClass}">${tool.status}</td>
+                        <td>${formatHoursAgo(tool.timestamp, currentEpoch)}</td>
+                        <td>${hasPayload ? '<span style="color: var(--brand-teal); cursor: pointer;">&#9654; details</span>' : ''}</td>
+                    </tr>
+                    <tr>
+                        <td colspan="5" style="padding: 0;">
+                            <div class="tool-detail-expand" id="tool-detail-${idx}">
+                                ${tool.description ? `<div class="label">Description</div><pre>${tool.description}</pre>` : ''}
+                                ${tool.input ? `<div class="label">Input</div><pre>${JSON.stringify(tool.input, null, 2)}</pre>` : ''}
+                                ${tool.output ? `<div class="label">Output</div><pre>${JSON.stringify(tool.output, null, 2)}</pre>` : ''}
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            });
+
+            tbody.innerHTML = html;
+
+            document.querySelectorAll('.tool-detail-row').forEach(row => {
+                row.addEventListener('click', () => {
+                    const idx = row.dataset.idx;
+                    const detail = document.getElementById(`tool-detail-${idx}`);
+                    if (detail) {
+                        detail.classList.toggle('visible');
+                    }
+                });
+            });
+        }
+
+        function updateContextBloat(data) {
+            const conversations = data.tokens.by_conversation || [];
+            const warningContainer = document.getElementById('contextBloatWarning');
+
+            const highGrowth = conversations.filter(c => c.context_growth_rate > 0.5);
+            if (highGrowth.length > 0) {
+                warningContainer.innerHTML = `
+                    <div class="context-bloat-warning">
+                        <strong>Context Bloat Detected:</strong> ${highGrowth.length} conversation(s) showing >50% token growth across turns.
+                        Consider limiting conversation history or implementing context summarization.
+                    </div>
+                `;
+            } else {
+                warningContainer.innerHTML = '';
+            }
+
+            const tbody = document.getElementById('contextBloatTable');
+            if (!conversations.length) {
+                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No conversation data</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = conversations.slice(0, 10).map(conv => {
+                const growthClass = conv.context_growth_rate > 0.5 ? 'status-warning' :
+                                   conv.context_growth_rate > 0.2 ? '' : 'status-ok';
+                const growthText = conv.context_growth_rate > 0 ? `+${(conv.context_growth_rate * 100).toFixed(0)}%` :
+                                  conv.context_growth_rate < 0 ? `${(conv.context_growth_rate * 100).toFixed(0)}%` : '0%';
+                const convId = conv.conversation_id ? conv.conversation_id.replace('telegram-chat-', '').substring(0, 20) : 'unknown';
+                return `
+                    <tr>
+                        <td>${convId}</td>
+                        <td>${conv.turn_count}</td>
+                        <td>${formatNumber(conv.total_input)}</td>
+                        <td>${formatNumber(conv.avg_input_per_turn)}</td>
+                        <td class="${growthClass}">${growthText}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const ctx = document.getElementById('contextBloatChart').getContext('2d');
+            if (contextBloatChart) contextBloatChart.destroy();
+
+            const topConv = conversations.slice(0, 5);
+            const labels = topConv.map(c => c.conversation_id ? c.conversation_id.substring(0, 15) : 'unknown');
+
+            contextBloatChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: topConv.map((conv, i) => ({
+                        label: `Conv ${i + 1}`,
+                        data: conv.input_tokens_by_turn || [],
+                        borderColor: [clayColors.teal, clayColors.lavender, clayColors.peach, clayColors.ochre, clayColors.coral][i],
+                        backgroundColor: 'transparent',
+                        tension: 0.3,
+                        pointRadius: 3,
+                    }))
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => `Turn ${items[0].dataIndex + 1}`,
+                                label: (item) => `${formatNumber(item.raw)} input tokens`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Turn Number', color: clayColors.muted },
+                            ticks: { color: clayColors.muted },
+                            grid: { display: false }
+                        },
+                        y: {
+                            title: { display: true, text: 'Input Tokens', color: clayColors.muted },
+                            ticks: { color: clayColors.muted },
+                            grid: { color: '#ebe6d6' }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateErrors(data, currentEpoch) {
+            const cognitive = data.errors.cognitive || { cognitive_errors: [], infra_errors: [], summary: {} };
+
+            document.getElementById('cognitiveErrorBadge').textContent = cognitive.summary.total_cognitive || 0;
+            document.getElementById('infraErrorBadge').textContent = cognitive.summary.total_infra || 0;
+
+            const cognitiveTable = document.getElementById('cognitiveErrorsTable');
+            if (cognitive.cognitive_errors && cognitive.cognitive_errors.length) {
+                cognitiveTable.innerHTML = cognitive.cognitive_errors.map(err => `
+                    <tr>
+                        <td><span class="status-error">${err.type || 'tool_failure'}</span></td>
+                        <td>${err.tool_name || '-'}</td>
+                        <td>${err.error_message ? err.error_message.substring(0, 100) : '-'}</td>
+                        <td>${formatHoursAgo(err.timestamp, currentEpoch)}</td>
+                    </tr>
+                `).join('');
+            } else {
+                cognitiveTable.innerHTML = '<tr><td colspan="4" class="empty-state">No cognitive errors</td></tr>';
+            }
+
+            const infraTable = document.getElementById('infraErrorsTable');
+            if (cognitive.infra_errors && cognitive.infra_errors.length) {
+                infraTable.innerHTML = cognitive.infra_errors.map(err => `
+                    <tr>
+                        <td>${err.operation || '-'}</td>
+                        <td>${err.error_type || '-'}</td>
+                        <td>${err.error_message || '-'}</td>
+                        <td>${formatHoursAgo(err.timestamp, currentEpoch)}</td>
+                    </tr>
+                `).join('');
+            } else {
+                infraTable.innerHTML = '<tr><td colspan="4" class="empty-state">No infrastructure errors</td></tr>';
+            }
+
+            const recentTable = document.getElementById('recentErrorsTable');
+            if (data.errors.recent && data.errors.recent.length) {
+                recentTable.innerHTML = data.errors.recent.map(err => `
+                    <tr>
+                        <td>${err.timestamp || '-'}</td>
+                        <td>${err.name || '-'}</td>
+                        <td>${err.message || '-'}</td>
+                    </tr>
+                `).join('');
+            } else {
+                recentTable.innerHTML = '<tr><td colspan="3" class="empty-state">No recent errors</td></tr>';
+            }
         }
 
         function createLatencyChart(data) {
@@ -791,141 +1146,67 @@
             });
         }
 
-        function createErrorChart(data) {
-            const ctx = document.getElementById('errorChart').getContext('2d');
-            if (errorChart) errorChart.destroy();
+        function updateTokensPerSecond(data) {
+            const tps = data.tokens.tokens_per_second || { avg_tokens_per_sec: 0, by_model: [], by_request: [] };
 
-            const errorData = data.errors.over_time;
+            const tbody = document.getElementById('tokensPerSecondTable');
+            if (!tps.by_request || !tps.by_request.length) {
+                tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No generation data</td></tr>';
+                return;
+            }
 
-            errorChart = new Chart(ctx, {
-                type: 'line',
+            tbody.innerHTML = tps.by_request.slice(0, 10).map(req => {
+                const modelShort = req.model ? req.model.replace('openrouter/', '').substring(0, 25) : 'unknown';
+                return `
+                    <tr>
+                        <td>${modelShort}</td>
+                        <td>${formatNumber(req.output_tokens)}</td>
+                        <td>${formatDuration(req.duration_ms)}</td>
+                        <td class="status-ok">${req.tokens_per_sec}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            const ctx = document.getElementById('tokensPerSecondChart').getContext('2d');
+            if (tokensPerSecondChart) tokensPerSecondChart.destroy();
+
+            const models = tps.by_model.slice(0, 10);
+            tokensPerSecondChart = new Chart(ctx, {
+                type: 'bar',
                 data: {
-                    labels: errorData.map(d => d.hour ? new Date(d.hour).toLocaleTimeString() : ''),
+                    labels: models.map(m => m.model ? m.model.replace('openrouter/', '').substring(0, 20) : 'unknown'),
                     datasets: [{
-                        label: 'Errors',
-                        data: errorData.map(d => d.count || 0),
-                        borderColor: clayColors.coral,
-                        backgroundColor: 'rgba(255, 107, 90, 0.1)',
-                        fill: true,
-                        tension: 0.3,
-                        pointRadius: 0,
-                        pointHoverRadius: 4
+                        label: 'Tokens/sec',
+                        data: models.map(m => m.avg_tokens_per_sec || 0),
+                        backgroundColor: clayColors.mint,
+                        borderRadius: 6
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: {
-                            ticks: { color: clayColors.muted, font: { family: 'Inter', size: 11 }, maxTicksLimit: 10 },
-                            grid: { display: false }
-                        },
-                        y: {
-                            ticks: { color: clayColors.muted, font: { family: 'Inter', size: 11 } },
-                            grid: { color: '#ebe6d6' },
-                            beginAtZero: true
-                        }
-                    }
-                }
-            });
-        }
-
-        function createLogLevelChart(data) {
-            const ctx = document.getElementById('logLevelChart').getContext('2d');
-            if (logLevelChart) logLevelChart.destroy();
-
-            const colors = {
-                'ERROR': clayColors.coral,
-                'WARNING': clayColors.ochre,
-                'INFO': clayColors.teal,
-                'DEBUG': clayColors.lavender
-            };
-
-            logLevelChart = new Chart(ctx, {
-                type: 'doughnut',
-                data: {
-                    labels: data.log_levels.map(l => l.level || 'Unknown'),
-                    datasets: [{
-                        data: data.log_levels.map(l => l.count || 0),
-                        backgroundColor: data.log_levels.map(l => colors[l.level] || clayColors.muted)
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
+                    indexAxis: 'y',
                     plugins: {
-                        legend: {
-                            position: 'right',
-                            labels: {
-                                color: clayColors.ink,
-                                font: { family: 'Inter', size: 12 },
-                                padding: 15,
-                                usePointStyle: true,
-                                pointStyle: 'rectRounded'
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: (item) => `${item.raw} tokens/sec (${models[item.dataIndex].request_count} requests)`
                             }
                         }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: 'Tokens per Second', color: clayColors.muted },
+                            ticks: { color: clayColors.muted },
+                            grid: { color: '#ebe6d6' }
+                        },
+                        y: {
+                            ticks: { color: clayColors.muted },
+                            grid: { display: false }
+                        }
                     }
                 }
             });
-        }
-
-        function updateToolInspector(data, currentEpoch) {
-            const tbody = document.getElementById('toolInspectorTable');
-            if (!data.tools.inspector.length) {
-                tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No tool executions</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.tools.inspector.slice(0, 10).map(tool => {
-                const statusClass = tool.status === 'OK' ? 'status-ok' : tool.status === 'ERROR' ? 'status-error' : 'status-unknown';
-                return `
-                    <tr>
-                        <td>${tool.name || '-'}</td>
-                        <td>${formatDuration(tool.duration_ms)}</td>
-                        <td class="${statusClass}">${tool.status}</td>
-                        <td>${formatHoursAgo(tool.timestamp, currentEpoch)}</td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        function updateToolStats(data) {
-            const tbody = document.getElementById('toolStatsTable');
-            if (!data.tools.statistics.by_tool.length) {
-                tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No tool data</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.tools.statistics.by_tool.map(tool => {
-                const successPct = (tool.success_rate * 100).toFixed(0);
-                const successClass = tool.success_rate >= 0.99 ? 'status-ok' : tool.success_rate >= 0.9 ? 'status-warning' : 'status-error';
-                return `
-                    <tr>
-                        <td>${tool.name || '-'}</td>
-                        <td>${tool.calls}</td>
-                        <td>${formatDuration(tool.avg_ms)}</td>
-                        <td>${formatDuration(tool.p95_ms)}</td>
-                        <td class="${successClass}">${successPct}%</td>
-                    </tr>
-                `;
-            }).join('');
-        }
-
-        function updateRecentErrors(data) {
-            const tbody = document.getElementById('recentErrorsTable');
-            if (!data.errors.recent.length) {
-                tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No recent errors</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = data.errors.recent.map(err => `
-                <tr>
-                    <td>${err.timestamp || '-'}</td>
-                    <td>${err.name || '-'}</td>
-                    <td>${err.message || '-'}</td>
-                </tr>
-            `).join('');
         }
 
         async function refreshDashboard() {
@@ -936,15 +1217,14 @@
                 document.getElementById('lastUpdate').textContent = new Date().toLocaleString();
 
                 updateMetricCards(data);
+                updateContextBloat(data);
+                updateToolInspectorWithPayloads(data, currentEpoch);
+                updateErrors(data, currentEpoch);
+                updateTokensPerSecond(data);
                 createLatencyChart(data);
                 createOperationDistChart(data);
                 createTokenChart(data);
                 createUserTokenChart(data);
-                createErrorChart(data);
-                createLogLevelChart(data);
-                updateToolInspector(data, currentEpoch);
-                updateToolStats(data);
-                updateRecentErrors(data);
             } catch (error) {
                 console.error('Failed to fetch telemetry data:', error);
             }
@@ -953,6 +1233,26 @@
         document.getElementById('timeRange').addEventListener('change', (e) => {
             currentHours = parseInt(e.target.value, 10);
             refreshDashboard();
+        });
+
+        document.querySelectorAll('.error-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.error-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+
+                document.getElementById('cognitiveErrorsTab').style.display = 'none';
+                document.getElementById('infrastructureErrorsTab').style.display = 'none';
+                document.getElementById('logsTab').style.display = 'none';
+
+                const tabName = tab.dataset.tab;
+                if (tabName === 'cognitive') {
+                    document.getElementById('cognitiveErrorsTab').style.display = 'block';
+                } else if (tabName === 'infrastructure') {
+                    document.getElementById('infrastructureErrorsTab').style.display = 'block';
+                } else {
+                    document.getElementById('logsTab').style.display = 'block';
+                }
+            });
         });
 
         refreshDashboard();

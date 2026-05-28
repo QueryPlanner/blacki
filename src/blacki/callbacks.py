@@ -18,6 +18,7 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
+from opentelemetry import trace
 
 from .telegram import TelegramConfig
 from .telegram.api import TelegramApiClient, TelegramApiError
@@ -472,6 +473,14 @@ class LoggingCallbacks:
         if llm_content := llm_response.content:
             response_data = llm_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"LLM response: {response_data}")
+
+        if llm_response.usage_metadata:
+            cached = llm_response.usage_metadata.cached_content_token_count
+            if cached:
+                span = trace.get_current_span()
+                if span.is_recording():
+                    span.set_attribute("llm.usage.cached_tokens", cached)
+                    self.logger.debug(f"Captured {cached} cached tokens to trace span")
 
         return None
 

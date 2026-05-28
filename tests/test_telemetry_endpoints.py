@@ -169,8 +169,7 @@ class TestDashboardEndpoint:
         html_content = response.text
         assert 'id="latencyChart"' in html_content
         assert 'id="tokenChart"' in html_content
-        assert 'id="errorChart"' in html_content
-        assert 'id="logLevelChart"' in html_content
+        assert 'id="contextBloatChart"' in html_content
 
     def test_html_contains_tool_inspector(self, client: TestClient) -> None:
         """Test that HTML has tool inspector table."""
@@ -178,4 +177,4 @@ class TestDashboardEndpoint:
 
         html_content = response.text
         assert 'id="toolInspectorTable"' in html_content
-        assert 'id="toolStatsTable"' in html_content
+        assert 'id="contextBloatTable"' in html_content
