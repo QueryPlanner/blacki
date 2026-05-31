@@ -70,9 +70,16 @@ def test_build_session_service_uri_converts_postgresql_to_asyncpg() -> None:
         )
 
 
-def test_build_session_db_kwargs_returns_empty_dict() -> None:
-    """Test that session DB kwargs returns empty dict for SQLite."""
+def test_build_session_db_kwargs_returns_timeout_for_sqlite() -> None:
+    """Test that session DB kwargs returns timeout config for SQLite."""
     env = _build_server_env()
+
+    assert build_session_db_kwargs(env) == {"connect_args": {"timeout": 15}}
+
+
+def test_build_session_db_kwargs_returns_empty_for_postgres() -> None:
+    """Test that session DB kwargs returns empty dict for PostgreSQL."""
+    env = _build_server_env(agent_engine="postgresql://localhost:5432/db")
 
     assert build_session_db_kwargs(env) == {}
 

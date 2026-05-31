@@ -83,6 +83,11 @@ def build_session_db_kwargs(env: ServerEnv) -> dict[str, Any]:
     Note: Pool settings are only relevant for PostgreSQL. SQLite uses
     a single connection and ignores pool settings.
     """
+    session_uri = build_session_service_uri(env)
+    is_sqlite = session_uri is None or session_uri.startswith("sqlite")
+
+    if is_sqlite:
+        return {"connect_args": {"timeout": 15}}
     return {}
 
 
@@ -102,7 +107,21 @@ def create_session_service(
         )
 
     if session_service_uri.startswith(("postgresql+asyncpg://", "sqlite+aiosqlite://")):
-        return DatabaseSessionService(session_service_uri, **session_db_kwargs)
+        service = DatabaseSessionService(session_service_uri, **session_db_kwargs)
+
+        if session_service_uri.startswith("sqlite"):
+            from sqlalchemy import event
+
+            @event.listens_for(service.db_engine.sync_engine, "connect")
+            def set_sqlite_pragma(
+                dbapi_connection: Any, connection_record: Any
+            ) -> None:
+                cursor = dbapi_connection.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA synchronous=NORMAL")
+                cursor.close()
+
+        return service
 
     msg = (
         "Shared ADK runtime does not support the configured session URI: "
