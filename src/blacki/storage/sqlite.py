@@ -33,7 +33,7 @@ async def create_connection(
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = await aiosqlite.connect(path)
+    conn = await aiosqlite.connect(path, isolation_level=None)
     conn.row_factory = aiosqlite.Row
 
     await conn.execute("PRAGMA journal_mode=WAL")
