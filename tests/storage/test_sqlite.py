@@ -73,7 +73,7 @@ class TestCloseConnection:
         """Should close an in-memory connection."""
         import aiosqlite
 
-        conn = await aiosqlite.connect(":memory:")
+        conn = await aiosqlite.connect(":memory:", isolation_level=None)
 
         await close_connection(conn)
 

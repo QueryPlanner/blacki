@@ -33,14 +33,14 @@ async def create_connection(
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = await aiosqlite.connect(path)
+    conn = await aiosqlite.connect(path, isolation_level=None)
     conn.row_factory = aiosqlite.Row
 
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     await conn.execute("PRAGMA foreign_keys=ON")
 
-    logger.info("SQLite connection opened: %s (WAL mode)", path)
+    logger.info("SQLite connection opened: %s (WAL mode, autocommit)", path)
     return conn
 
 
