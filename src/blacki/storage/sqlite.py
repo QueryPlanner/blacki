@@ -40,7 +40,7 @@ async def create_connection(
     await conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
     await conn.execute("PRAGMA foreign_keys=ON")
 
-    logger.info("SQLite connection opened: %s (WAL mode)", path)
+    logger.info("SQLite connection opened: %s (WAL mode, autocommit)", path)
     return conn
 
 

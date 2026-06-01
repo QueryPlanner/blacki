@@ -152,10 +152,10 @@ class SqliteWorkoutStorage(SqlStorage):
                             exercise.notes,
                         ),
                     )
-                await self._conn.commit()
+                await self._conn.execute("COMMIT")
                 return sid
             except Exception:
-                await self._conn.rollback()
+                await self._conn.execute("ROLLBACK")
                 raise
 
     async def add_exercise(self, session_id: int, exercise: WorkoutExercise) -> int:

@@ -68,7 +68,7 @@ class TestSetContainerFromConnection:
     @pytest.mark.asyncio
     async def test_creates_container_from_connection(self) -> None:
         """Should create and set container from existing connection."""
-        conn = await aiosqlite.connect(":memory:")
+        conn = await aiosqlite.connect(":memory:", isolation_level=None)
         try:
             container = set_container_from_connection(conn)
 
@@ -80,7 +80,7 @@ class TestSetContainerFromConnection:
     @pytest.mark.asyncio
     async def test_creates_container_with_custom_lock(self) -> None:
         """Should use provided lock."""
-        conn = await aiosqlite.connect(":memory:")
+        conn = await aiosqlite.connect(":memory:", isolation_level=None)
         try:
             custom_lock = asyncio.Lock()
             container = set_container_from_connection(conn, lock=custom_lock)
@@ -150,7 +150,7 @@ class TestAppContainer:
     @pytest.fixture
     async def conn(self):
         """Create an in-memory SQLite connection for testing."""
-        conn = await aiosqlite.connect(":memory:")
+        conn = await aiosqlite.connect(":memory:", isolation_level=None)
         yield conn
         await conn.close()
 

@@ -17,7 +17,7 @@ from blacki.workouts.storage import (
 @pytest.fixture
 async def conn():
     """Create an in-memory SQLite connection for testing."""
-    conn = await aiosqlite.connect(":memory:")
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
     conn.row_factory = aiosqlite.Row
     yield conn
     await conn.close()
@@ -586,8 +586,6 @@ class TestCreateSessionEdgeCases:
         mock_cursor = AsyncMock()
         mock_cursor.lastrowid = None
         mock_conn.execute.return_value = mock_cursor
-        mock_conn.commit = AsyncMock()
-        mock_conn.rollback = AsyncMock()
 
         storage = SqliteWorkoutStorage(mock_conn, lock)
         storage._schema_ready = True
@@ -605,7 +603,9 @@ class TestCreateSessionEdgeCases:
         ):
             await storage.create_session(session)
 
-        mock_conn.rollback.assert_called_once()
+        mock_conn.execute.assert_called()
+        call_args = [call[0][0] for call in mock_conn.execute.call_args_list]
+        assert "ROLLBACK" in call_args
 
     @pytest.mark.asyncio
     async def test_create_session_rollback_on_exception(self, conn, lock) -> None:
@@ -615,11 +615,15 @@ class TestCreateSessionEdgeCases:
         import aiosqlite
 
         mock_conn = AsyncMock(spec=aiosqlite.Connection)
-        mock_cursor = AsyncMock()
-        mock_cursor.lastrowid = 1
-        mock_conn.execute.return_value = mock_cursor
-        mock_conn.commit = AsyncMock(side_effect=Exception("commit failed"))
-        mock_conn.rollback = AsyncMock()
+
+        async def execute_side_effect(query, *args):
+            if "COMMIT" in query:
+                raise Exception("commit failed")
+            mock_cursor = AsyncMock()
+            mock_cursor.lastrowid = 1
+            return mock_cursor
+
+        mock_conn.execute.side_effect = execute_side_effect
 
         storage = SqliteWorkoutStorage(mock_conn, lock)
         storage._schema_ready = True
@@ -635,4 +639,5 @@ class TestCreateSessionEdgeCases:
         with pytest.raises(Exception, match="commit failed"):
             await storage.create_session(session)
 
-        mock_conn.rollback.assert_called_once()
+        call_args = [call[0][0] for call in mock_conn.execute.call_args_list]
+        assert "ROLLBACK" in call_args

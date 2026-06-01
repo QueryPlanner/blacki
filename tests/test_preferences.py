@@ -12,7 +12,7 @@ from blacki.utils.preferences import SqlitePreferencesStorage
 @pytest.fixture
 async def conn():
     """Create an in-memory SQLite connection for testing."""
-    conn = await aiosqlite.connect(":memory:")
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
     conn.row_factory = aiosqlite.Row
     yield conn
     await conn.close()
