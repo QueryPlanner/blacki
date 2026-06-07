@@ -626,47 +626,6 @@ async def get_last_workout(
         }
 
 
-async def get_exercise_progress(
-    tool_context: ToolContext,
-    exercise_name: str,
-    weeks: int = 4,
-) -> dict[str, Any]:
-    """Progressive overload view for a single exercise over N weeks."""
-    user_id = tool_context.user_id
-    if not user_id:
-        return {"status": "error", "message": "Missing user_id in tool_context"}
-
-    storage = get_storage()
-    # cap at 8 entries as per instructions
-    limit = min(weeks * 2, 8)
-
-    history = await storage.get_exercise_history(user_id, exercise_name, limit=limit)
-
-    return {
-        "status": "success",
-        "exercise_name": exercise_name.lower(),
-        "history": [h.model_dump() for h in history],
-    }
-
-
-async def list_recent_workouts(
-    tool_context: ToolContext,
-    limit: int = 10,
-) -> dict[str, Any]:
-    """Overview of recent sessions (lightweight)."""
-    user_id = tool_context.user_id
-    if not user_id:
-        return {"status": "error", "message": "Missing user_id in tool_context"}
-
-    storage = get_storage()
-    sessions = await storage.get_recent_sessions(user_id, limit=limit)
-
-    return {
-        "status": "success",
-        "sessions": [s.model_dump() for s in sessions],
-    }
-
-
 async def delete_workout(
     tool_context: ToolContext,
     session_id: int,

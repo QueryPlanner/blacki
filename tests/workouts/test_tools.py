@@ -4,13 +4,11 @@ from unittest.mock import AsyncMock, create_autospec, patch
 import pytest
 from google.adk.tools import ToolContext
 
-from blacki.workouts.storage import WorkoutSession, WorkoutSessionSummary
+from blacki.workouts.storage import WorkoutSession
 from blacki.workouts.tools import (
     delete_workout,
-    get_exercise_progress,
     get_last_workout,
     get_todays_workout,
-    list_recent_workouts,
     log_workout,
     set_workout_split,
 )
@@ -77,37 +75,6 @@ async def test_get_last_workout(mock_get_storage, mock_tool_context) -> None:
 
     assert result["status"] == "success"
     assert result["session"]["id"] == 1
-
-
-@pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
-async def test_get_exercise_progress(mock_get_storage, mock_tool_context) -> None:
-    mock_storage = AsyncMock()
-    mock_get_storage.return_value = mock_storage
-    mock_storage.get_exercise_history.return_value = []
-
-    result = await get_exercise_progress(mock_tool_context, "bench press")
-
-    assert result["status"] == "success"
-    assert result["exercise_name"] == "bench press"
-    mock_storage.get_exercise_history.assert_called_once()
-
-
-@pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
-async def test_list_recent_workouts(mock_get_storage, mock_tool_context) -> None:
-    mock_storage = AsyncMock()
-    mock_get_storage.return_value = mock_storage
-    mock_storage.get_recent_sessions.return_value = [
-        WorkoutSessionSummary(
-            id=1, workout_date="2026-04-26", split_name="push", exercise_count=5
-        )
-    ]
-
-    result = await list_recent_workouts(mock_tool_context)
-
-    assert result["status"] == "success"
-    assert len(result["sessions"]) == 1
 
 
 @pytest.mark.asyncio
@@ -262,8 +229,6 @@ async def test_missing_user_id() -> None:
 
     assert (await log_workout(mock_context, "push", []))["status"] == "error"
     assert (await get_last_workout(mock_context, "push"))["status"] == "error"
-    assert (await get_exercise_progress(mock_context, "bench"))["status"] == "error"
-    assert (await list_recent_workouts(mock_context))["status"] == "error"
     assert (await delete_workout(mock_context, 1))["status"] == "error"
     assert (await set_workout_split(mock_context, {}))["status"] == "error"
     assert (await get_todays_workout(mock_context))["status"] == "error"

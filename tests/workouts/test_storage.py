@@ -283,110 +283,6 @@ class TestSqliteWorkoutStorage:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_get_recent_sessions(self, storage) -> None:
-        """Should get recent sessions with exercise counts."""
-        for i in range(3):
-            session = WorkoutSession(
-                user_id="user1",
-                workout_date=f"2026-04-{26 - i:02d}",
-                split_name="push" if i % 2 == 0 else "pull",
-                created_at=f"2026-04-{26 - i:02d}T10:00:00",
-                exercises=[
-                    WorkoutExercise(
-                        exercise_name=f"exercise {j}",
-                        sets=[SetDetail(set_num=1, weight_kg=100, reps=10)],
-                    )
-                    for j in range(i + 1)
-                ],
-            )
-            await storage.create_session(session)
-
-        sessions = await storage.get_recent_sessions("user1")
-
-        assert len(sessions) == 3
-        assert sessions[0].workout_date == "2026-04-26"
-        assert sessions[0].exercise_count == 1
-        assert sessions[1].exercise_count == 2
-        assert sessions[2].exercise_count == 3
-
-    @pytest.mark.asyncio
-    async def test_get_recent_sessions_respects_limit(self, storage) -> None:
-        """Should limit the number of sessions returned."""
-        for i in range(15):
-            session = WorkoutSession(
-                user_id="user1",
-                workout_date=f"2026-04-{26 - i:02d}",
-                split_name="push",
-                created_at=f"2026-04-{26 - i:02d}T10:00:00",
-                exercises=[],
-            )
-            await storage.create_session(session)
-
-        sessions = await storage.get_recent_sessions("user1", limit=5)
-
-        assert len(sessions) == 5
-
-    @pytest.mark.asyncio
-    async def test_get_exercise_history(self, storage) -> None:
-        """Should get exercise history with best sets."""
-        for i in range(3):
-            session = WorkoutSession(
-                user_id="user1",
-                workout_date=f"2026-04-{26 - i:02d}",
-                split_name="push",
-                created_at=f"2026-04-{26 - i:02d}T10:00:00",
-                exercises=[
-                    WorkoutExercise(
-                        exercise_name="bench press",
-                        sets=[
-                            SetDetail(
-                                set_num=1,
-                                weight_kg=100.0 + (2 - i) * 5,
-                                reps=10 - (2 - i),
-                            ),
-                            SetDetail(
-                                set_num=2,
-                                weight_kg=95.0 + (2 - i) * 5,
-                                reps=12 - (2 - i),
-                            ),
-                        ],
-                    )
-                ],
-            )
-            await storage.create_session(session)
-
-        history = await storage.get_exercise_history("user1", "bench press")
-
-        assert len(history) == 3
-        assert history[0].best_set_weight_kg == 110.0
-        assert history[0].best_set_reps == 8
-
-    @pytest.mark.asyncio
-    async def test_get_exercise_history_excludes_warmup(self, storage) -> None:
-        """Should exclude warmup sets from best set calculation."""
-        session = WorkoutSession(
-            user_id="user1",
-            workout_date="2026-04-26",
-            split_name="push",
-            created_at="2026-04-26T10:00:00",
-            exercises=[
-                WorkoutExercise(
-                    exercise_name="bench press",
-                    sets=[
-                        SetDetail(set_num=1, weight_kg=60.0, reps=15, is_warmup=True),
-                        SetDetail(set_num=2, weight_kg=100.0, reps=10, is_warmup=False),
-                    ],
-                )
-            ],
-        )
-        await storage.create_session(session)
-
-        history = await storage.get_exercise_history("user1", "bench press")
-
-        assert history[0].best_set_weight_kg == 100.0
-        assert history[0].best_set_reps == 10
-
-    @pytest.mark.asyncio
     async def test_delete_session(self, storage) -> None:
         """Should delete a session and cascade to exercises."""
         session = WorkoutSession(
@@ -502,8 +398,8 @@ class TestSqliteWorkoutStorage:
         assert s1.split_name == "push"
         assert s2.split_name == "pull"
 
-        sessions1 = await storage.get_recent_sessions("user1")
-        sessions2 = await storage.get_recent_sessions("user2")
+        sessions1 = await storage.get_training_history("user1")
+        sessions2 = await storage.get_training_history("user2")
 
         assert len(sessions1) == 1
         assert len(sessions2) == 1

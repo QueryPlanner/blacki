@@ -71,29 +71,6 @@ class WorkoutSession(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
 
 
-class WorkoutSessionSummary(BaseModel):
-    """Lightweight view for listing — no exercise data."""
-
-    id: int
-    workout_date: str
-    split_name: str
-    exercise_count: int
-    cycle_day: int | None = None
-    session_type: str | None = None
-    completion_status: str = "completed"
-
-
-class ExerciseHistoryEntry(BaseModel):
-    """One instance of an exercise across time for progressive overload tracking."""
-
-    workout_date: str
-    split_name: str
-    sets: list[SetDetail]
-    best_set_weight_kg: float
-    best_set_reps: int
-    total_volume_kg: float
-
-
 class TrainingProgramDay(BaseModel):
     """One scheduled day in a rotating training program."""
 
@@ -470,43 +447,6 @@ class SqliteWorkoutStorage(SqlStorage):
 
         return await self.get_session(row["id"], user_id)
 
-    async def get_recent_sessions(
-        self, user_id: str, limit: int = 10
-    ) -> list[WorkoutSessionSummary]:
-        """Returns lightweight view of recent sessions."""
-        limit = min(limit, 20)
-        rows = await self._fetch_all(
-            """
-            SELECT
-                s.id,
-                s.workout_date,
-                s.split_name,
-                s.cycle_day,
-                s.session_type,
-                s.completion_status,
-                COUNT(e.id) as exercise_count
-            FROM workout_sessions s
-            LEFT JOIN workout_exercises e ON s.id = e.session_id
-            WHERE s.user_id = ?
-            GROUP BY s.id
-            ORDER BY s.workout_date DESC, s.created_at DESC
-            LIMIT ?
-            """,
-            (user_id, limit),
-        )
-        return [
-            WorkoutSessionSummary(
-                id=r["id"],
-                workout_date=r["workout_date"],
-                split_name=r["split_name"],
-                exercise_count=r["exercise_count"],
-                cycle_day=r["cycle_day"],
-                session_type=r["session_type"],
-                completion_status=r["completion_status"],
-            )
-            for r in rows
-        ]
-
     async def create_training_program(
         self,
         program: TrainingProgram,
@@ -810,56 +750,6 @@ class SqliteWorkoutStorage(SqlStorage):
             tuple(values),
         )
         return [self._row_to_training_metric(row) for row in rows]
-
-    async def get_exercise_history(
-        self, user_id: str, exercise_name: str, limit: int = 8
-    ) -> list[ExerciseHistoryEntry]:
-        """Returns the last N instances of a specific exercise."""
-        limit = min(limit, 8)
-        rows = await self._fetch_all(
-            """
-            SELECT s.workout_date, s.split_name, e.sets
-            FROM workout_exercises e
-            JOIN workout_sessions s ON e.session_id = s.id
-            WHERE s.user_id = ? AND e.exercise_name = ?
-            ORDER BY s.workout_date DESC, s.created_at DESC
-            LIMIT ?
-            """,
-            (user_id, exercise_name.lower(), limit),
-        )
-
-        history = []
-        for r in rows:
-            sets_data = (
-                json.loads(r["sets"]) if isinstance(r["sets"], str) else r["sets"]
-            )
-            sets = [SetDetail(**s) for s in sets_data]
-
-            best_weight = 0.0
-            best_reps = 0
-            volume = 0.0
-
-            for s in sets:
-                if not s.is_warmup:
-                    volume += s.weight_kg * s.reps
-                    if s.weight_kg > best_weight or (
-                        s.weight_kg == best_weight and s.reps > best_reps
-                    ):
-                        best_weight = s.weight_kg
-                        best_reps = s.reps
-
-            history.append(
-                ExerciseHistoryEntry(
-                    workout_date=r["workout_date"],
-                    split_name=r["split_name"],
-                    sets=sets,
-                    best_set_weight_kg=best_weight,
-                    best_set_reps=best_reps,
-                    total_volume_kg=volume,
-                )
-            )
-
-        return history
 
     async def delete_session(self, session_id: int, user_id: str) -> bool:
         """Cascades to exercises."""
