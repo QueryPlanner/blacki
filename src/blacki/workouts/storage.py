@@ -659,22 +659,22 @@ class SqliteWorkoutStorage(SqlStorage):
         self, user_id: str, days: int, updated_at: str
     ) -> TrainingProgramState | None:
         """Advance the active program pointer by a number of calendar days."""
-        program = await self.get_active_training_program(user_id)
-        if program is None or program.state is None or program.id is None:
-            return None
-
-        current_day = program.state.current_cycle_day
-        current_week = program.state.current_mesocycle_week
-        for _ in range(days):
-            if current_day % 7 == 0:
-                current_week += 1
-                if current_week > program.deload_week_interval:
-                    current_week = 1
-            current_day = (
-                current_day + 1 if current_day < program.cycle_length_days else 1
-            )
-
         async with self._lock:
+            program = await self.get_active_training_program(user_id)
+            if program is None or program.state is None or program.id is None:
+                return None
+
+            current_day = program.state.current_cycle_day
+            current_week = program.state.current_mesocycle_week
+            for _ in range(days):
+                if current_day % 7 == 0:
+                    current_week += 1
+                    if current_week > program.deload_week_interval:
+                        current_week = 1
+                current_day = (
+                    current_day + 1 if current_day < program.cycle_length_days else 1
+                )
+
             await self._conn.execute(
                 """
                 UPDATE training_program_state
@@ -684,13 +684,13 @@ class SqliteWorkoutStorage(SqlStorage):
                 (current_day, current_week, updated_at, user_id),
             )
 
-        return TrainingProgramState(
-            user_id=user_id,
-            program_id=program.id,
-            current_cycle_day=current_day,
-            current_mesocycle_week=current_week,
-            updated_at=updated_at,
-        )
+            return TrainingProgramState(
+                user_id=user_id,
+                program_id=program.id,
+                current_cycle_day=current_day,
+                current_mesocycle_week=current_week,
+                updated_at=updated_at,
+            )
 
     async def get_training_history(
         self,
@@ -726,11 +726,34 @@ class SqliteWorkoutStorage(SqlStorage):
             LIMIT ?
         """  # noqa: S608
         rows = await self._fetch_all(query, tuple(values))
-        sessions = []
-        for row in rows:
-            session = await self.get_session(int(row["id"]), user_id)
-            if session is not None:
-                sessions.append(session)
+        if not rows:
+            return []
+
+        sessions = [self._row_to_session(row) for row in rows]
+        session_ids = [s.id for s in sessions if s.id is not None]
+
+        if session_ids:
+            placeholders = ", ".join("?" for _ in session_ids)
+            ex_rows = await self._fetch_all(
+                f"""
+                SELECT * FROM workout_exercises
+                WHERE session_id IN ({placeholders})
+                ORDER BY exercise_order ASC, id ASC
+                """,  # noqa: S608
+                tuple(session_ids),
+            )
+            exercises_by_session: dict[int, list[WorkoutExercise]] = {
+                sid: [] for sid in session_ids
+            }
+            for r in ex_rows:
+                sid = int(r["session_id"])
+                if sid in exercises_by_session:
+                    exercises_by_session[sid].append(self._row_to_exercise(r))
+
+            for session in sessions:
+                if session.id in exercises_by_session:
+                    session.exercises = exercises_by_session[session.id]
+
         return sessions
 
     async def add_training_metrics(self, metrics: list[TrainingMetric]) -> list[int]:
@@ -771,18 +794,22 @@ class SqliteWorkoutStorage(SqlStorage):
 
         rows = await self._fetch_all(
             f"""
-            SELECT * FROM training_metrics
-            {where}
-            ORDER BY metric_name ASC, recorded_at DESC, id DESC
+            WITH ranked_metrics AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY metric_name
+                           ORDER BY recorded_at DESC, id DESC
+                       ) as rn
+                FROM training_metrics
+                {where}
+            )
+            SELECT * FROM ranked_metrics
+            WHERE rn = 1
+            ORDER BY metric_name ASC
             """,  # noqa: S608
             tuple(values),
         )
-        latest_by_name: dict[str, TrainingMetric] = {}
-        for row in rows:
-            name = row["metric_name"]
-            if name not in latest_by_name:
-                latest_by_name[name] = self._row_to_training_metric(row)
-        return list(latest_by_name.values())
+        return [self._row_to_training_metric(row) for row in rows]
 
     async def get_exercise_history(
         self, user_id: str, exercise_name: str, limit: int = 8

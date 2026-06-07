@@ -1022,11 +1022,8 @@ class TestFullTestCoverageFillers:
         assert "session_type" in existing
 
     @pytest.mark.asyncio
-    async def test_storage_get_training_history_true_and_false_branches(
-        self, storage
-    ) -> None:
-        """Ensure get_training_history covers both returning matched sessions and omitting None values."""
-        # Add session
+    async def test_storage_get_training_history_no_session_ids(self, storage) -> None:
+        """Ensure get_training_history handles sessions with None IDs correctly."""
         session = WorkoutSession(
             user_id="user1",
             workout_date="2026-06-07",
@@ -1036,13 +1033,151 @@ class TestFullTestCoverageFillers:
             session_type="resistance",
         )
         await storage.create_session(session)
+        original_row_to_session = storage._row_to_session
 
-        # Query with user1 (hits True branch of if session is not None)
-        assert len(await storage.get_training_history("user1", limit=1)) == 1
+        def mock_row_to_session(row):
+            s = original_row_to_session(row)
+            s.id = None
+            return s
 
-        # Query with user1 but mock get_session to return None (hits False branch of if session is not None)
-        with patch.object(storage, "get_session", return_value=None):
-            assert len(await storage.get_training_history("user1", limit=1)) == 0
+        with patch.object(storage, "_row_to_session", side_effect=mock_row_to_session):
+            sessions = await storage.get_training_history("user1", limit=1)
+            assert len(sessions) == 1
+            assert sessions[0].id is None
+
+    @pytest.mark.asyncio
+    async def test_storage_get_training_history_mismatched_exercise_session_id(
+        self, storage
+    ) -> None:
+        """Ensure get_training_history filters out exercises with mismatched session_ids."""
+        session = WorkoutSession(
+            user_id="user1",
+            workout_date="2026-06-07",
+            split_name="Legs",
+            created_at="2026-06-07T12:00:00",
+            cycle_day=1,
+            session_type="resistance",
+        )
+        await storage.create_session(session)
+        original_fetch_all = storage._fetch_all
+
+        async def mock_fetch_all(query, values):
+            if "workout_exercises" in query:
+                return [
+                    {
+                        "id": 99,
+                        "session_id": 9999,
+                        "exercise_name": "bench press",
+                        "exercise_order": 0,
+                        "sets": "[]",
+                    }
+                ]
+            return await original_fetch_all(query, values)
+
+        with patch.object(storage, "_fetch_all", side_effect=mock_fetch_all):
+            sessions = await storage.get_training_history("user1", limit=1)
+            assert len(sessions) == 1
+            assert len(sessions[0].exercises) == 0
+
+    @pytest.mark.asyncio
+    async def test_storage_get_training_history_session_id_not_in_dict(
+        self, storage
+    ) -> None:
+        """Cover session.id not in exercises_by_session dictionary."""
+        session = WorkoutSession(
+            user_id="user1",
+            workout_date="2026-06-07",
+            split_name="Legs",
+            created_at="2026-06-07T12:00:00",
+            cycle_day=1,
+            session_type="resistance",
+        )
+        await storage.create_session(session)
+        original_row_to_session = storage._row_to_session
+        sessions_ref = []
+
+        def mock_row_to_session(row):
+            s = original_row_to_session(row)
+            sessions_ref.append(s)
+            return s
+
+        original_fetch_all = storage._fetch_all
+
+        async def mock_fetch_all(query, values):
+            if "workout_exercises" in query:
+                for s in sessions_ref:
+                    s.id = 9999
+                return []
+            return await original_fetch_all(query, values)
+
+        with (
+            patch.object(storage, "_row_to_session", side_effect=mock_row_to_session),
+            patch.object(storage, "_fetch_all", side_effect=mock_fetch_all),
+        ):
+            await storage.get_training_history("user1", limit=1)
+
+    @pytest.mark.asyncio
+    @patch("blacki.workouts.tools.get_storage")
+    async def test_defensive_type_validations(
+        self, mock_get_storage, mock_tool_context
+    ) -> None:
+        """Test defensive type checking added for LLM-provided arguments in tools."""
+        from blacki.workouts.tools import (
+            log_training,
+            set_training_program,
+            update_training_metrics,
+        )
+
+        # 1. exercises is not a list in log_training
+        res = await log_training(
+            mock_tool_context,
+            "resistance",
+            exercises="not a list",  # type: ignore[arg-type]
+        )
+        assert res["status"] == "error"
+        assert "must be a list" in res["message"]
+
+        # 2. exercise item is not a dict in log_training
+        res = await log_training(
+            mock_tool_context,
+            "resistance",
+            exercises=["not a dict"],  # type: ignore[list-item]
+        )
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
+
+        # 3. set detail is not a dict in sets list in log_training
+        res = await log_training(
+            mock_tool_context,
+            "resistance",
+            exercises=[{"name": "bench press", "sets": ["not a dict"]}],
+        )
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
+
+        # 4. metrics in log_training is not a dict
+        res = await log_training(mock_tool_context, "resistance", metrics="not a dict")  # type: ignore[arg-type]
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
+
+        # 5. metrics in update_training_metrics is not a dict
+        res = await update_training_metrics(mock_tool_context, "not a dict")  # type: ignore[arg-type]
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
+
+        # 6. program_config in set_training_program is not a dict
+        res = await set_training_program(mock_tool_context, "not a dict")  # type: ignore[arg-type]
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
+
+        # 7. baseline_metrics in set_training_program is not a dict
+        res = await set_training_program(
+            mock_tool_context,
+            {},
+            baseline_metrics="not a dict",  # type: ignore[arg-type]
+        )
+        assert res["status"] == "error"
+        assert "must be a dictionary" in res["message"]
 
     @pytest.mark.asyncio
     @patch("blacki.workouts.tools.get_storage")

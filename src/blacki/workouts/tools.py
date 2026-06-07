@@ -30,8 +30,14 @@ def _parse_workout_exercises(
     if not exercises:
         return [], None
 
+    if not isinstance(exercises, list):
+        return [], "Exercises must be a list of dictionaries"  # type: ignore[unreachable]
+
     parsed_exercises = []
     for i, ex_dict in enumerate(exercises):
+        if not isinstance(ex_dict, dict):
+            return [], "Each exercise item must be a dictionary"  # type: ignore[unreachable]
+
         if "name" not in ex_dict or "sets" not in ex_dict:
             return [], "Each exercise must have 'name' and 'sets' keys"
 
@@ -45,6 +51,9 @@ def _parse_workout_exercises(
         elif isinstance(sets_data, dict):
             sets_list = [sets_data]
         elif isinstance(sets_data, list):
+            for s in sets_data:
+                if not isinstance(s, dict):
+                    return [], "Each set item in sets list must be a dictionary"
             sets_list = sets_data
         else:
             return [], "'sets' must be a list of dictionaries or an integer"
@@ -93,6 +102,9 @@ def _infer_metric_unit(metric_name: str) -> str:
 def _parse_training_metrics(
     user_id: str, metrics: dict[str, Any], recorded_at: str
 ) -> tuple[list[TrainingMetric], str | None]:
+    if not isinstance(metrics, dict):
+        return [], "metrics must be a dictionary"  # type: ignore[unreachable]
+
     if not metrics:
         return [], "metrics cannot be empty"
 
@@ -229,6 +241,12 @@ async def set_training_program(
     user_id = tool_context.user_id
     if not user_id:
         return {"status": "error", "message": "Missing user_id in tool_context"}
+
+    if not isinstance(program_config, dict):
+        return {"status": "error", "message": "program_config must be a dictionary"}  # type: ignore[unreachable]
+
+    if baseline_metrics is not None and not isinstance(baseline_metrics, dict):
+        return {"status": "error", "message": "baseline_metrics must be a dictionary"}  # type: ignore[unreachable]
 
     days_config = program_config.get("days")
     if not isinstance(days_config, list) or not days_config:
@@ -437,6 +455,12 @@ async def log_training(
         return {
             "status": "error",
             "message": f"completion_status must be one of {allowed_statuses}",
+        }
+
+    if metrics is not None and not isinstance(metrics, dict):
+        return {  # type: ignore[unreachable]
+            "status": "error",
+            "message": "metrics must be a dictionary",
         }
 
     parsed_exercises, parse_error = _parse_workout_exercises(exercises)
