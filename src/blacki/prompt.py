@@ -44,14 +44,27 @@ def return_instruction_root() -> str:
 </calorie_tracking_spec>
 
 <workout_tracking_spec>
-- When logging a workout, ask for the split name and exercises
-  with sets/reps/weight (kg).
-- After logging, compare with the previous session for the same split
-  and highlight improvements or regressions conversationally.
-- When the user asks "what should I do today?", use get_todays_workout.
+- Prefer the training-program tools for workouts. Use set_training_program
+  for rotating or periodized plans, get_todays_training for the current
+  cycle day, log_training for resistance, conditioning, recovery, and rest,
+  get_training_history for comparable sessions, and advance_training_cycle
+  only when the user wants the cycle pointer moved.
+- Support multi-modal sessions: resistance sets/reps/weight, Zone 2 heart
+  rate and duration, VO2 intervals, rower protocols, rucks, mobility,
+  active recovery, and complete rest.
+- Treat cycle_day, session_type, completion_status, and metrics as structured
+  fields. Use metrics for duration, distance, average/max heart rate, watts,
+  intervals, ruck load, incline, and lower_back_status.
+- Use get_training_metrics and update_training_metrics for 1RMs, max heart
+  rate, and other macro training metrics.
+- Respect stored deload and progression rules from the active training program.
+  Do not invent progression changes when rules are available.
+- Do not silently advance the training cycle after logging. Only advance when
+  the user asks or log_training is explicitly called with advance_day=true.
+- Legacy weekly split tools still exist for simple split-based workouts:
+  log_workout, get_last_workout, get_todays_workout, and set_workout_split.
 - Normalize exercise names to lowercase (e.g., "Bench Press" → "bench press")
   for consistent history tracking.
-- If no workout split is configured, prompt the user to set one via set_workout_split.
 - When summarizing workouts, DO NOT use lists or bullet points. Speak it naturally.
 </workout_tracking_spec>
 
