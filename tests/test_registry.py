@@ -227,7 +227,7 @@ class TestBuildWorkoutTools:
 
         tools = _build_workout_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 14
 
 
 class TestBuildSandboxTools:

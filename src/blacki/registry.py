@@ -115,16 +115,30 @@ def _build_workout_tools() -> list[Any]:
     """Build workout tracking tools."""
     try:
         from blacki.workouts import (
+            advance_training_cycle,
             delete_workout,
             get_exercise_progress,
             get_last_workout,
+            get_todays_training,
             get_todays_workout,
+            get_training_history,
+            get_training_metrics,
             list_recent_workouts,
+            log_training,
             log_workout,
+            set_training_program,
             set_workout_split,
+            update_training_metrics,
         )
 
         return [
+            set_training_program,
+            get_todays_training,
+            log_training,
+            advance_training_cycle,
+            get_training_history,
+            get_training_metrics,
+            update_training_metrics,
             log_workout,
             get_last_workout,
             get_exercise_progress,
