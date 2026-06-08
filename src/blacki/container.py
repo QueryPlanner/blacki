@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     import aiosqlite
 
     from blacki.calories.storage import SqliteCalorieStorage
+    from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
     from blacki.reminders.storage import SqliteReminderStorage
     from blacki.utils.preferences import SqlitePreferencesStorage
     from blacki.workouts.storage import SqliteWorkoutStorage
@@ -134,6 +135,9 @@ class AppContainer:
     _preferences_storage: SqlitePreferencesStorage | None = field(
         default=None, init=False, repr=False
     )
+    _declarative_db_storage: SqliteDeclarativeDbStorage | None = field(
+        default=None, init=False, repr=False
+    )
 
     @classmethod
     async def create(cls, sqlite_path: str | Path) -> Self:
@@ -174,6 +178,10 @@ class AppContainer:
             await self._preferences_storage.close()
             self._preferences_storage = None
 
+        if self._declarative_db_storage is not None:
+            await self._declarative_db_storage.close()
+            self._declarative_db_storage = None
+
     async def initialize_all_storages(self) -> None:
         """Initialize all storage instances.
 
@@ -184,6 +192,7 @@ class AppContainer:
         await self.calorie_storage.initialize()
         await self.workout_storage.initialize()
         await self.preferences_storage.initialize()
+        await self.declarative_db_storage.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -225,3 +234,14 @@ class AppContainer:
 
             self._preferences_storage = SqlitePreferencesStorage(self.conn, self._lock)
         return self._preferences_storage
+
+    @property
+    def declarative_db_storage(self) -> SqliteDeclarativeDbStorage:
+        """Get or create the declarative database storage instance."""
+        if self._declarative_db_storage is None:
+            from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
+
+            self._declarative_db_storage = SqliteDeclarativeDbStorage(
+                self.conn, self._lock
+            )
+        return self._declarative_db_storage

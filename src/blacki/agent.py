@@ -199,12 +199,15 @@ def create_app(agent: LlmAgent | None = None) -> App:
     if agent is None:
         agent = create_agent()
 
+    from blacki.declarative_db.plugin import DeclarativeDbPlugin
+
     return App(
         name="blacki",
         root_agent=agent,
         plugins=[
             TelegramModelOverridePlugin(name="telegram_model_override"),
             GlobalInstructionPlugin(return_global_instruction),
+            DeclarativeDbPlugin(name="declarative_db"),
             LoggingPlugin(),
         ],
         events_compaction_config=None,
