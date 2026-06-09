@@ -196,6 +196,15 @@ class TestAppContainer:
         assert container._preferences_storage is storage
 
     @pytest.mark.asyncio
+    async def test_declarative_db_storage_property(self, conn, lock) -> None:
+        """Should lazily instantiate declarative DB storage."""
+        container = AppContainer(conn=conn, _lock=lock)
+
+        storage = container.declarative_db_storage
+        assert storage is not None
+        assert container._declarative_db_storage is storage
+
+    @pytest.mark.asyncio
     async def test_close_closes_connection_and_storages(self, conn, lock) -> None:
         """Should close connection and all storage instances."""
         container = AppContainer(conn=conn, _lock=lock)
@@ -203,9 +212,13 @@ class TestAppContainer:
         reminder = container.reminder_storage
         reminder.close = AsyncMock()
 
+        declarative_db = container.declarative_db_storage
+        declarative_db.close = AsyncMock()
+
         await container.close()
 
         reminder.close.assert_called_once()
+        declarative_db.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_storages_resets_references(self, conn, lock) -> None:
@@ -216,6 +229,7 @@ class TestAppContainer:
         _ = container.calorie_storage
         _ = container.workout_storage
         _ = container.preferences_storage
+        _ = container.declarative_db_storage
 
         await container._close_storages()
 
@@ -223,6 +237,7 @@ class TestAppContainer:
         assert container._calorie_storage is None
         assert container._workout_storage is None
         assert container._preferences_storage is None
+        assert container._declarative_db_storage is None
 
     @pytest.mark.asyncio
     async def test_close_storages_partial(self, conn, lock) -> None:
@@ -232,11 +247,15 @@ class TestAppContainer:
         _ = container.calorie_storage
         _ = container.workout_storage
         _ = container.preferences_storage
+        _ = container.declarative_db_storage
 
         await container._close_storages()
 
         assert container._reminder_storage is None
         assert container._calorie_storage is None
+        assert container._workout_storage is None
+        assert container._preferences_storage is None
+        assert container._declarative_db_storage is None
         assert container._workout_storage is None
         assert container._preferences_storage is None
 

@@ -126,13 +126,36 @@ class SqliteDeclarativeDbStorage(SqlStorage):
             validate_identifier(col_name)
             validate_column_type(col_type)
 
+            default_str = None
+            if default_val is not None:
+                if isinstance(default_val, bool):
+                    default_str = "1" if default_val else "0"
+                    part_def = f" DEFAULT {default_str}"
+                elif isinstance(default_val, (int, float)):
+                    default_str = str(default_val)
+                    part_def = f" DEFAULT {default_str}"
+                elif isinstance(default_val, str):
+                    escaped_default = default_val.replace("'", "''")
+                    part_def = f" DEFAULT '{escaped_default}'"
+                    default_str = default_val
+                elif isinstance(default_val, (list, dict)):
+                    default_str = json.dumps(default_val)
+                    escaped_default = default_str.replace("'", "''")
+                    part_def = f" DEFAULT '{escaped_default}'"
+                else:
+                    default_str = str(default_val)
+                    escaped_default = default_str.replace("'", "''")
+                    part_def = f" DEFAULT '{escaped_default}'"
+            else:
+                part_def = ""
+
             validated_cols.append(
                 {
                     "name": col_name,
                     "type": col_type,
                     "is_pk": is_pk,
                     "is_nn": is_nn,
-                    "default": str(default_val) if default_val is not None else None,
+                    "default": default_str,
                 }
             )
 
@@ -142,13 +165,7 @@ class SqliteDeclarativeDbStorage(SqlStorage):
                 part += " PRIMARY KEY"
             if is_nn:
                 part += " NOT NULL"
-            if default_val is not None:
-                # Basic escaping of default string values if string-like
-                if isinstance(default_val, str):
-                    escaped_default = default_val.replace("'", "''")
-                    part += f" DEFAULT '{escaped_default}'"
-                else:
-                    part += f" DEFAULT {default_val}"
+            part += part_def
 
             ddl_parts.append(part)
 
@@ -162,14 +179,24 @@ class SqliteDeclarativeDbStorage(SqlStorage):
         now = now_utc().isoformat(timespec="seconds")
 
         async with self._lock:
-            # Check table counts guardrail
-            existing_count_row = await self._fetch_one(
-                "SELECT COUNT(*) as count FROM custom_tables WHERE user_id = ?",
-                (user_id,),
+            # Check if table already exists
+            table_exists_row = await self._fetch_one(
+                "SELECT 1 FROM custom_tables WHERE user_id = ? AND table_name = ?",
+                (user_id, table_name),
             )
-            existing_count = existing_count_row["count"] if existing_count_row else 0
-            if existing_count >= 5:
-                raise ValueError("Limit of 5 custom tables per user reached")
+            table_exists = table_exists_row is not None
+
+            if not table_exists:
+                # Check table counts guardrail
+                existing_count_row = await self._fetch_one(
+                    "SELECT COUNT(*) as count FROM custom_tables WHERE user_id = ?",
+                    (user_id,),
+                )
+                existing_count = (
+                    existing_count_row["count"] if existing_count_row else 0
+                )
+                if existing_count >= 5:
+                    raise ValueError("Limit of 5 custom tables per user reached")
 
             if len(columns) > 15:
                 raise ValueError("Limit of 15 columns per custom table reached")
@@ -177,6 +204,15 @@ class SqliteDeclarativeDbStorage(SqlStorage):
             # Initialize physical table and save metadata within one serial transaction
             await self._conn.execute("BEGIN")
             try:
+                if table_exists:
+                    # Drop old table to prevent column/metadata desync
+                    await self._conn.execute(f'DROP TABLE IF EXISTS "{physical_name}"')
+                    await self._conn.execute(
+                        "DELETE FROM custom_tables "
+                        "WHERE user_id = ? AND table_name = ?",
+                        (user_id, table_name),
+                    )
+
                 # Physically create table
                 await self._conn.execute(create_ddl)
 
@@ -301,14 +337,28 @@ class SqliteDeclarativeDbStorage(SqlStorage):
             order_by_direction = order_by_dir_upper
 
         async with self._lock:
-            # Check templates limit (10 per user)
-            existing_count_row = await self._fetch_one(
-                "SELECT COUNT(*) as count FROM saved_query_templates WHERE user_id = ?",
-                (user_id,),
+            # Check if template already exists
+            template_exists_row = await self._fetch_one(
+                "SELECT 1 FROM saved_query_templates "
+                "WHERE user_id = ? AND template_name = ?",
+                (user_id, template_name),
             )
-            existing_count = existing_count_row["count"] if existing_count_row else 0
-            if existing_count >= 10:
-                raise ValueError("Limit of 10 saved query templates per user reached")
+            template_exists = template_exists_row is not None
+
+            if not template_exists:
+                # Check templates limit (10 per user)
+                existing_count_row = await self._fetch_one(
+                    "SELECT COUNT(*) as count FROM saved_query_templates "
+                    "WHERE user_id = ?",
+                    (user_id,),
+                )
+                existing_count = (
+                    existing_count_row["count"] if existing_count_row else 0
+                )
+                if existing_count >= 10:
+                    raise ValueError(
+                        "Limit of 10 saved query templates per user reached"
+                    )
 
             # Check if custom table exists
             table_row = await self._fetch_one(
@@ -519,8 +569,7 @@ class SqliteDeclarativeDbStorage(SqlStorage):
                 bindings = tuple(set_bindings)
 
             # Run write update
-            async with self._lock:
-                cursor = await self._conn.execute(sql, bindings)
+            async with self._lock, self._conn.execute(sql, bindings) as cursor:
                 return cursor.rowcount
 
         elif query_type == "DELETE":
@@ -540,8 +589,7 @@ class SqliteDeclarativeDbStorage(SqlStorage):
                 bindings = tuple(where_bindings)
 
             # Run write delete
-            async with self._lock:
-                cursor = await self._conn.execute(sql, bindings)
+            async with self._lock, self._conn.execute(sql, bindings) as cursor:
                 return cursor.rowcount
 
         else:

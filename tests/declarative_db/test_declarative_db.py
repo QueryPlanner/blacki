@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Generator
 from pathlib import Path
 from typing import Any
@@ -435,6 +436,413 @@ class TestStorageIntegration:
         assert "id (INTEGER) PRIMARY KEY" in xml
         assert "Template: add_log" in xml
 
+    @pytest.mark.anyio
+    async def test_create_custom_table_with_no_columns(
+        self, storage: SqliteDeclarativeDbStorage
+    ) -> None:
+        """Should raise ValueError when creating a table with no columns."""
+        with pytest.raises(ValueError, match="Table must define at least one column"):
+            await storage.create_custom_table(
+                user_id="user_test",
+                table_name="no_cols",
+                columns=[],
+            )
+
+    @pytest.mark.anyio
+    async def test_create_custom_table_already_exists(
+        self, storage: SqliteDeclarativeDbStorage, sqlite_conn: aiosqlite.Connection
+    ) -> None:
+        """Verify overwriting an existing table works and bypasses limit."""
+        user_id = "user_overwrite_test"
+        cols = [{"name": "id", "type": "INTEGER", "primary_key": True}]
+
+        # Create 5 tables (limit is 5)
+        for i in range(5):
+            await storage.create_custom_table(user_id, f"tbl_{i}", cols)
+
+        # Overwrite tbl_0 (bypasses limit)
+        await storage.create_custom_table(
+            user_id,
+            "tbl_0",
+            [
+                {"name": "id", "type": "INTEGER", "primary_key": True},
+                {"name": "new_col", "type": "TEXT"},
+            ],
+            description="updated",
+        )
+
+        metadata = await storage.list_custom_tables_and_templates(user_id)
+        assert len(metadata["tbl_0"]["columns"]) == 2
+        assert metadata["tbl_0"]["description"] == "updated"
+
+    @pytest.mark.anyio
+    async def test_column_default_value_types(
+        self, storage: SqliteDeclarativeDbStorage, sqlite_conn: aiosqlite.Connection
+    ) -> None:
+        """Test different default value types in DDL construction."""
+        user_id = "user_defaults"
+        table_name = "defaults_test"
+
+        class Dummy:
+            def __str__(self) -> str:
+                return "dummy'value"
+
+        columns: list[dict[str, Any]] = [
+            {"name": "id", "type": "INTEGER", "primary_key": True},
+            {"name": "bool_t", "type": "INTEGER", "default": True},
+            {"name": "bool_f", "type": "INTEGER", "default": False},
+            {"name": "complex_list", "type": "TEXT", "default": [1, 2, "three's"]},
+            {"name": "complex_dict", "type": "TEXT", "default": {"a'b": 1}},
+            {"name": "str_val", "type": "TEXT", "default": "hello'world"},
+            {"name": "fallback", "type": "TEXT", "default": 42.5},
+            {"name": "object_fallback", "type": "TEXT", "default": Dummy()},
+        ]
+
+        await storage.create_custom_table(user_id, table_name, columns)
+
+        # Insert a row with defaults
+        physical_name = storage._get_physical_name(user_id, table_name)
+        await sqlite_conn.execute(f'INSERT INTO "{physical_name}" (id) VALUES (1)')  # noqa: S608
+        await sqlite_conn.commit()
+
+        # Retrieve row to verify values
+        async with sqlite_conn.execute(
+            f'SELECT * FROM "{physical_name}" WHERE id = 1'  # noqa: S608
+        ) as cursor:
+            row = await cursor.fetchone()
+            assert row is not None
+            assert row["bool_t"] == 1
+            assert row["bool_f"] == 0
+            assert json.loads(row["complex_list"]) == [1, 2, "three's"]
+            assert json.loads(row["complex_dict"]) == {"a'b": 1}
+            assert row["str_val"] == "hello'world"
+            assert float(row["fallback"]) == 42.5
+            assert row["object_fallback"] == "dummy'value"
+
+    @pytest.mark.anyio
+    async def test_delete_custom_table_not_exists(
+        self, storage: SqliteDeclarativeDbStorage
+    ) -> None:
+        """Should return False if dropping a non-existent table."""
+        res = await storage.delete_custom_table("user_id", "non_existent")
+        assert res is False
+
+    @pytest.mark.anyio
+    async def test_storage_exceptions_rollback(
+        self, storage: SqliteDeclarativeDbStorage, sqlite_conn: aiosqlite.Connection
+    ) -> None:
+        """Verify storage exceptions during create/delete rollback transaction."""
+        user_id = "user_exceptions"
+        cols = [{"name": "id", "type": "INTEGER", "primary_key": True}]
+
+        # 1. Create table failure
+        original_execute = sqlite_conn.execute
+
+        def mock_execute(sql: str, *args, **kwargs):
+            if "INSERT INTO custom_table_columns" in sql:
+                raise Exception("forced column insert failure")
+            return original_execute(sql, *args, **kwargs)
+
+        with (
+            patch.object(sqlite_conn, "execute", side_effect=mock_execute),
+            pytest.raises(Exception, match="forced column insert failure"),
+        ):
+            await storage.create_custom_table(user_id, "fail_tbl", cols)
+
+        # Check that table does not exist in metadata
+        metadata = await storage.list_custom_tables_and_templates(user_id)
+        assert "fail_tbl" not in metadata
+
+        # 2. Delete table failure
+        await storage.create_custom_table(user_id, "success_tbl", cols)
+
+        def mock_execute_delete(sql: str, *args, **kwargs):
+            if "DELETE FROM custom_tables" in sql:
+                raise Exception("forced delete metadata failure")
+            return original_execute(sql, *args, **kwargs)
+
+        with (
+            patch.object(sqlite_conn, "execute", side_effect=mock_execute_delete),
+            pytest.raises(Exception, match="forced delete metadata failure"),
+        ):
+            await storage.delete_custom_table(user_id, "success_tbl")
+
+        # Table metadata should still exist
+        metadata = await storage.list_custom_tables_and_templates(user_id)
+        assert "success_tbl" in metadata
+
+    @pytest.mark.anyio
+    async def test_create_query_template_overwrites(
+        self, storage: SqliteDeclarativeDbStorage
+    ) -> None:
+        """Verify limit check is bypassed when template already exists (overwrites)."""
+        user_id = "user_tmpl_limit"
+        cols = [{"name": "id", "type": "INTEGER", "primary_key": True}]
+        await storage.create_custom_table(user_id, "tbl", cols)
+
+        # Create 10 templates (the limit)
+        for i in range(10):
+            await storage.create_query_template(user_id, f"tmpl_{i}", "tbl", "SELECT")
+
+        # Try creating an 11th new template -> should fail
+        with pytest.raises(ValueError, match="Limit of 10 saved query templates"):
+            await storage.create_query_template(user_id, "tmpl_10", "tbl", "SELECT")
+
+        # Try overwriting an existing template (e.g. tmpl_0) -> should succeed
+        await storage.create_query_template(
+            user_id, "tmpl_0", "tbl", "SELECT", description="updated template"
+        )
+
+    @pytest.mark.anyio
+    async def test_create_query_template_invalid_sort_col(
+        self, storage: SqliteDeclarativeDbStorage
+    ) -> None:
+        """Should raise ValueError if sorting column does not exist in table."""
+        user_id = "user_test"
+        cols = [{"name": "id", "type": "INTEGER", "primary_key": True}]
+        await storage.create_custom_table(user_id, "tbl", cols)
+
+        with pytest.raises(ValueError, match="does not exist in table"):
+            await storage.create_query_template(
+                user_id=user_id,
+                template_name="tmpl",
+                table_name="tbl",
+                query_type="SELECT",
+                order_by_column="non_existent",
+            )
+
+    @pytest.mark.anyio
+    async def test_execute_query_template_errors_and_edge_cases(
+        self, storage: SqliteDeclarativeDbStorage, sqlite_conn: aiosqlite.Connection
+    ) -> None:
+        """Verify errors and edge cases when executing query templates."""
+        await sqlite_conn.execute("PRAGMA foreign_keys = OFF")
+        user_id = "user_exec_edge"
+        table_name = "tbl"
+        cols: list[dict[str, Any]] = [
+            {"name": "id", "type": "INTEGER", "primary_key": True},
+            {"name": "name", "type": "TEXT"},
+            {"name": "age", "type": "INTEGER"},
+        ]
+        await storage.create_custom_table(user_id, table_name, cols)
+
+        # 1. Execute non-existent template
+        with pytest.raises(ValueError, match="Template 'non_existent' not found"):
+            await storage.execute_query_template(user_id, "non_existent", {})
+
+        # 2. Execute where underlying table does not exist
+        await storage.create_query_template(
+            user_id, "get_val", table_name, "SELECT", select_columns=["name"]
+        )
+        # Directly delete table from custom_tables metadata table.
+        # This orphans the template (bypasses default CASCADE).
+        await sqlite_conn.execute(
+            "DELETE FROM custom_tables WHERE user_id = ? AND table_name = ?",
+            (user_id, table_name),
+        )
+        await sqlite_conn.commit()
+
+        with pytest.raises(ValueError, match="Underlying table 'tbl' does not exist"):
+            await storage.execute_query_template(user_id, "get_val", {})
+
+        # Re-create table for subsequent tests
+        await storage.create_custom_table(user_id, table_name, cols)
+
+        # 3. Parameter key not in columns
+        with pytest.raises(ValueError, match="is not a valid column"):
+            await storage.execute_query_template(user_id, "get_val", {"invalid_col": 1})
+
+        # 4. SELECT missing required filter parameter
+        await storage.create_query_template(
+            user_id, "get_with_filter", table_name, "SELECT", filter_columns=["age"]
+        )
+        with pytest.raises(ValueError, match="Missing required filter parameter 'age'"):
+            await storage.execute_query_template(user_id, "get_with_filter", {})
+
+        # 5. INSERT no insert keys in parameters
+        await storage.create_query_template(user_id, "add_val", table_name, "INSERT")
+        with pytest.raises(
+            ValueError, match="Must provide at least one valid parameter to insert"
+        ):
+            # Empty parameters
+            await storage.execute_query_template(user_id, "add_val", {})
+
+        # 6. UPDATE no update keys in parameters
+        await storage.create_query_template(
+            user_id, "update_val", table_name, "UPDATE", filter_columns=["id"]
+        )
+        with pytest.raises(ValueError, match="No columns provided to update"):
+            # Passing only filter column, nothing to UPDATE/SET
+            await storage.execute_query_template(user_id, "update_val", {"id": 1})
+
+        # 7. UPDATE missing required filter parameter
+        with pytest.raises(
+            ValueError, match="Missing required update filter parameter 'id'"
+        ):
+            await storage.execute_query_template(user_id, "update_val", {"name": "Bob"})
+
+        # 8. UPDATE with no filters (should succeed without WHERE)
+        await storage.create_query_template(user_id, "update_all", table_name, "UPDATE")
+        # Insert a row first
+        await storage.execute_query_template(
+            user_id, "add_val", {"id": 1, "name": "Alice"}
+        )
+        # Update name globally without filter
+        affected = await storage.execute_query_template(
+            user_id, "update_all", {"name": "Bob"}
+        )
+        assert affected == 1
+
+        # 9. DELETE missing required filter parameter
+        await storage.create_query_template(
+            user_id, "delete_val", table_name, "DELETE", filter_columns=["id"]
+        )
+        with pytest.raises(
+            ValueError, match="Missing required delete filter parameter 'id'"
+        ):
+            await storage.execute_query_template(user_id, "delete_val", {})
+
+        # 10. Unsupported query type
+        await storage.create_query_template(user_id, "bad_type", table_name, "SELECT")
+        await sqlite_conn.execute(
+            "UPDATE saved_query_templates SET query_type = 'INVALID' "
+            "WHERE user_id = ? AND template_name = ?",
+            (user_id, "bad_type"),
+        )
+        await sqlite_conn.commit()
+        with pytest.raises(ValueError, match="Unsupported query type: INVALID"):
+            await storage.execute_query_template(user_id, "bad_type", {})
+
+        # 11. SELECT order by direction fallback (None -> ASC) and limit
+        await storage.create_query_template(
+            user_id=user_id,
+            template_name="get_ordered",
+            table_name=table_name,
+            query_type="SELECT",
+            select_columns=["id", "name"],
+            order_by_column="name",
+            limit_val=2,
+        )
+        res_ordered = await storage.execute_query_template(user_id, "get_ordered", {})
+        assert isinstance(res_ordered, list)
+
+        # 12. DELETE with no filters (should succeed)
+        await storage.create_query_template(
+            user_id=user_id,
+            template_name="delete_all",
+            table_name=table_name,
+            query_type="DELETE",
+        )
+        deleted_cnt = await storage.execute_query_template(user_id, "delete_all", {})
+        assert isinstance(deleted_cnt, int)
+        assert deleted_cnt >= 0
+
+    @pytest.mark.anyio
+    async def test_list_schemas_orphans(
+        self, storage: SqliteDeclarativeDbStorage, sqlite_conn: aiosqlite.Connection
+    ) -> None:
+        """Verify list schemas handles columns/templates for non-existent tables."""
+        await sqlite_conn.execute("PRAGMA foreign_keys = OFF")
+        user_id = "user_orphans"
+        # Manually insert column metadata referencing a non-existent table
+        await sqlite_conn.execute(
+            "INSERT INTO custom_table_columns "
+            "(user_id, table_name, column_name, column_type) "
+            "VALUES (?, 'non_existent_table', 'ghost_col', 'TEXT')",
+            (user_id,),
+        )
+        # Manually insert template metadata referencing a non-existent table
+        await sqlite_conn.execute(
+            "INSERT INTO saved_query_templates "
+            "(user_id, template_name, table_name, query_type) "
+            "VALUES (?, 'ghost_tmpl', 'non_existent_table', 'SELECT')",
+            (user_id,),
+        )
+        await sqlite_conn.commit()
+
+        # Call listing
+        res = await storage.list_custom_tables_and_templates(user_id)
+        # The non_existent_table should NOT be in res because it's not in custom_tables
+        assert "non_existent_table" not in res
+
+    @pytest.mark.anyio
+    async def test_get_schema_instructions_xml_variations(
+        self, storage: SqliteDeclarativeDbStorage
+    ) -> None:
+        """Verify xml instructions formatting with different metadata states."""
+        user_id = "user_xml_vars"
+
+        # 1. Table with no description and no templates
+        await storage.create_custom_table(
+            user_id=user_id,
+            table_name="simple_table",
+            columns=[{"name": "id", "type": "INTEGER", "primary_key": True}],
+        )
+
+        xml1 = await storage.get_schema_instructions_xml(user_id)
+        assert "<custom_database_schemas_and_templates>" in xml1
+        assert "Table: simple_table" in xml1
+        assert "Description:" not in xml1
+        assert "Saved Query Templates:" not in xml1
+
+        # 2. Template with no select_columns, filter_columns, order_by, limit
+        await storage.create_query_template(
+            user_id=user_id,
+            template_name="get_simple",
+            table_name="simple_table",
+            query_type="SELECT",
+        )
+
+        xml2 = await storage.get_schema_instructions_xml(user_id)
+        assert "Saved Query Templates:" in xml2
+        assert "Returns Columns:" not in xml2
+        assert "Required Parameters:" not in xml2
+        assert "Sorted By:" not in xml2
+        assert "Limit:" not in xml2
+
+        # 3. Table WITH description and template with optional params
+        await storage.create_custom_table(
+            user_id=user_id,
+            table_name="detailed_table",
+            columns=[
+                {"name": "id", "type": "INTEGER", "primary_key": True},
+                {"name": "col_a", "type": "TEXT"},
+            ],
+            description="Detailed table description",
+        )
+        await storage.create_query_template(
+            user_id=user_id,
+            template_name="get_detailed",
+            table_name="detailed_table",
+            query_type="SELECT",
+            select_columns=["id"],
+            filter_columns=["col_a"],
+            order_by_column="id",
+            order_by_direction="ASC",
+            limit_val=10,
+            description="Fetch detailed",
+        )
+
+        xml3 = await storage.get_schema_instructions_xml(user_id)
+        assert "Description: Detailed table description" in xml3
+        assert "Returns Columns: id" in xml3
+        assert "Required Parameters: col_a" in xml3
+        assert "Sorted By: id ASC" in xml3
+        assert "Limit: 10" in xml3
+
+    def test_get_declarative_db_storage_uninitialized(self) -> None:
+        """Should raise RuntimeError when storage is not initialized."""
+        from blacki.declarative_db.storage import get_declarative_db_storage
+
+        mock_container = MagicMock()
+        mock_container.declarative_db_storage.is_initialized = False
+
+        with (
+            patch("blacki.container.get_container", return_value=mock_container),
+            pytest.raises(RuntimeError, match="Declarative DB storage not initialized"),
+        ):
+            get_declarative_db_storage()
+
 
 # ==============================================================================
 # 3. ADK Plugin Layer Tests
@@ -480,6 +888,81 @@ class TestDeclarativeDbPlugin:
         assert len(args) == 1
         assert "Spanish" in args[0]
         assert "<custom_instruction_overrides>" in args[0]
+
+    @pytest.mark.anyio
+    async def test_plugin_no_session(self) -> None:
+        """Plugin should return early if callback_context.session is None."""
+        plugin = DeclarativeDbPlugin()
+        callback_context = MagicMock()
+        callback_context.session = None
+        llm_request = MagicMock()
+
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        llm_request.append_instructions.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_plugin_no_user_id_in_session_state(self) -> None:
+        """Plugin should return early if session has no user_id or telegram_chat_id."""
+        plugin = DeclarativeDbPlugin()
+        mock_session = MagicMock()
+        mock_session.state = {}  # Empty state
+        callback_context = MagicMock()
+        callback_context.session = mock_session
+        llm_request = MagicMock()
+
+        await plugin.before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
+        llm_request.append_instructions.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_plugin_empty_schema_xml(self) -> None:
+        """Plugin should not call append_instructions if schema XML is empty."""
+        plugin = DeclarativeDbPlugin()
+        mock_session = MagicMock()
+        mock_session.state = {"user_id": "test_user_empty"}
+        callback_context = MagicMock()
+        callback_context.session = mock_session
+        llm_request = MagicMock()
+
+        mock_storage = MagicMock()
+        mock_storage.get_schema_instructions_xml = AsyncMock(return_value="")
+
+        with patch(
+            "blacki.declarative_db.plugin.get_declarative_db_storage",
+            return_value=mock_storage,
+        ):
+            await plugin.before_model_callback(
+                callback_context=callback_context, llm_request=llm_request
+            )
+        llm_request.append_instructions.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_plugin_storage_exception_logged(self) -> None:
+        """Plugin should catch and log storage exceptions without crashing."""
+        plugin = DeclarativeDbPlugin()
+        mock_session = MagicMock()
+        mock_session.state = {"telegram_chat_id": "chat_123"}
+        callback_context = MagicMock()
+        callback_context.session = mock_session
+        llm_request = MagicMock()
+
+        mock_storage = MagicMock()
+        mock_storage.get_schema_instructions_xml = AsyncMock(
+            side_effect=Exception("forced db error")
+        )
+
+        with patch(
+            "blacki.declarative_db.plugin.get_declarative_db_storage",
+            return_value=mock_storage,
+        ):
+            # This should not raise an error
+            await plugin.before_model_callback(
+                callback_context=callback_context, llm_request=llm_request
+            )
+        llm_request.append_instructions.assert_not_called()
 
 
 # ==============================================================================
@@ -590,3 +1073,127 @@ class TestAgentTools:
         self.mock_storage.delete_custom_instruction_override.assert_called_once_with(
             "tool_user"
         )
+
+    @pytest.mark.anyio
+    async def test_tools_missing_user_id_errors(self) -> None:
+        """Verify tools return error when user_id is missing."""
+        bad_context = MagicMock()
+        bad_context.user_id = None
+        bad_context.state = {}
+
+        # 1. create_custom_table
+        res = await create_custom_table("tbl", [], bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 2. delete_custom_table
+        res = await delete_custom_table("tbl", bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 3. create_query_template
+        res = await create_query_template("tmpl", "tbl", "SELECT", bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 4. execute_query_template
+        res = await execute_query_template("tmpl", {}, bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 5. list_custom_tables_and_templates
+        res = await list_custom_tables_and_templates(bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 6. set_custom_instruction_override
+        res = await set_custom_instruction_override("instr", bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+        # 7. delete_custom_instruction_override
+        res = await delete_custom_instruction_override(bad_context)
+        assert res["status"] == "error"
+        assert "user not identified" in res["message"].lower()
+
+    @pytest.mark.anyio
+    async def test_tools_exception_handling_and_errors(self) -> None:
+        """Verify that tools handle and log exceptions properly."""
+        tool_context = MagicMock()
+        tool_context.user_id = "test_user"
+        tool_context.state = {}
+
+        # 1. create_custom_table raising exception
+        self.mock_storage.create_custom_table = AsyncMock(
+            side_effect=Exception("create error")
+        )
+        res = await create_custom_table("tbl", [], tool_context)
+        assert res["status"] == "error"
+        assert "failed to create table: create error" in res["message"].lower()
+
+        # 2. delete_custom_table raising exception
+        self.mock_storage.delete_custom_table = AsyncMock(
+            side_effect=Exception("delete error")
+        )
+        res = await delete_custom_table("tbl", tool_context)
+        assert res["status"] == "error"
+        assert "failed to delete table: delete error" in res["message"].lower()
+
+        # 3. delete_custom_table not found
+        self.mock_storage.delete_custom_table = AsyncMock(return_value=False)
+        res = await delete_custom_table("tbl", tool_context)
+        assert res["status"] == "error"
+        assert "not found" in res["message"].lower()
+
+        # 4. create_query_template raising exception
+        self.mock_storage.create_query_template = AsyncMock(
+            side_effect=Exception("tmpl error")
+        )
+        res = await create_query_template("tmpl", "tbl", "SELECT", tool_context)
+        assert res["status"] == "error"
+        assert "failed to register query template: tmpl error" in res["message"].lower()
+
+        # 5. execute_query_template raising exception
+        self.mock_storage.execute_query_template = AsyncMock(
+            side_effect=Exception("exec error")
+        )
+        res = await execute_query_template("tmpl", {}, tool_context)
+        assert res["status"] == "error"
+        assert "execution failed: exec error" in res["message"].lower()
+
+        # 6. list_custom_tables_and_templates raising exception
+        self.mock_storage.list_custom_tables_and_templates = AsyncMock(
+            side_effect=Exception("list error")
+        )
+        res = await list_custom_tables_and_templates(tool_context)
+        assert res["status"] == "error"
+        assert "failed to fetch custom schemas: list error" in res["message"].lower()
+
+        # 7. set_custom_instruction_override raising exception
+        self.mock_storage.set_custom_instruction_override = AsyncMock(
+            side_effect=Exception("set override error")
+        )
+        res = await set_custom_instruction_override("instr", tool_context)
+        assert res["status"] == "error"
+        assert (
+            "failed to save instructions: set override error" in res["message"].lower()
+        )
+
+        # 8. delete_custom_instruction_override raising exception
+        self.mock_storage.delete_custom_instruction_override = AsyncMock(
+            side_effect=Exception("delete override error")
+        )
+        res = await delete_custom_instruction_override(tool_context)
+        assert res["status"] == "error"
+        assert (
+            "failed to clear instructions: delete override error"
+            in res["message"].lower()
+        )
+
+        # 9. delete_custom_instruction_override not found (returns False)
+        self.mock_storage.delete_custom_instruction_override = AsyncMock(
+            return_value=False
+        )
+        res = await delete_custom_instruction_override(tool_context)
+        assert res["status"] == "success"
+        assert "no custom instructions existed to delete" in res["message"].lower()
