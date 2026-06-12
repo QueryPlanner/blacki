@@ -54,6 +54,7 @@ def build_tools(config: ToolConfig) -> list[Any]:
         tools.extend(_build_reminder_tools())
         tools.extend(_build_calorie_tools())
         tools.extend(_build_workout_tools())
+        tools.extend(_build_declarative_db_tools())
         logger.info("Database-backed tools enabled")
 
     if config.sandbox_enabled:
@@ -230,6 +231,33 @@ def _build_memory_tools() -> list[Any]:
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Memory tools: %s", e)
+        return []
+
+
+def _build_declarative_db_tools() -> list[Any]:
+    """Build declarative database tools."""
+    try:
+        from blacki.declarative_db.tools import (
+            create_custom_table,
+            create_query_template,
+            delete_custom_instruction_override,
+            delete_custom_table,
+            execute_query_template,
+            list_custom_tables_and_templates,
+            set_custom_instruction_override,
+        )
+
+        return [
+            create_custom_table,
+            delete_custom_table,
+            create_query_template,
+            execute_query_template,
+            list_custom_tables_and_templates,
+            set_custom_instruction_override,
+            delete_custom_instruction_override,
+        ]
+    except ImportError as e:  # pragma: no cover
+        logger.warning("Failed to load Declarative DB tools: %s", e)
         return []
 
 

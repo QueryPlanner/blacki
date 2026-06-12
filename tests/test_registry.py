@@ -264,3 +264,15 @@ class TestBuildSkillTools:
         tools = _build_skill_tools(Path("/nonexistent/skills"))
 
         assert tools == []
+
+
+class TestBuildDeclarativeDbTools:
+    """Tests for _build_declarative_db_tools."""
+
+    def test_returns_tools_when_available(self) -> None:
+        """Should return declarative database tools when available."""
+        from blacki.registry import _build_declarative_db_tools
+
+        tools = _build_declarative_db_tools()
+
+        assert len(tools) == 7
