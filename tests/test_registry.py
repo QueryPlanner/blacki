@@ -13,6 +13,7 @@ class TestToolConfig:
         """Should have None defaults for all optional fields."""
         config = ToolConfig()
 
+        assert config.exa_api_key is None
         assert config.brave_search_api_key is None
         assert config.sqlite_path is None
         assert config.sandbox_enabled is False
@@ -22,12 +23,14 @@ class TestToolConfig:
         """Should accept custom values."""
         skills_path = Path("/tmp/skills")
         config = ToolConfig(
+            exa_api_key="exa-key",
             brave_search_api_key="test-key",
             sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
             skills_dir=skills_path,
         )
 
+        assert config.exa_api_key == "exa-key"
         assert config.brave_search_api_key == "test-key"
         assert config.sqlite_path == "/tmp/blacki.db"
         assert config.sandbox_enabled is True
@@ -51,6 +54,18 @@ class TestBuildTools:
         tools = build_tools(config)
 
         assert len(tools) == 9
+
+    def test_exa_search_tools_added_first(self) -> None:
+        """Should register Exa before Brave when both keys are provided."""
+        config = ToolConfig(
+            exa_api_key="exa-key",
+            brave_search_api_key="brave-key",
+        )
+
+        tools = build_tools(config)
+
+        assert [tool.__name__ for tool in tools[:2]] == ["exa_search", "brave_search"]
+        assert len(tools) == 10
 
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when sqlite path provided."""
@@ -79,6 +94,7 @@ class TestBuildTools:
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
         config = ToolConfig(
+            exa_api_key="exa-key",
             brave_search_api_key="test-key",
             sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
@@ -100,6 +116,15 @@ class TestBuildTools:
 
             assert len(tools) == 8
 
+    def test_build_exa_search_tools_import_error(self) -> None:
+        """Should omit Exa Search if its module cannot be imported."""
+        from blacki.registry import _build_exa_search_tools
+
+        with patch.dict("sys.modules", {"blacki.search": None}):
+            tools = _build_exa_search_tools()
+
+        assert tools == []
+
 
 class TestBuildToolConfigFromEnv:
     """Tests for build_tool_config_from_env function."""
@@ -109,6 +134,7 @@ class TestBuildToolConfigFromEnv:
         with patch.dict("os.environ", {}, clear=True):
             config = build_tool_config_from_env()
 
+            assert config.exa_api_key is None
             assert config.brave_search_api_key is None
             assert config.sqlite_path is not None
             assert config.sqlite_path.endswith(".adk/tools.db")
@@ -123,6 +149,20 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
             assert config.brave_search_api_key == "test-api-key"
+
+    def test_exa_api_key_from_env_is_stripped(self) -> None:
+        """Should read and strip EXA_API_KEY from the environment."""
+        with patch.dict("os.environ", {"EXA_API_KEY": "  exa-key  "}, clear=False):
+            config = build_tool_config_from_env()
+
+            assert config.exa_api_key == "exa-key"
+
+    def test_empty_exa_api_key_becomes_none(self) -> None:
+        """Should disable Exa for an empty environment value."""
+        with patch.dict("os.environ", {"EXA_API_KEY": "   "}, clear=False):
+            config = build_tool_config_from_env()
+
+            assert config.exa_api_key is None
 
     def test_brave_search_api_key_stripped(self) -> None:
         """Should strip whitespace from BRAVE_SEARCH_API_KEY."""
@@ -192,6 +232,19 @@ class TestBuildBraveSearchTools:
             patch("blacki.tools.brave_search", side_effect=ImportError("test")),
         ):
             pass
+
+
+class TestBuildExaSearchTools:
+    """Tests for _build_exa_search_tools."""
+
+    def test_returns_tool_when_available(self) -> None:
+        """Should return the Exa Search tool when available."""
+        from blacki.registry import _build_exa_search_tools
+
+        tools = _build_exa_search_tools()
+
+        assert len(tools) == 1
+        assert tools[0].__name__ == "exa_search"
 
 
 class TestBuildReminderTools:

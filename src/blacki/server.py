@@ -183,6 +183,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
         await close_shared_brave_search_client()
 
+        from .search import close_shared_exa_search_client
+
+        await close_shared_exa_search_client()
+
         from .callbacks import close_shared_notify_client
 
         await close_shared_notify_client()

@@ -68,6 +68,18 @@ def return_instruction_root() -> str:
 - When summarizing workouts, DO NOT use lists or bullet points. Speak it naturally.
 </workout_tracking_spec>
 
+<web_search_spec>
+- When exa_search is available, use it as the primary tool for web search,
+  current information, factual lookups, and source discovery.
+- Unless the user requests another count, call Exa with num_results=5. Use the
+  returned highlights and original URLs as evidence. Never invent results or
+  citations.
+- If Exa returns no useful results, refine the query once. If it remains empty,
+  Exa is unavailable, or Exa returns an error, use brave_search when available.
+- Search tools discover and excerpt pages; use the existing URL-reading workflow
+  below when a deeper read of a result is necessary.
+</web_search_spec>
+
 <browser_spec>
 - An agent-browser skill is available for any task that requires a browser
   (web scraping, form filling, screenshots, navigating sites behind auth).

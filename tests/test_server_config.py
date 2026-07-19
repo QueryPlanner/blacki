@@ -3,7 +3,7 @@
 
 import sys
 from collections.abc import Generator
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -45,3 +45,42 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     call_kwargs = mock_dependencies.call_args[1]
 
     assert call_kwargs["session_service_uri"] is None
+
+
+@pytest.mark.asyncio
+async def test_server_lifespan_closes_search_clients(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Verify both managed search clients are closed during shutdown."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    container = MagicMock()
+    container.initialize_all_storages = AsyncMock()
+    init_container = AsyncMock(return_value=container)
+    close_container = AsyncMock()
+    close_brave = AsyncMock()
+    close_exa = AsyncMock()
+    close_notify = AsyncMock()
+
+    with (
+        patch.object(server, "init_container", new=init_container),
+        patch.object(server, "close_container", new=close_container),
+        patch.object(server, "_start_telegram_bot", new=AsyncMock()),
+        patch.object(server, "_stop_telegram_bot", new=AsyncMock()),
+        patch.object(server, "_stop_reminder_scheduler", new=AsyncMock()),
+        patch.object(server.validation, "validate_configuration", return_value=[]),
+        patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
+        patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
+    ):
+        async with server.lifespan(server.app):
+            pass
+
+    container.initialize_all_storages.assert_awaited_once()
+    close_container.assert_awaited_once()
+    close_brave.assert_awaited_once()
+    close_exa.assert_awaited_once()
+    close_notify.assert_awaited_once()

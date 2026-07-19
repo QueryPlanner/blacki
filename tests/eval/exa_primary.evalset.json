@@ -1,0 +1,39 @@
+{
+  "eval_set_id": "exa_primary_search",
+  "name": "Exa primary web search",
+  "description": "Verifies that Exa is selected before Brave for web search.",
+  "eval_cases": [
+    {
+      "eval_id": "uses_exa_before_brave",
+      "conversation": [
+        {
+          "invocation_id": "exa-primary-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Call your primary web search tool with the exact query 'official Python 3.13 release information' and five results, then summarize what you find."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "exa_search",
+                "args": {
+                  "query": "official Python 3.13 release information",
+                  "num_results": 5
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "eval-user",
+        "state": {}
+      }
+    }
+  ]
+}
