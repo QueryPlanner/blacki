@@ -1,0 +1,46 @@
+{
+  "eval_set_id": "exa_fallback_search",
+  "name": "Exa to Brave fallback",
+  "description": "Verifies that Brave is used after Exa returns an error.",
+  "eval_cases": [
+    {
+      "eval_id": "falls_back_to_brave_after_exa_error",
+      "conversation": [
+        {
+          "invocation_id": "exa-fallback-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Search with the exact query 'official Python 3.13 release information' and five results. If the primary search returns an error, immediately use the fallback web search with the same query and count."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "exa_search",
+                "args": {
+                  "query": "official Python 3.13 release information",
+                  "num_results": 5
+                }
+              },
+              {
+                "name": "brave_search",
+                "args": {
+                  "query": "official Python 3.13 release information",
+                  "count": 5
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "eval-user",
+        "state": {}
+      }
+    }
+  ]
+}

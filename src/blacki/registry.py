@@ -22,12 +22,14 @@ class ToolConfig:
     corresponding configuration is provided.
 
     Attributes:
+        exa_api_key: API key for Exa Search.
         brave_search_api_key: API key for Brave Search.
         sqlite_path: Path to SQLite database for storage-backed tools.
         sandbox_enabled: Whether to enable sandbox tools.
         skills_dir: Directory containing skill definitions.
     """
 
+    exa_api_key: str | None = None
     brave_search_api_key: str | None = None
     sqlite_path: str | None = None
     sandbox_enabled: bool = False
@@ -45,6 +47,10 @@ def build_tools(config: ToolConfig) -> list[Any]:
         List of tool instances ready for use by the agent.
     """
     tools: list[Any] = []
+
+    if config.exa_api_key:
+        tools.extend(_build_exa_search_tools())
+        logger.info("Exa Search tool enabled")
 
     if config.brave_search_api_key:
         tools.extend(_build_brave_search_tools())
@@ -71,6 +77,17 @@ def build_tools(config: ToolConfig) -> list[Any]:
     tools.extend(_build_memory_tools())
 
     return tools
+
+
+def _build_exa_search_tools() -> list[Any]:
+    """Build Exa Search tools."""
+    try:
+        from blacki.search import exa_search
+
+        return [exa_search]
+    except ImportError as e:
+        logger.warning("Failed to load Exa Search tool: %s", e)
+        return []
 
 
 def _build_brave_search_tools() -> list[Any]:
@@ -277,6 +294,7 @@ def build_tool_config_from_env() -> ToolConfig:
     sqlite_path = os.getenv("SQLITE_PATH", "").strip() or default_sqlite_path
 
     return ToolConfig(
+        exa_api_key=os.getenv("EXA_API_KEY", "").strip() or None,
         brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None,
         sqlite_path=sqlite_path,
         sandbox_enabled=os.getenv("SANDBOX_ENABLED", "false").strip().lower()

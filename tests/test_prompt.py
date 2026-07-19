@@ -71,6 +71,18 @@ class TestReturnInstructionRoot:
         assert "private, localhost, credential-bearing, or signed URLs" in instruction
         assert "untrusted data" in instruction
 
+    def test_instruction_prefers_exa_with_brave_fallback(self) -> None:
+        """Test that Exa is primary while optional-provider fallback is safe."""
+        instruction = return_instruction_root()
+
+        assert "<web_search_spec>" in instruction
+        assert "When exa_search is available" in instruction
+        assert "primary tool for web search" in instruction
+        assert "num_results=5" in instruction
+        assert "refine the query once" in instruction
+        assert "use brave_search when available" in instruction
+        assert "existing URL-reading workflow" in instruction
+
     def test_instruction_is_consistent(self) -> None:
         """Test that function returns the same instruction on multiple calls."""
         instruction1 = return_instruction_root()
