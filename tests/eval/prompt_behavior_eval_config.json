@@ -1,0 +1,18 @@
+{
+  "criteria": {
+    "tool_trajectory_avg_score": {
+      "threshold": 1.0,
+      "match_type": "EXACT"
+    },
+    "concise_response_score": {
+      "threshold": 1.0
+    }
+  },
+  "custom_metrics": {
+    "concise_response_score": {
+      "code_config": {
+        "name": "tests.eval.prompt_metrics.concise_response_score"
+      }
+    }
+  }
+}

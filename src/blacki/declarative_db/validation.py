@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Strict regex matching letters, numbers, and underscores,
 # starting with a letter or underscore.
@@ -50,6 +51,23 @@ RESERVED_KEYWORDS = {
     "ON",
 }
 
+MAX_USER_PREFERENCES_LENGTH = 1_000
+MAX_USER_PREFERENCE_VALUE_LENGTH = 200
+MAX_SCHEMA_METADATA_LENGTH = 500
+ALLOWED_USER_PREFERENCE_KEYS = frozenset(
+    {"language", "response_style", "tone", "units"}
+)
+DISALLOWED_PREFERENCE_PATTERNS = (
+    re.compile(
+        r"ignore\s+(?:all\s+)?(?:previous|system|developer).*instructions?", re.I
+    ),
+    re.compile(
+        r"(?:bypass|disable|override).*\b(?:safety|privacy|permissions?)\b", re.I
+    ),
+    re.compile(r"\b(?:system|developer)\s+(?:message|prompt|instructions?)\b", re.I),
+    re.compile(r"\b(?:call|use|enable|disable)\b.*\btools?\b", re.I),
+)
+
 
 def validate_identifier(name: str) -> None:
     """Validate a table, column, or template name.
@@ -94,3 +112,56 @@ def validate_column_type(col_type: str) -> None:
             f"Type '{col_type}' is not allowed. "
             f"Must be one of: {', '.join(sorted(ALLOWED_TYPES))}"
         )
+
+
+def parse_user_preferences(preferences: str) -> dict[str, str]:
+    """Parse allow-listed ``key: value`` style preferences.
+
+    The values are data, not free-form instructions. Rejecting unknown keys and
+    instruction-like content prevents stored preferences from changing safety
+    policy or tool permissions.
+    """
+    normalized = unicodedata.normalize("NFKC", preferences).strip()
+    if not normalized:
+        raise ValueError("Preferences cannot be empty")
+    if len(normalized) > MAX_USER_PREFERENCES_LENGTH:
+        raise ValueError(
+            f"Preferences exceed the {MAX_USER_PREFERENCES_LENGTH}-character limit"
+        )
+    if any(ord(char) < 32 and char not in "\n\t" for char in normalized):
+        raise ValueError("Preferences contain unsupported control characters")
+    if any(pattern.search(normalized) for pattern in DISALLOWED_PREFERENCE_PATTERNS):
+        raise ValueError("Preferences cannot change instructions or tool permissions")
+
+    parsed: dict[str, str] = {}
+    for line in normalized.splitlines():
+        if not line.strip():
+            continue
+        key_text, separator, value_text = line.partition(":")
+        if not separator:
+            raise ValueError("Each preference must use the format 'key: value'")
+        key = key_text.strip().lower().replace(" ", "_")
+        value = " ".join(value_text.split())
+        if key not in ALLOWED_USER_PREFERENCE_KEYS:
+            allowed = ", ".join(sorted(ALLOWED_USER_PREFERENCE_KEYS))
+            raise ValueError(f"Preference key '{key}' is not allowed; use: {allowed}")
+        if not value:
+            raise ValueError(f"Preference '{key}' needs a value")
+        if len(value) > MAX_USER_PREFERENCE_VALUE_LENGTH:
+            raise ValueError(
+                f"Preference '{key}' exceeds the "
+                f"{MAX_USER_PREFERENCE_VALUE_LENGTH}-character limit"
+            )
+        if key in parsed:
+            raise ValueError(f"Preference '{key}' is duplicated")
+        parsed[key] = value
+    return parsed
+
+
+def sanitize_schema_metadata(value: object) -> str:
+    """Normalize and length-bound user-controlled schema display metadata."""
+    normalized = unicodedata.normalize("NFKC", str(value))
+    printable = "".join(
+        char for char in normalized if ord(char) >= 32 or char in "\n\t"
+    )
+    return printable[:MAX_SCHEMA_METADATA_LENGTH]

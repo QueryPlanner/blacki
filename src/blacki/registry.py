@@ -27,6 +27,7 @@ class ToolConfig:
         sqlite_path: Path to SQLite database for storage-backed tools.
         sandbox_enabled: Whether to enable sandbox tools.
         skills_dir: Directory containing skill definitions.
+        legacy_workout_tools_enabled: Whether to expose weekly split fallbacks.
     """
 
     exa_api_key: str | None = None
@@ -35,6 +36,7 @@ class ToolConfig:
     sandbox_enabled: bool = False
     skills_dir: Path | None = None
     weather_enabled: bool = True
+    legacy_workout_tools_enabled: bool = False
 
 
 def build_tools(config: ToolConfig) -> list[Any]:
@@ -59,7 +61,7 @@ def build_tools(config: ToolConfig) -> list[Any]:
     if config.sqlite_path:
         tools.extend(_build_reminder_tools())
         tools.extend(_build_calorie_tools())
-        tools.extend(_build_workout_tools())
+        tools.extend(_build_workout_tools(config.legacy_workout_tools_enabled))
         tools.extend(_build_declarative_db_tools())
         logger.info("Database-backed tools enabled")
 
@@ -129,8 +131,8 @@ def _build_calorie_tools() -> list[Any]:
         return []
 
 
-def _build_workout_tools() -> list[Any]:
-    """Build workout tracking tools."""
+def _build_workout_tools(include_legacy: bool = False) -> list[Any]:
+    """Build canonical training tools and optional legacy split fallbacks."""
     try:
         from blacki.workouts import (
             advance_training_cycle,
@@ -147,7 +149,7 @@ def _build_workout_tools() -> list[Any]:
             update_training_metrics,
         )
 
-        return [
+        tools = [
             set_training_program,
             get_todays_training,
             log_training,
@@ -155,12 +157,18 @@ def _build_workout_tools() -> list[Any]:
             get_training_history,
             get_training_metrics,
             update_training_metrics,
-            log_workout,
-            get_last_workout,
             delete_workout,
-            set_workout_split,
-            get_todays_workout,
         ]
+        if include_legacy:
+            tools.extend(
+                [
+                    log_workout,
+                    get_last_workout,
+                    set_workout_split,
+                    get_todays_workout,
+                ]
+            )
+        return tools
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Workout tools: %s", e)
         return []
@@ -300,4 +308,8 @@ def build_tool_config_from_env() -> ToolConfig:
         sandbox_enabled=os.getenv("SANDBOX_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
         skills_dir=skills_dir,
+        legacy_workout_tools_enabled=os.getenv("LEGACY_WORKOUT_TOOLS_ENABLED", "false")
+        .strip()
+        .lower()
+        in ("true", "1", "yes"),
     )

@@ -52,10 +52,9 @@ async def log_meal(
     if not user_id:  # pragma: no cover
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
-    now = now_utc()
-    local_date = parse_date(date)
-
     try:
+        now = now_utc()
+        local_date = parse_date(date)
         entry = CalorieEntry(
             user_id=user_id,
             description=description,
@@ -90,6 +89,8 @@ async def log_meal(
         }
     except ValidationError as e:
         return {"status": "error", "message": f"Validation failed: {str(e)}"}
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     except Exception as e:
         logger.exception("Failed to log meal")
         return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
@@ -109,11 +110,14 @@ async def get_calorie_summary(
     if not user_id:  # pragma: no cover
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
+    try:
+        target_date = parse_date(date)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
     storage = get_storage()
     pref_storage = get_preferences_storage()
     goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
-
-    target_date = parse_date(date)
 
     if days <= 1:
         summary = await storage.get_daily_summary(user_id, target_date)
@@ -173,7 +177,10 @@ async def edit_meal(
     if estimated_calories is not None:  # pragma: no cover
         updates["calories"] = estimated_calories
     if date is not None:
-        updates["logged_date"] = parse_date(date)
+        try:
+            updates["logged_date"] = parse_date(date)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
     if meal_type is not None:  # pragma: no cover
         updates["meal_type"] = meal_type.lower()
     if protein_g is not None:  # pragma: no cover

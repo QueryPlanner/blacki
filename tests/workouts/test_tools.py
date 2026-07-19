@@ -51,6 +51,15 @@ async def test_log_workout_validation(mock_tool_context) -> None:
     result = await log_workout(
         mock_tool_context,
         split_name="push",
+        exercises=[],
+        workout_date="definitely-not-a-real-date",
+    )
+    assert result["status"] == "error"
+    assert "Could not understand date" in result["message"]
+
+    result = await log_workout(
+        mock_tool_context,
+        split_name="push",
         exercises=[{"name": "bench press", "sets": [{"invalid": "format"}]}],
     )
     assert result["status"] == "error"

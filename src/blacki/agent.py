@@ -21,6 +21,8 @@ from .callbacks import (
     telegram_tool_notifications_enabled,
 )
 from .prompt import (
+    DomainPolicyPlugin,
+    ResponsePolicyPlugin,
     return_description_root,
     return_global_instruction,
     return_instruction_root,
@@ -199,7 +201,10 @@ def create_app(agent: LlmAgent | None = None) -> App:
     if agent is None:
         agent = create_agent()
 
-    from blacki.declarative_db.plugin import DeclarativeDbPlugin
+    from blacki.declarative_db.plugin import (
+        DeclarativeDbPlugin,
+        StoredPreferencesPlugin,
+    )
 
     return App(
         name="blacki",
@@ -207,7 +212,10 @@ def create_app(agent: LlmAgent | None = None) -> App:
         plugins=[
             TelegramModelOverridePlugin(name="telegram_model_override"),
             GlobalInstructionPlugin(return_global_instruction),
+            DomainPolicyPlugin(name="domain_policy"),
             DeclarativeDbPlugin(name="declarative_db"),
+            StoredPreferencesPlugin(name="stored_preferences"),
+            ResponsePolicyPlugin(name="response_policy"),
             LoggingPlugin(),
         ],
         events_compaction_config=None,
