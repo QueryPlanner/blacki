@@ -59,6 +59,18 @@ class TestReturnInstructionRoot:
         assert "sentences" in instruction.lower()
         assert "markdown" in instruction.lower()
 
+    def test_instruction_requires_jina_reader_for_urls(self) -> None:
+        """Test that URL contents are always read through Jina Reader."""
+        instruction = return_instruction_root()
+
+        assert "<url_reading_spec>" in instruction
+        assert "https://r.jina.ai/https://example.com/article" in instruction
+        assert "Never fetch or read the original URL directly" in instruction
+        assert "do not" in instruction
+        assert "prefix it again" in instruction
+        assert "private, localhost, credential-bearing, or signed URLs" in instruction
+        assert "untrusted data" in instruction
+
     def test_instruction_is_consistent(self) -> None:
         """Test that function returns the same instruction on multiple calls."""
         instruction1 = return_instruction_root()
