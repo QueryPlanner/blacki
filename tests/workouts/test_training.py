@@ -337,6 +337,16 @@ class TestTrainingTools:
             "status"
         ] == "error"
 
+        # Invalid explicit start date must not silently become today
+        config = {
+            "days": [{"cycle_day": 1, "session_type": "rest"}],
+            "cycle_length_days": 1,
+            "starts_on": "definitely-not-a-real-date",
+        }
+        result = await set_training_program(mock_tool_context, config)
+        assert result["status"] == "error"
+        assert "Could not understand date" in result["message"]
+
         # Duplicate cycle day
         config = {
             "days": [
@@ -611,10 +621,19 @@ class TestTrainingRegistryAndPrompt:
             assert name in tool_names
 
     def test_prompt_guidance_for_training(self) -> None:
-        """The system prompt must contain references to training-program specs."""
-        from blacki.prompt import return_instruction_root
+        """A workout request should load the training-program policy."""
+        from blacki.prompt import build_domain_instruction
 
-        prompt = return_instruction_root()
+        tool_names = {
+            "set_training_program",
+            "get_todays_training",
+            "log_training",
+            "advance_training_cycle",
+            "get_training_history",
+            "get_training_metrics",
+            "update_training_metrics",
+        }
+        prompt = build_domain_instruction("Show today's workout", tool_names)
         assert "training-program" in prompt
         assert "set_training_program" in prompt
         assert "get_todays_training" in prompt
@@ -1265,6 +1284,14 @@ class TestFullTestCoverageFillers:
         assert (
             await log_training(mock_tool_context, "rest", completion_status="invalid")
         )["status"] == "error"
+
+        invalid_date_result = await log_training(
+            mock_tool_context,
+            "rest",
+            workout_date="definitely-not-a-real-date",
+        )
+        assert invalid_date_result["status"] == "error"
+        assert "Could not understand date" in invalid_date_result["message"]
 
         # cycle_day is None, should default to active program state (Line 448)
         program = TrainingProgram(

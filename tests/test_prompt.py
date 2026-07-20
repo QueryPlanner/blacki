@@ -1,197 +1,582 @@
 # mypy: disable-error-code="no-untyped-def"
-"""Unit tests for prompt definition functions."""
+"""Tests for layered prompt assembly and conditional policy routing."""
 
-from datetime import date
+from datetime import UTC, datetime
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
 from conftest import MockReadonlyContext
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 
 from blacki.prompt import (
+    DomainPolicyPlugin,
+    ResponsePolicyPlugin,
+    build_domain_instruction,
+    compact_response_text,
     return_description_root,
     return_global_instruction,
     return_instruction_root,
+    select_domain_policy_names,
+)
+
+ALL_DOMAIN_TOOLS = frozenset(
+    {
+        "log_meal",
+        "get_calorie_summary",
+        "set_training_program",
+        "get_todays_training",
+        "log_training",
+        "advance_training_cycle",
+        "get_training_history",
+        "get_training_metrics",
+        "update_training_metrics",
+        "schedule_reminder",
+        "list_reminders",
+        "cancel_reminder",
+        "exa_search",
+        "brave_search",
+    }
 )
 
 
-class TestReturnDescriptionRoot:
-    """Tests for return_description_root function."""
+def _user_content(text: str) -> types.Content:
+    return types.Content(role="user", parts=[types.Part.from_text(text=text)])
 
-    def test_returns_non_empty_string(self) -> None:
-        """Test that function returns a non-empty description string."""
+
+def _request_with_tools(*tool_names: str) -> LlmRequest:
+    declarations = [types.FunctionDeclaration(name=name) for name in tool_names]
+    request = LlmRequest()
+    request.tools_dict = {name: cast(Any, object()) for name in tool_names}
+    request.config.tools = [
+        types.Tool(function_declarations=declarations),
+        types.Tool(),
+    ]
+    return request
+
+
+class TestStablePromptLayers:
+    """Verify the safety, temporal, and core behavior layers."""
+
+    def test_description_is_short_and_specific(self) -> None:
         description = return_description_root()
 
-        assert isinstance(description, str)
-        assert len(description) > 0
+        assert "privacy-conscious" in description
+        assert "tracking" in description
 
-    def test_description_content(self) -> None:
-        """Test that description is a non-empty string with meaningful content."""
-        description = return_description_root()
-
-        # Description should be a non-empty string (flexible for any agent name)
-        assert isinstance(description, str)
-        assert len(description) > 0
-        # Should contain at least some alphabetic characters
-        assert any(c.isalpha() for c in description)
-
-    def test_description_is_consistent(self) -> None:
-        """Test that function returns the same description on multiple calls."""
-        description1 = return_description_root()
-        description2 = return_description_root()
-
-        assert description1 == description2
-
-
-class TestReturnInstructionRoot:
-    """Tests for return_instruction_root function."""
-
-    def test_returns_non_empty_string(self) -> None:
-        """Test that function returns a non-empty instruction string."""
+    def test_core_has_one_formatting_rule_and_compact_tool_policy(self) -> None:
         instruction = return_instruction_root()
 
-        assert isinstance(instruction, str)
-        assert len(instruction) > 0
+        assert instruction.count("Markdown") == 1
+        assert "Use concise conversational prose" in instruction
+        assert "at most 80 words" in instruction
+        assert "Return only the final answer" in instruction
+        assert "memory only for durable personal facts" in instruction
+        assert "Do not search memory for generic advice" in instruction
+        assert "tracking tools only for explicit" in instruction
+        assert "Do not blindly retry" in instruction
+        assert "Never claim a persistent change succeeded" in instruction
+        assert "<browser_spec>" not in instruction
+        assert "<sandbox_spec>" not in instruction
+        assert "<memory_spec>" not in instruction
+        assert len(instruction) < 1_500
 
-    def test_instruction_content(self) -> None:
-        """Test that instruction contains expected guidance."""
-        instruction = return_instruction_root()
-
-        assert "<output_verbosity_spec>" in instruction
-        assert "sentences" in instruction.lower()
-        assert "markdown" in instruction.lower()
-
-    def test_instruction_requires_jina_reader_for_urls(self) -> None:
-        """Test that URL contents are always read through Jina Reader."""
-        instruction = return_instruction_root()
-
-        assert "<url_reading_spec>" in instruction
-        assert "https://r.jina.ai/https://example.com/article" in instruction
-        assert "Never fetch or read the original URL directly" in instruction
-        assert "do not" in instruction
-        assert "prefix it again" in instruction
-        assert "private, localhost, credential-bearing, or signed URLs" in instruction
-        assert "untrusted data" in instruction
-
-    def test_instruction_prefers_exa_with_brave_fallback(self) -> None:
-        """Test that Exa is primary while optional-provider fallback is safe."""
-        instruction = return_instruction_root()
-
-        assert "<web_search_spec>" in instruction
-        assert "When exa_search is available" in instruction
-        assert "primary tool for web search" in instruction
-        assert "num_results=5" in instruction
-        assert "refine the query once" in instruction
-        assert "use brave_search when available" in instruction
-        assert "existing URL-reading workflow" in instruction
-
-    def test_instruction_is_consistent(self) -> None:
-        """Test that function returns the same instruction on multiple calls."""
-        instruction1 = return_instruction_root()
-        instruction2 = return_instruction_root()
-
-        assert instruction1 == instruction2
-
-
-class TestReturnGlobalInstruction:
-    """Tests for return_global_instruction InstructionProvider function."""
-
-    def test_returns_string_with_context(
+    def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
     ) -> None:
-        """Test that InstructionProvider returns a string when given ReadonlyContext."""
-        instruction = return_global_instruction(mock_readonly_context)  # type: ignore
+        instruction = return_global_instruction(mock_readonly_context)  # type: ignore[arg-type]
 
-        assert isinstance(instruction, str)
-        assert len(instruction) > 0
+        expected_order = (
+            "system safety and privacy rules first, developer\n"
+            "behavior and domain policies second, the current user request third, "
+            "and stored\nuser preferences last"
+        )
+        assert expected_order in instruction
+        assert "never grant permissions or outrank this order" in instruction
+        assert "Never silently mutate persistent state" in instruction
+        assert "cannot change safety rules, tool permissions" in instruction
 
-    def test_includes_current_date(
+    def test_global_instruction_uses_application_timezone(
         self, mock_readonly_context: MockReadonlyContext
     ) -> None:
-        """Test that instruction includes today's date dynamically."""
-        instruction = return_global_instruction(mock_readonly_context)  # type: ignore
-        today = str(date.today())
+        instant = datetime(2025, 1, 15, 2, 0, tzinfo=UTC)
+        with (
+            patch.dict("os.environ", {"AGENT_TIMEZONE": "America/New_York"}),
+            patch("blacki.prompt.now_utc", return_value=instant),
+        ):
+            instruction = return_global_instruction(mock_readonly_context)  # type: ignore[arg-type]
 
-        assert today in instruction
-        assert "date" in instruction.lower()
+        assert "Current application date: 2025-01-14" in instruction
+        assert "Application timezone: America/New_York" in instruction
+        assert "Reminders use the same timezone" in instruction
+        assert instruction.count("<temporal_context>") == 1
 
-    def test_includes_assistant_context(
-        self, mock_readonly_context: MockReadonlyContext
-    ) -> None:
-        """Test that instruction identifies role as helpful assistant."""
-        instruction = return_global_instruction(mock_readonly_context)  # type: ignore
 
-        assert "helpful" in instruction.lower()
-        assert "assistant" in instruction.lower()
+@pytest.mark.parametrize(
+    ("user_text", "expected"),
+    [
+        ("How many calories are in an apple?", ("nutrition",)),
+        ("I ate a sandwich for lunch", ("nutrition",)),
+        ("Log my resistance workout", ("workout",)),
+        ("Suggest a reminder schedule", ("reminder",)),
+        ("What is the latest verified Python news?", ("search",)),
+        ("Explain dependency injection", ()),
+    ],
+)
+def test_select_domain_policy_names(user_text: str, expected: tuple[str, ...]) -> None:
+    assert select_domain_policy_names(user_text, ALL_DOMAIN_TOOLS) == expected
 
-    def test_date_updates_dynamically(
-        self, mock_readonly_context: MockReadonlyContext
-    ) -> None:
-        """Test that date updates when function is called on different days."""
-        # Mock date.today() to return a specific date
-        with patch("blacki.prompt.date") as mock_date:
-            mock_date.today.return_value = date(2025, 1, 15)
-            instruction1 = return_global_instruction(mock_readonly_context)  # type: ignore
 
-            # Verify first date
-            assert "2025-01-15" in instruction1
+def test_router_does_not_describe_disabled_tools() -> None:
+    assert select_domain_policy_names("Log my lunch", frozenset()) == ()
+    assert build_domain_instruction("Log my lunch", frozenset()) == ""
 
-            # Change the mocked date
-            mock_date.today.return_value = date(2025, 2, 20)
-            instruction2 = return_global_instruction(mock_readonly_context)  # type: ignore
 
-            # Verify second date
-            assert "2025-02-20" in instruction2
-            assert instruction1 != instruction2
+class TestDomainPolicyAssembly:
+    """Verify conditional policy content for behavior-sensitive requests."""
 
-    def test_accepts_readonly_context_parameter(self) -> None:
-        """Test that function signature accepts ReadonlyContext as required by ADK."""
-        # Create a context with state to ensure it's accessible if needed
-        context = MockReadonlyContext(
-            agent_name="test_agent",
-            invocation_id="test-123",
-            state={"user_id": "user_456", "preferences": {"theme": "dark"}},
+    def test_nutrition_distinguishes_questions_from_logs(self) -> None:
+        instruction = build_domain_instruction(
+            "How many calories are in an apple?", {"log_meal"}
         )
 
-        # Function should execute without errors
-        instruction = return_global_instruction(context)  # type: ignore
+        assert (
+            "General\nnutrition questions must not create or change records"
+            in instruction
+        )
+        assert "food name\nby itself is ambiguous" in instruction
+        assert "never replace an invalid date with today" in instruction
 
-        # Verify it returns valid instruction
-        assert isinstance(instruction, str)
-        assert len(instruction) > 0
+    def test_workout_uses_canonical_system_without_implicit_advance(self) -> None:
+        instruction = build_domain_instruction(
+            "Log my completed workout but do not advance",
+            {"log_training", "advance_training_cycle"},
+        )
 
-    def test_context_state_accessible_but_unused(
-        self, mock_readonly_context: MockReadonlyContext
+        assert "training-program API is canonical" in instruction
+        assert "Logging never advances the\ncycle by implication" in instruction
+        assert "only when the user explicitly asks" in instruction
+        assert "fallback-only" not in instruction
+
+    def test_workout_mentions_legacy_only_when_exposed(self) -> None:
+        instruction = build_domain_instruction(
+            "Show my weekly workout split", {"log_training", "get_todays_workout"}
+        )
+
+        assert "Legacy split tools are fallback-only" in instruction
+
+    def test_reminder_discussion_is_read_only(self) -> None:
+        instruction = build_domain_instruction(
+            "Suggest a reminder schedule but do not save it", {"schedule_reminder"}
+        )
+
+        assert "discussing a possible schedule is read-only" in instruction
+        assert "Ask for a missing required\ntime" in instruction
+
+    @pytest.mark.parametrize(
+        ("tools", "expected", "unexpected"),
+        [
+            (
+                {"exa_search", "brave_search"},
+                "Use exa_search first",
+                "Use brave_search with five results",
+            ),
+            ({"exa_search"}, "Use exa_search with five results", "brave_search"),
+            ({"brave_search"}, "Use brave_search with five results", "exa_search"),
+        ],
+    )
+    def test_search_policy_mentions_only_enabled_search_tools(
+        self, tools: set[str], expected: str, unexpected: str
     ) -> None:
-        """Test that context state is accessible but not currently used in instruction.
+        instruction = build_domain_instruction("Find the latest news", tools)
 
-        This test documents that while the function receives ReadonlyContext with
-        state access, the current implementation doesn't use state. This allows
-        future enhancement to customize instructions based on session state.
-        """
-        # Create two contexts with different states
-        context1 = MockReadonlyContext(state={"user_tier": "premium"})
-        context2 = MockReadonlyContext(state={"user_tier": "free"})
+        assert expected in instruction
+        assert unexpected not in instruction
+        assert "Never use sandbox" in instruction
+        assert "browser automation" in instruction
+        assert "Use exactly one primary search call" in instruction
+        assert "never return to the primary provider" in instruction
+        assert "A successful result ends tool use" in instruction
 
-        instruction1 = return_global_instruction(context1)  # type: ignore
-        instruction2 = return_global_instruction(context2)  # type: ignore
 
-        # Currently, instructions should be identical (state not used)
-        # If future implementation uses state, this test will fail and should be updated
-        assert instruction1 == instruction2
+class TestDomainPolicyPlugin:
+    """Verify ADK integration uses the current invocation's user content."""
 
-        # Verify state is accessible if needed in future
-        assert context1.state["user_tier"] == "premium"
-        assert context2.state["user_tier"] == "free"
+    @pytest.mark.asyncio
+    async def test_appends_relevant_policy_from_user_content(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        request.tools_dict = {"log_meal": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(user_content=_user_content("Log yesterday's lunch"))
 
-    def test_instruction_format_consistency(
-        self, mock_readonly_context: MockReadonlyContext
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert "<nutrition_policy>" in str(request.config.system_instruction)
+
+    @pytest.mark.asyncio
+    async def test_ignores_missing_user_content(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+
+        await plugin.before_model_callback(
+            callback_context=SimpleNamespace(user_content=None),  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is None
+
+    @pytest.mark.asyncio
+    async def test_ignores_user_content_without_text(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        context = SimpleNamespace(user_content=types.Content(role="user", parts=[]))
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is None
+
+    @pytest.mark.asyncio
+    async def test_ignores_request_when_relevant_tools_are_disabled(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        context = SimpleNamespace(user_content=_user_content("Log my lunch"))
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is None
+
+    @pytest.mark.asyncio
+    async def test_search_initially_exposes_only_primary_and_hides_sandbox(
+        self,
     ) -> None:
-        """Test that instruction maintains consistent format across calls."""
-        instruction1 = return_global_instruction(mock_readonly_context)  # type: ignore
-        instruction2 = return_global_instruction(mock_readonly_context)  # type: ignore
+        plugin = DomainPolicyPlugin()
+        request = _request_with_tools(
+            "exa_search", "brave_search", "sandbox_execute_code"
+        )
+        opaque_tool = object()
+        assert request.config.tools is not None
+        request.config.tools.append(cast(Any, opaque_tool))
+        context = SimpleNamespace(
+            user_content=_user_content("Find the latest news"), state={}
+        )
 
-        # Should be identical when called at same time (same date)
-        assert instruction1 == instruction2
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
 
-        # Should contain expected structure
-        assert "\n" in instruction1  # Multi-line format
-        assert "Today's date:" in instruction1
+        assert set(request.tools_dict) == {
+            "exa_search",
+            "brave_search",
+            "sandbox_execute_code",
+        }
+        assert context.state["temp:blacki_search_primary"] == "exa_search"
+        assert request.config.tools is not None
+        first_tool = request.config.tools[0]
+        assert isinstance(first_tool, types.Tool)
+        declarations = first_tool.function_declarations
+        assert declarations is not None
+        assert [declaration.name for declaration in declarations] == ["exa_search"]
+        second_tool = request.config.tools[1]
+        assert isinstance(second_tool, types.Tool)
+        assert second_tool.function_declarations is None
+        assert request.config.tools[-1] is opaque_tool
+
+    @pytest.mark.asyncio
+    async def test_successful_search_removes_search_tools_on_next_model_call(
+        self,
+    ) -> None:
+        plugin = DomainPolicyPlugin()
+        state: dict[str, object] = {}
+        tool_context = SimpleNamespace(state=state)
+        await plugin.after_tool_callback(
+            tool=SimpleNamespace(name="exa_search"),  # type: ignore[arg-type]
+            tool_args={"query": "news"},
+            tool_context=tool_context,  # type: ignore[arg-type]
+            result={"status": "success", "results": [{"title": "result"}]},
+        )
+        request = _request_with_tools("exa_search", "brave_search")
+        context = SimpleNamespace(
+            user_content=_user_content("Find the latest news"), state=state
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert set(request.tools_dict) == {"exa_search", "brave_search"}
+        assert request.config.tools is not None
+        assert len(request.config.tools) == 1
+        remaining_tool = request.config.tools[0]
+        assert isinstance(remaining_tool, types.Tool)
+        assert remaining_tool.function_declarations is None
+
+    @pytest.mark.asyncio
+    async def test_failed_primary_exposes_fallback_then_stops(self) -> None:
+        plugin = DomainPolicyPlugin()
+        state: dict[str, object] = {}
+        tool_context = SimpleNamespace(state=state)
+        primary = SimpleNamespace(name="exa_search")
+        await plugin.after_tool_callback(
+            tool=primary,  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=tool_context,  # type: ignore[arg-type]
+            result={"status": "error", "results": []},
+        )
+        request = _request_with_tools("exa_search", "brave_search")
+        context = SimpleNamespace(
+            user_content=_user_content("Find the latest news"), state=state
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert set(request.tools_dict) == {"exa_search", "brave_search"}
+        assert request.config.tools is not None
+        first_tool = request.config.tools[0]
+        assert isinstance(first_tool, types.Tool)
+        declarations = first_tool.function_declarations
+        assert declarations is not None
+        assert [declaration.name for declaration in declarations] == ["brave_search"]
+
+        await plugin.after_tool_callback(
+            tool=SimpleNamespace(name="brave_search"),  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=tool_context,  # type: ignore[arg-type]
+            result={"status": "error", "results": []},
+        )
+        assert state
+        assert state["temp:blacki_search_status"] == "complete"
+
+    @pytest.mark.asyncio
+    async def test_search_budget_handles_single_provider_and_non_search_tool(
+        self,
+    ) -> None:
+        plugin = DomainPolicyPlugin()
+        state: dict[str, object] = {}
+        request = _request_with_tools("exa_search")
+        context = SimpleNamespace(
+            user_content=_user_content("Find the latest news"), state=state
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+        assert set(request.tools_dict) == {"exa_search"}
+
+        await plugin.after_tool_callback(
+            tool=SimpleNamespace(name="log_meal"),  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=SimpleNamespace(state=state),  # type: ignore[arg-type]
+            result={"status": "success"},
+        )
+        assert state == {"temp:blacki_search_primary": "exa_search"}
+
+        state["temp:blacki_search_status"] = "complete"
+        request = LlmRequest()
+        request.tools_dict = {"exa_search": cast(Any, object())}
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+        assert set(request.tools_dict) == {"exa_search"}
+
+    @pytest.mark.asyncio
+    async def test_search_execution_budget_uses_primary_fallback_and_cache(
+        self,
+    ) -> None:
+        plugin = DomainPolicyPlugin()
+        state: dict[str, object] = {"temp:blacki_search_primary": "exa_search"}
+        tool_context = SimpleNamespace(state=state)
+
+        assert (
+            await plugin.before_tool_callback(
+                tool=SimpleNamespace(name="log_meal"),  # type: ignore[arg-type]
+                tool_args={},
+                tool_context=tool_context,  # type: ignore[arg-type]
+            )
+            is None
+        )
+        assert (
+            await plugin.before_tool_callback(
+                tool=SimpleNamespace(name="exa_search"),  # type: ignore[arg-type]
+                tool_args={},
+                tool_context=tool_context,  # type: ignore[arg-type]
+            )
+            is None
+        )
+        wrong_primary = await plugin.before_tool_callback(
+            tool=SimpleNamespace(name="brave_search"),  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=tool_context,  # type: ignore[arg-type]
+        )
+        assert wrong_primary is not None
+        assert "primary" in str(wrong_primary["error"])
+
+        state["temp:blacki_search_status"] = "primary_failed"
+        wrong_fallback = await plugin.before_tool_callback(
+            tool=SimpleNamespace(name="exa_search"),  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=tool_context,  # type: ignore[arg-type]
+        )
+        assert wrong_fallback is not None
+        assert "fallback" in str(wrong_fallback["error"])
+
+        cached = {"status": "success", "results": [{"title": "result"}]}
+        state["temp:blacki_search_status"] = "complete"
+        state["temp:blacki_search_result"] = cached
+        assert (
+            await plugin.before_tool_callback(
+                tool=SimpleNamespace(name="exa_search"),  # type: ignore[arg-type]
+                tool_args={},
+                tool_context=tool_context,  # type: ignore[arg-type]
+            )
+            == cached
+        )
+
+        del state["temp:blacki_search_result"]
+        completed = await plugin.before_tool_callback(
+            tool=SimpleNamespace(name="exa_search"),  # type: ignore[arg-type]
+            tool_args={},
+            tool_context=tool_context,  # type: ignore[arg-type]
+        )
+        assert completed is not None
+        assert "already completed" in str(completed["error"])
+
+
+class TestResponsePolicyPlugin:
+    """Verify concise final-answer enforcement without altering tool calls."""
+
+    def test_compactor_keeps_short_plain_response(self) -> None:
+        assert compact_response_text("A short answer.") == "A short answer."
+
+    def test_compactor_selects_final_paragraph_and_removes_emphasis(self) -> None:
+        reasoning = " ".join(["Reasoning"] * 90)
+        final_answer = (
+            "The **latest release** is verified, supported, concise, and ready for "
+            "the user without the earlier reasoning preamble."
+        )
+
+        result = compact_response_text(f"{reasoning}\n\n{final_answer}")
+
+        assert result == final_answer.replace("**", "")
+
+    def test_compactor_truncates_long_single_paragraph(self) -> None:
+        result = compact_response_text(" ".join(["word"] * 100))
+
+        assert len(result.removesuffix("…").split()) == 80
+        assert result.endswith("…")
+
+    @pytest.mark.asyncio
+    async def test_plugin_compacts_default_final_response(self) -> None:
+        plugin = ResponsePolicyPlugin()
+        reasoning = " ".join(["Reasoning"] * 90)
+        final_answer = (
+            "This final paragraph has exactly the useful concise answer for the user "
+            "right now."
+        )
+        response = LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=f"{reasoning}\n\n{final_answer}")],
+            )
+        )
+        context = SimpleNamespace(user_content=_user_content("What is current?"))
+
+        await plugin.after_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_response=response,
+        )
+
+        assert response.content is not None
+        assert response.content.parts is not None
+        assert response.content.parts[0].text == final_answer
+
+    @pytest.mark.asyncio
+    async def test_plugin_removes_marked_thought_part(self) -> None:
+        plugin = ResponsePolicyPlugin()
+        response = LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Internal reasoning.", thought=True),
+                    types.Part.from_text(text="The **final answer** is concise."),
+                ],
+            )
+        )
+
+        await plugin.after_model_callback(
+            callback_context=SimpleNamespace(
+                user_content=_user_content("What is current?")
+            ),  # type: ignore[arg-type]
+            llm_response=response,
+        )
+
+        assert response.content is not None
+        assert response.content.parts is not None
+        assert len(response.content.parts) == 1
+        assert response.content.parts[0].text == "The final answer is concise."
+
+    @pytest.mark.asyncio
+    async def test_plugin_preserves_structured_or_nonfinal_responses(self) -> None:
+        plugin = ResponsePolicyPlugin()
+        long_text = " ".join(["detail"] * 100)
+        structured_response = LlmResponse(
+            content=types.Content(
+                role="model", parts=[types.Part.from_text(text=long_text)]
+            )
+        )
+        structured_context = SimpleNamespace(
+            user_content=_user_content("Give me a detailed table")
+        )
+        await plugin.after_model_callback(
+            callback_context=structured_context,  # type: ignore[arg-type]
+            llm_response=structured_response,
+        )
+        assert structured_response.content is not None
+        assert structured_response.content.parts is not None
+        assert structured_response.content.parts[0].text == long_text
+
+        partial_response = LlmResponse(partial=True)
+        await plugin.after_model_callback(
+            callback_context=SimpleNamespace(user_content=None),  # type: ignore[arg-type]
+            llm_response=partial_response,
+        )
+        empty_response = LlmResponse()
+        await plugin.after_model_callback(
+            callback_context=SimpleNamespace(user_content=None),  # type: ignore[arg-type]
+            llm_response=empty_response,
+        )
+
+        tool_response = LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_function_call(name="exa_search", args={})],
+            )
+        )
+        await plugin.after_model_callback(
+            callback_context=SimpleNamespace(user_content=None),  # type: ignore[arg-type]
+            llm_response=tool_response,
+        )
+
+        no_text_response = LlmResponse(content=types.Content(role="model", parts=[]))
+        await plugin.after_model_callback(
+            callback_context=SimpleNamespace(user_content=None),  # type: ignore[arg-type]
+            llm_response=no_text_response,
+        )

@@ -18,6 +18,7 @@ class TestToolConfig:
         assert config.sqlite_path is None
         assert config.sandbox_enabled is False
         assert config.skills_dir is None
+        assert config.legacy_workout_tools_enabled is False
 
     def test_custom_values(self) -> None:
         """Should accept custom values."""
@@ -28,6 +29,7 @@ class TestToolConfig:
             sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
             skills_dir=skills_path,
+            legacy_workout_tools_enabled=True,
         )
 
         assert config.exa_api_key == "exa-key"
@@ -35,6 +37,7 @@ class TestToolConfig:
         assert config.sqlite_path == "/tmp/blacki.db"
         assert config.sandbox_enabled is True
         assert config.skills_dir == skills_path
+        assert config.legacy_workout_tools_enabled is True
 
 
 class TestBuildTools:
@@ -209,6 +212,18 @@ class TestBuildToolConfigFromEnv:
             assert config.skills_dir is not None
             assert config.skills_dir.name == "skills"
 
+    def test_legacy_workout_tools_flag_from_env(self) -> None:
+        """Should hide legacy workout tools unless explicitly enabled."""
+        with patch.dict(
+            "os.environ", {"LEGACY_WORKOUT_TOOLS_ENABLED": "true"}, clear=False
+        ):
+            assert build_tool_config_from_env().legacy_workout_tools_enabled is True
+
+        with patch.dict(
+            "os.environ", {"LEGACY_WORKOUT_TOOLS_ENABLED": "false"}, clear=False
+        ):
+            assert build_tool_config_from_env().legacy_workout_tools_enabled is False
+
 
 class TestBuildBraveSearchTools:
     """Tests for _build_brave_search_tools."""
@@ -275,12 +290,23 @@ class TestBuildWorkoutTools:
     """Tests for _build_workout_tools."""
 
     def test_returns_tools_when_available(self) -> None:
-        """Should return workout tools when available."""
+        """Should expose only canonical training tools by default."""
         from blacki.registry import _build_workout_tools
 
         tools = _build_workout_tools()
 
+        assert len(tools) == 8
+        assert "log_training" in {tool.__name__ for tool in tools}
+        assert "log_workout" not in {tool.__name__ for tool in tools}
+
+    def test_returns_legacy_tools_only_when_enabled(self) -> None:
+        """Should expose weekly split fallbacks only behind the feature flag."""
+        from blacki.registry import _build_workout_tools
+
+        tools = _build_workout_tools(include_legacy=True)
+
         assert len(tools) == 12
+        assert "log_workout" in {tool.__name__ for tool in tools}
 
 
 class TestBuildSandboxTools:

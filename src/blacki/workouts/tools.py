@@ -167,7 +167,10 @@ async def log_workout(
     if not user_id:
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
-    parsed_date = parse_date(workout_date)
+    try:
+        parsed_date = parse_date(workout_date)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
 
     parsed_exercises, parse_error = _parse_workout_exercises(exercises)
     if parse_error:
@@ -310,7 +313,10 @@ async def set_training_program(
         )
 
     now = now_utc().isoformat(timespec="seconds")
-    starts_on = parse_date(program_config.get("starts_on"))
+    try:
+        starts_on = parse_date(program_config.get("starts_on"))
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
     program = TrainingProgram(
         user_id=user_id,
         name=str(program_config.get("name") or "Training Program"),
@@ -467,6 +473,11 @@ async def log_training(
     if parse_error:
         return {"status": "error", "message": parse_error}
 
+    try:
+        parsed_workout_date = parse_date(workout_date)
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+
     storage = get_storage()
     program = await storage.get_active_training_program(user_id)
     if cycle_day is None and program and program.state:
@@ -483,9 +494,10 @@ async def log_training(
         limit=1,
     )
     now = now_utc().isoformat(timespec="seconds")
+
     session = WorkoutSession(
         user_id=user_id,
-        workout_date=parse_date(workout_date),
+        workout_date=parsed_workout_date,
         split_name=split_name,
         notes=notes,
         created_at=now,

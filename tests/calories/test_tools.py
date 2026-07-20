@@ -69,6 +69,24 @@ async def test_log_meal_validation(mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["log", "summary", "edit"])
+async def test_invalid_dates_do_not_mutate_or_default_to_today(
+    operation: str, mock_tool_context
+) -> None:
+    """An unparseable explicit date should return an error before storage."""
+    invalid_date = "definitely-not-a-real-date"
+    if operation == "log":
+        result = await log_meal(mock_tool_context, "apple", 95, date=invalid_date)
+    elif operation == "summary":
+        result = await get_calorie_summary(mock_tool_context, date=invalid_date)
+    else:
+        result = await edit_meal(mock_tool_context, entry_id=1, date=invalid_date)
+
+    assert result["status"] == "error"
+    assert "Could not understand date" in result["message"]
+
+
+@pytest.mark.asyncio
 @patch("blacki.calories.tools.get_storage")
 @patch("blacki.calories.tools.get_preferences_storage")
 async def test_get_calorie_summary_single_day(

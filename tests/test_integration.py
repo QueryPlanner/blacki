@@ -53,6 +53,21 @@ class TestAppIntegration:
                 assert plugin is not None
                 assert hasattr(plugin, "__class__")
 
+    def test_prompt_plugins_preserve_precedence_order(self) -> None:
+        """Safety leads and stored preferences follow developer policy/schema."""
+        assert app.plugins is not None
+        plugin_names = [plugin.name for plugin in app.plugins]
+
+        assert plugin_names == [
+            "telegram_model_override",
+            "global_instruction",
+            "domain_policy",
+            "declarative_db",
+            "stored_preferences",
+            "response_policy",
+            "logging_plugin",
+        ]
+
 
 class TestAgentIntegration:
     """Pattern-based integration tests for Agent configuration."""

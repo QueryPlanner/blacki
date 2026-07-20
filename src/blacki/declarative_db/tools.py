@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from google.adk.tools import ToolContext
 
 from blacki.declarative_db.storage import get_declarative_db_storage
+from blacki.declarative_db.validation import parse_user_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -274,14 +276,12 @@ async def set_custom_instruction_override(
     instructions: str,
     tool_context: ToolContext,
 ) -> dict[str, Any]:
-    """Persist a custom instruction override for the user.
-
-    This instructions block is injected into system instruction prompts to guide
-    the model's persona, handling, or workflows dynamically, safely isolated from
-    the system prompt codebase.
+    """Save allow-listed style and unit preferences for the user.
 
     Args:
-        instructions: Raw text instructions to guide the model.
+        instructions: One ``key: value`` preference per line. Allowed keys are
+                      language, response_style, tone, and units. Example:
+                      ``tone: warm``.
         tool_context: ADK tool context.
 
     Returns:
@@ -297,17 +297,25 @@ async def set_custom_instruction_override(
         }
 
     try:
+        preferences = parse_user_preferences(instructions)
         storage = get_declarative_db_storage()
-        await storage.set_custom_instruction_override(str(user_id), instructions)
+        await storage.set_custom_instruction_override(
+            str(user_id), json.dumps(preferences, sort_keys=True)
+        )
         return {
             "status": "success",
-            "message": "Custom instructions successfully saved.",
+            "message": "User preferences successfully saved.",
         }
-    except Exception as e:
-        logger.exception("Failed to set instruction override")
+    except ValueError as e:
         return {
             "status": "error",
-            "message": f"Failed to save instructions: {e}",
+            "message": f"Invalid preferences: {e}",
+        }
+    except Exception as e:
+        logger.exception("Failed to set user preferences")
+        return {
+            "status": "error",
+            "message": f"Failed to save preferences: {e}",
         }
 
 
