@@ -121,7 +121,12 @@ def parse_user_preferences(preferences: str) -> dict[str, str]:
     instruction-like content prevents stored preferences from changing safety
     policy or tool permissions.
     """
-    normalized = unicodedata.normalize("NFKC", preferences).strip()
+    normalized = (
+        unicodedata.normalize("NFKC", preferences)
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .strip()
+    )
     if not normalized:
         raise ValueError("Preferences cannot be empty")
     if len(normalized) > MAX_USER_PREFERENCES_LENGTH:

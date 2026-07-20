@@ -106,6 +106,13 @@ class TestValidation:
             "units": "metric",
         }
 
+    @pytest.mark.parametrize("line_ending", ["\r\n", "\r"])
+    def test_normalizes_user_preference_line_endings(self, line_ending: str) -> None:
+        """Should accept preferences submitted with non-Unix line endings."""
+        result = parse_user_preferences(f"tone: warm{line_ending}units: metric")
+
+        assert result == {"tone": "warm", "units": "metric"}
+
     @pytest.mark.parametrize(
         ("preferences", "message"),
         [
