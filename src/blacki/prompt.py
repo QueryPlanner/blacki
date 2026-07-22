@@ -40,11 +40,9 @@ meaning of the current request.
 
 CORE_ASSISTANT_BEHAVIOR = """\
 <core_assistant_behavior>
-Be direct, accurate, and useful. Use concise conversational prose; avoid
-Markdown unless the user asks for structured formatting. Default to one to
-three sentences and at most 80 words unless the user requests detail; shorten
-the final answer to this limit before sending it. Do not restate the request or
-add background, alternatives, or a follow-up question unless they are needed.
+Be direct, accurate, and useful. Use concise conversational prose. Default to one to
+three sentences unless the user requests detail. Do not restate the request or add
+background, alternatives, or a follow-up question unless they are needed.
 Return only the final answer; do not expose reasoning, narrate tool use, or
 announce that you will summarize.
 
@@ -180,11 +178,6 @@ SEARCH_CONFLICTING_TOOL_NAMES = frozenset(
 SEARCH_STATUS_STATE_KEY = "temp:blacki_search_status"
 SEARCH_PRIMARY_STATE_KEY = "temp:blacki_search_primary"
 SEARCH_RESULT_STATE_KEY = "temp:blacki_search_result"
-STRUCTURED_RESPONSE_PATTERN = re.compile(
-    r"\b(?:detailed|in detail|step-by-step|list|table|markdown|structured|"
-    r"report|essay)\b",
-    re.IGNORECASE,
-)
 
 
 def return_description_root() -> str:
@@ -353,7 +346,7 @@ class DomainPolicyPlugin(BasePlugin):
 
 
 class ResponsePolicyPlugin(BasePlugin):
-    """Enforce the default concise final-answer contract at the response edge."""
+    """Remove marked thought text from eligible final responses."""
 
     def __init__(self, name: str = "response_policy") -> None:
         super().__init__(name=name)
@@ -361,6 +354,7 @@ class ResponsePolicyPlugin(BasePlugin):
     async def after_model_callback(
         self, *, callback_context: CallbackContext, llm_response: LlmResponse
     ) -> None:
+        _ = callback_context
         if llm_response.partial or llm_response.content is None:
             return
 
@@ -371,39 +365,9 @@ class ResponsePolicyPlugin(BasePlugin):
         if len(answer_parts) != 1:
             return
 
-        user_content = callback_context.user_content
-        user_text = (
-            " ".join(part.text for part in (user_content.parts or []) if part.text)
-            if user_content
-            else ""
-        )
-        if STRUCTURED_RESPONSE_PATTERN.search(user_text):
-            return
-
         llm_response.content.parts = [
             part for part in parts if not (part.text and part.thought)
         ]
-        answer_parts[0].text = compact_response_text(answer_parts[0].text or "")
-
-
-def compact_response_text(text: str, word_limit: int = 80) -> str:
-    """Keep the final answer, remove simple Markdown, and enforce a word cap."""
-    normalized = text.strip()
-    if len(normalized.split()) > word_limit:
-        paragraphs = [
-            paragraph.strip()
-            for paragraph in re.split(r"\n\s*\n", normalized)
-            if paragraph.strip()
-        ]
-        final_paragraph = paragraphs[-1]
-        if 10 <= len(final_paragraph.split()) <= word_limit:
-            normalized = final_paragraph
-
-    normalized = re.sub(r"\*\*([^*]+)\*\*", r"\1", normalized)
-    words = normalized.split()
-    if len(words) > word_limit:
-        normalized = " ".join(words[:word_limit]).rstrip(" ,;:") + "…"
-    return normalized
 
 
 def _apply_search_tool_budget(
