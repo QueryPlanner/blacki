@@ -16,7 +16,6 @@ from blacki.prompt import (
     DomainPolicyPlugin,
     ResponsePolicyPlugin,
     build_domain_instruction,
-    compact_response_text,
     return_description_root,
     return_global_instruction,
     return_instruction_root,
@@ -67,12 +66,14 @@ class TestStablePromptLayers:
         assert "privacy-conscious" in description
         assert "tracking" in description
 
-    def test_core_has_one_formatting_rule_and_compact_tool_policy(self) -> None:
+    def test_core_has_compact_tool_policy(self) -> None:
         instruction = return_instruction_root()
+        normalized_instruction = " ".join(instruction.split())
 
-        assert instruction.count("Markdown") == 1
+        assert "Markdown" not in instruction
+        assert "80 words" not in instruction
+        assert "one to three sentences" not in normalized_instruction
         assert "Use concise conversational prose" in instruction
-        assert "at most 80 words" in instruction
         assert "Return only the final answer" in instruction
         assert "memory only for durable personal facts" in instruction
         assert "Do not search memory for generic advice" in instruction
@@ -461,43 +462,19 @@ class TestDomainPolicyPlugin:
 
 
 class TestResponsePolicyPlugin:
-    """Verify concise final-answer enforcement without altering tool calls."""
-
-    def test_compactor_keeps_short_plain_response(self) -> None:
-        assert compact_response_text("A short answer.") == "A short answer."
-
-    def test_compactor_selects_final_paragraph_and_removes_emphasis(self) -> None:
-        reasoning = " ".join(["Reasoning"] * 90)
-        final_answer = (
-            "The **latest release** is verified, supported, concise, and ready for "
-            "the user without the earlier reasoning preamble."
-        )
-
-        result = compact_response_text(f"{reasoning}\n\n{final_answer}")
-
-        assert result == final_answer.replace("**", "")
-
-    def test_compactor_truncates_long_single_paragraph(self) -> None:
-        result = compact_response_text(" ".join(["word"] * 100))
-
-        assert len(result.removesuffix("…").split()) == 80
-        assert result.endswith("…")
+    """Verify thought filtering without altering final answers or tool calls."""
 
     @pytest.mark.asyncio
-    async def test_plugin_compacts_default_final_response(self) -> None:
+    async def test_plugin_preserves_long_markdown_final_response(self) -> None:
         plugin = ResponsePolicyPlugin()
-        reasoning = " ".join(["Reasoning"] * 90)
-        final_answer = (
-            "This final paragraph has exactly the useful concise answer for the user "
-            "right now."
-        )
+        final_answer = "**Summary:** " + " ".join(["detail"] * 100)
         response = LlmResponse(
             content=types.Content(
                 role="model",
-                parts=[types.Part.from_text(text=f"{reasoning}\n\n{final_answer}")],
+                parts=[types.Part.from_text(text=final_answer)],
             )
         )
-        context = SimpleNamespace(user_content=_user_content("What is current?"))
+        context = SimpleNamespace(user_content=_user_content("Explain the result"))
 
         await plugin.after_model_callback(
             callback_context=context,  # type: ignore[arg-type]
@@ -531,7 +508,7 @@ class TestResponsePolicyPlugin:
         assert response.content is not None
         assert response.content.parts is not None
         assert len(response.content.parts) == 1
-        assert response.content.parts[0].text == "The final answer is concise."
+        assert response.content.parts[0].text == "The **final answer** is concise."
 
     @pytest.mark.asyncio
     async def test_plugin_preserves_structured_or_nonfinal_responses(self) -> None:
