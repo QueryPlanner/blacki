@@ -68,10 +68,11 @@ class TestStablePromptLayers:
 
     def test_core_has_compact_tool_policy(self) -> None:
         instruction = return_instruction_root()
+        normalized_instruction = " ".join(instruction.split())
 
         assert "Markdown" not in instruction
         assert "80 words" not in instruction
-        assert "Default to one to\nthree sentences" in instruction
+        assert "one to three sentences" not in normalized_instruction
         assert "Use concise conversational prose" in instruction
         assert "Return only the final answer" in instruction
         assert "memory only for durable personal facts" in instruction
