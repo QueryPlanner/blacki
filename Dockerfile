@@ -43,8 +43,9 @@ RUN groupadd -g 1000 app && \
 # Set working directory
 WORKDIR /app
 
-# Pre-create the artifacts directory and set ownership
-RUN mkdir -p /app/src/.adk/artifacts && chown -R app:app /app
+# Pre-create persistent runtime directories and set ownership
+RUN mkdir -p /app/src/.adk/artifacts /app/data /app/logs && \
+    chown -R app:app /app
 
 # Copy application and virtual environment from builder
 COPY --from=builder --chown=app:app /app .

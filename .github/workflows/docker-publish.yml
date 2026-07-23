@@ -73,7 +73,9 @@ jobs:
 
   deploy:
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'QueryPlanner/blacki'
     runs-on: ubuntu-latest
     environment: production
     steps:

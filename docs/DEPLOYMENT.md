@@ -1,156 +1,173 @@
-# Deployment Guide
+# First VPS deployment
 
-You can deploy this Agent Platform using **Docker** (easiest compatibility) or **Bare Metal** (lowest resource usage).
+This is the supported first-deployment path: an Ubuntu or Debian VPS, Docker
+Engine, Docker Compose, one model provider, and Telegram long polling.
 
-## Option 0: Automated Server Setup (Infrastructure as Code)
+No inbound application port is required for Telegram. Blacki binds its HTTP
+port to the VPS loopback interface unless you explicitly opt out.
 
-To prepare a fresh Ubuntu/Debian server for production, run the included `setup.sh` script. This script automates:
-1.  **System Updates**: Ensures the OS is patched.
-2.  **Dependencies**: Installs Docker, Docker Compose, Git, UFW, and Fail2Ban.
-3.  **Security**: Configures a basic firewall (UFW) allowing SSH (22), HTTP (80/443), and the Agent port (8080).
-4.  **Log Rotation**: Prevents Docker logs from filling up the disk.
-5.  **Dedicated User**: Creates an `agent-runner` user for secure operation.
+## Before you start
 
-**Run on your server (as root):**
+You need:
 
-> [!WARNING]
-> Piping scripts directly from the internet to `bash` can be dangerous. Please review the script's contents before executing it to understand the actions it will perform on your server.
+- a VPS you can reach over SSH;
+- a user with permission to run Docker;
+- Git;
+- an [OpenRouter](https://openrouter.ai/keys) key or a
+  [Google AI Studio](https://aistudio.google.com/apikey) key; and
+- for Telegram, a token from
+  [BotFather](https://core.telegram.org/bots/features#botfather).
+
+Install Docker Engine from Docker's official instructions for
+[Ubuntu](https://docs.docker.com/engine/install/ubuntu/) or
+[Debian](https://docs.docker.com/engine/install/debian/). Install the
+[Docker Compose plugin](https://docs.docker.com/compose/install/linux/) from
+Docker's repository so it receives package updates.
+
+Verify the host:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-username>/google-adk-on-bare-metal/main/setup.sh | bash
-# OR if you have cloned the repo:
-sudo ./setup.sh
+docker --version
+docker compose version
+git --version
 ```
 
----
+!!! warning "Do not run setup.sh unattended"
 
-## Prerequisites (Both Methods)
+    The repository's legacy `setup.sh` performs broad root-level changes,
+    including an OS upgrade, firewall changes, Docker daemon configuration,
+    and docker-group membership. It is not the supported first-deployment path.
+    Review it line by line before using it on a disposable host.
 
-1.  **Managed Postgres Database**: You need a connection string (e.g., from Neon, AWS RDS, Supabase).
-2.  **OpenRouter or Google API Key**.
-3.  **AGENT_NAME**: A unique identifier for your agent service.
-4.  **Server**: A Linux server (Ubuntu/Debian recommended).
+## 1. Clone Blacki
 
----
-
-## CI/CD with GitHub Actions
-
-This repository includes a GitHub Actions workflow that automatically:
-1.  **Builds** a multi-platform Docker image (**AMD64 & ARM64**) on every push.
-2.  **Validates** code quality via `ruff`, `mypy`, and `pytest` before building.
-3.  **Caches** build layers using GitHub Actions cache (`type=gha`) for ultra-fast rebuilds.
-4.  **Pushes** the image to **GitHub Container Registry (GHCR)**.
-
-### Using GHCR Images
-
-Instead of building locally, you can pull the pre-built image from GHCR.
-
-1.  **Login to GHCR** (on your server):
-    ```bash
-    echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-    ```
-2.  **Pull the latest image**:
-    ```bash
-    docker pull ghcr.io/<your-org-or-username>/google-adk-on-bare-metal:main
-    ```
-
-### Automatic Deployment
-
-To automate deployment, update your `compose.yaml` to use the GHCR image:
-
-```yaml
-services:
-  agent:
-    image: ghcr.io/<your-org-or-username>/google-adk-on-bare-metal:main
-    # ... rest of config
-```
-
-Then your update command becomes:
 ```bash
-docker compose pull && docker compose up -d
+git clone https://github.com/QueryPlanner/blacki.git
+cd blacki
+cp .env.minimal .env
+chmod 600 .env
 ```
 
----
+The Docker build context is allowlisted by `.dockerignore`; `.env`, Git data,
+runtime state, logs, and unrelated local files are not sent to the builder.
 
-## Option 1: Docker (Recommended for Ease)
+## 2. Configure the assistant
 
-Best if you don't want to manage Python versions on the host.
+Open `.env` in your editor and replace every `replace-me` value:
 
-1.  **Clone & Config**
-    ```bash
-    git clone <your-repo-url>
-    cd google-adk-on-bare-metal
-    cp .env.example .env
-    # Edit .env with your DATABASE_URL and API Keys
-    ```
+```dotenv
+AGENT_NAME=my-blacki
+ROOT_AGENT_MODEL=openrouter/google/gemini-2.5-flash
+OPENROUTER_API_KEY=replace-me
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=replace-me
+```
 
-2.  **Run**
-    ```bash
-    docker compose up --build -d
-    ```
+`AGENT_NAME` is required. Keep only the API key for the provider you use. The
+full [configuration reference](base-infra/environment-variables.md) shows the
+Google AI Studio alternative and optional integrations.
 
-3.  **Update**
-    ```bash
-    git pull
-    docker compose up --build -d
-    ```
+The safe deployment defaults are:
 
----
+```dotenv
+BIND_ADDRESS=127.0.0.1
+HOST_PORT=8080
+SERVE_WEB_INTERFACE=false
+RELOAD_AGENTS=false
+RESTART_POLICY=unless-stopped
+```
 
-## Option 2: Bare Metal (Lowest Resources)
+## 3. Validate before starting
 
-Best for small servers (e.g., 512MB RAM) since you avoid Docker overhead.
-
-### 1. Install Dependencies
 ```bash
-sudo apt update
-sudo apt install -y python3-venv git
-# Ensure Python 3.13+ is installed (e.g., via deadsnakes PPA on Ubuntu)
-# sudo add-apt-repository ppa:deadsnakes/ppa
-# sudo apt install python3.13 python3.13-venv
-
-# Install uv (fast python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.cargo/env
+docker compose config --quiet
 ```
 
-### 2. Clone & Setup
+This catches missing required Compose values and invalid YAML without starting
+the service. It does not validate model or Telegram credentials.
+
+## 4. Build and start
+
 ```bash
-git clone <your-repo-url>
-cd google-adk-on-bare-metal
-
-# Install Python dependencies
-uv sync
-
-# Configure Env
-cp .env.example .env
-# Edit .env with your real keys!
+docker compose up --build -d
+docker compose ps
 ```
 
-### 3. Setup Systemd (Keep it running)
+The first build installs the locked Python dependencies and can take several
+minutes. `docker compose ps` should eventually report the `agent` service as
+healthy. The liveness probe opens a TCP connection inside the container and
+does not initialize optional memory providers.
 
-1.  Edit `systemd/agent.service` and check the paths (User, WorkingDirectory).
-2.  Install the service:
-    ```bash
-    sudo cp systemd/agent.service /etc/systemd/system/agent.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable agent
-    sudo systemctl start agent
-    ```
+If startup fails:
 
-### 4. Logs & Status
 ```bash
-sudo systemctl status agent
-sudo journalctl -u agent -f
+docker compose logs --tail=200 agent
 ```
 
-## Troubleshooting
+## 5. Verify the deployment
 
-### Permission Errors with Artifacts
-If you encounter `PermissionError: [Errno 13] Permission denied: '/app/src/.adk'` when running with Docker:
-1.  This usually happens because the container user (UID 1000) cannot write to the host volume mounted at `./src`.
-2.  **Fix:** Ensure you have rebuilt the image to include the latest permission fixes:
-    ```bash
-    docker compose up -d --build
-    ```
-3.  If that fails, ensure your host user has UID 1000 (run `id -u`).
+Inspect the application health details from the VPS:
+
+```bash
+curl --fail http://127.0.0.1:8080/health
+```
+
+The endpoint can report `degraded` when optional Mem0 memory is not configured.
+That does not prevent the container TCP liveness check or Telegram from
+running. Confirm the database check is healthy, then send `/start` to the bot.
+
+## Secure browser access
+
+The ADK web interface is a development interface and is disabled in the VPS
+sample. To inspect it temporarily:
+
+1. Set `SERVE_WEB_INTERFACE=true` in `.env`.
+2. Recreate the service with `docker compose up -d`.
+3. From your computer, open an SSH tunnel:
+
+   ```bash
+   ssh -L 8080:127.0.0.1:8080 your-user@your-vps
+   ```
+
+4. Open `http://127.0.0.1:8080` locally.
+
+Do not set `BIND_ADDRESS=0.0.0.0` just to expose the ADK interface directly to
+the internet. An authenticated reverse proxy is a separate deployment
+decision and is outside this guide.
+
+## Use a prebuilt image only when verified
+
+The source-build path above works without a container registry. If you publish
+an image from your own fork, verify its tag and visibility first, then set:
+
+```dotenv
+IMAGE=ghcr.io/your-owner/blacki:your-tag
+```
+
+Authenticate to GHCR if the package is private, then use:
+
+```bash
+docker compose pull
+docker compose up --no-build -d
+```
+
+`--no-build` makes the prebuilt-image path explicit. Do not assume that the
+QueryPlanner package is anonymously pullable; that has not been verified.
+
+## Important change for existing installations
+
+Older Compose defaults published port 8080 on all host interfaces, enabled the
+web UI and agent reload, and used `restart: always`. The new defaults are
+private and production-shaped.
+
+To retain an intentional old setting, add the corresponding override:
+
+```dotenv
+BIND_ADDRESS=0.0.0.0
+SERVE_WEB_INTERFACE=true
+RELOAD_AGENTS=true
+RESTART_POLICY=always
+```
+
+Review the security impact before exposing a host port. After the first
+successful start, continue with [Day-two operations](operations.md).

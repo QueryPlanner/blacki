@@ -1,0 +1,9 @@
+# Keep the Docker build context intentionally small.
+*
+
+!Dockerfile
+!entrypoint.sh
+!pyproject.toml
+!uv.lock
+!src/
+!src/**

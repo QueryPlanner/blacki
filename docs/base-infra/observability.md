@@ -1,155 +1,78 @@
-# Agent Observability with OpenTelemetry
+# Observability
 
-This project includes production-ready OpenTelemetry observability that provides consistent behavior across local development and deployed environments. The implementation automatically instruments LLM calls and application logs with minimal configuration while coexisting with ADK's internal telemetry infrastructure.
+Blacki currently provides local structured logs and local OpenTelemetry span
+files. It does not configure a remote OTLP exporter from environment variables
+alone.
 
-## What's Instrumented
+## Outputs
 
-- **LLM Operations**: Google Generative AI SDK calls with request/response details
-- **Structured Logging**: JSON logs with automatic trace correlation for Google Cloud Logging
-- **Agent Callbacks**: Lifecycle logging for agent start/end, model calls, and tool invocations
+Inside the container:
 
-## Key Features
+| File | Contents |
+| --- | --- |
+| `/app/logs/blacki-telemetry.log` | JSON application log records |
+| `/app/logs/blacki-traces.log` | JSON Lines OpenTelemetry spans |
 
-- **Consistent Setup**: Single `setup_opentelemetry()` function used across all environments (local and deployed)
-- **Instance-Level Tracking**: Unique `SERVICE_INSTANCE_ID` per process (PID + UUID) for collision-free identification
-- **Environment Grouping**: `SERVICE_NAMESPACE` automatically set to Terraform workspace in deployed environments (`default`, `dev`, `stage`, `prod`)
-- **Version Tracking**: `SERVICE_VERSION` set to Cloud Run revision ID for deployment correlation
-- **Google Cloud Integration**: Direct export to Google Cloud Trace (OTLP) and Cloud Logging
-- **Trace Correlation**: Logs automatically include trace context via `LoggingInstrumentor`
-- **Service Identification**: OpenTelemetry `service.name` set to `AGENT_NAME` environment variable
-- **Authentication**: Uses Application Default Credentials (ADC) for Google Cloud APIs
-
-## Configuration
-
-**Required environment variables:**
-- `AGENT_NAME`: OpenTelemetry service identifier (required)
-- `GOOGLE_CLOUD_PROJECT`: GCP project ID for trace and log export (required)
-- `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`: Capture LLM message content - `TRUE` or `FALSE` (required)
-
-**Optional variables:**
-- `GOOGLE_CLOUD_LOCATION`: Vertex AI region (default: `us-central1`)
-- `LOG_LEVEL`: Logging verbosity - `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default: `INFO`)
-- `TELEMETRY_NAMESPACE`: Service namespace for trace grouping (default: `local`, auto-set to workspace in deployed environments)
-
-See `.env.example` for complete configuration reference.
-
-## Usage
-
-Identical OpenTelemetry setup across local development and deployed environments:
-- Traces and logs automatically exported to Google Cloud
-- ADK web UI available locally (when `SERVE_WEB_INTERFACE=TRUE`)
-- **Production tip**: Set `LOG_LEVEL=INFO` to minimize logging costs
-
-## Viewing Traces and Logs
-
-### Google Cloud Console (Recommended)
-
-**[Cloud Trace](https://console.cloud.google.com/traces):** Filter by `AGENT_NAME`, view spans, timing, and generative AI events
-
-**[Logs Explorer](https://console.cloud.google.com/logs):** Query `logName="projects/{PROJECT_ID}/logs/{AGENT_NAME}-otel-logs"` for correlated logs
-
-### gcloud CLI
+Compose maps `/app/logs` to `./logs` on the host. Human-readable application
+logs also go to stdout and are available through:
 
 ```bash
-# Tail logs in real-time
-gcloud logging tail "resource.type=cloud_run_revision" --format=json
-
-# Filter by log name
-gcloud logging tail "logName:projects/{PROJECT_ID}/logs/{AGENT_NAME}-otel-logs"
-
-# View recent traces
-gcloud trace list --limit=10
+docker compose logs --follow agent
 ```
 
-### VS Code GCP Extension
+## Instrumentation
 
-Install the [Google Cloud Code extension](https://cloud.google.com/code/docs/vscode/install) to view logs and traces directly in your IDE.
+At startup Blacki:
 
-## Implementation Details
+1. sets `OTEL_RESOURCE_ATTRIBUTES`;
+2. instruments Google ADK with `GoogleADKInstrumentor`;
+3. configures stdout and JSON file logging; and
+4. registers a `TracerProvider` with `JSONFileSpanExporter`.
 
-**Functions:** `configure_otel_resource()` sets resource attributes, `setup_opentelemetry()` configures exporters
+The resource contains:
 
-**Components:** `GoogleGenAiSdkInstrumentor` (LLM ops), `LoggingInstrumentor` (trace context), `CloudLoggingExporter` (logs), `OTLPSpanExporter` (traces)
+| Attribute | Source |
+| --- | --- |
+| `service.name` | `AGENT_NAME` |
+| `service.namespace` | `TELEMETRY_NAMESPACE`, default `local` |
+| `service.version` | `K_REVISION`, default `local` |
+| `service.instance.id` | Process ID plus generated UUID |
 
-### Resource Attributes
+## Message content
 
-OpenTelemetry resource attributes uniquely identify your service instances in traces and logs:
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` is the safe default.
+Capturing prompts and responses can expose personal data, credentials, and
+tool results. Enable it only for a deliberate debugging session with an
+appropriate retention policy.
 
-| Attribute | Source | Example | Description |
-|-----------|--------|---------|-------------|
-| `service.name` | `AGENT_NAME` env var | `your-agent-name` | Service identifier (set explicitly in `.env`) |
-| `service.namespace` | `TELEMETRY_NAMESPACE` env var | `default`/`dev`/`stage`/`prod` (deployed) or `local` (dev) | Environment (via Terraform workspace) grouping for traces |
-| `service.version` | `K_REVISION` env var | `your-agent-name-00042-abc` (deployed) or `local` (dev) | Cloud Run revision or local dev indicator |
-| `service.instance.id` | Generated | `worker-1234-a1b2c3d4e5f6` | Unique process instance (PID + UUID) |
-| `gcp.project_id` | `GOOGLE_CLOUD_PROJECT` env var | `my-project-id` | GCP project for resource correlation |
+## Remote export is not configured
 
-**Local Development:**
-- `service.namespace`: Defaults to `"local"` (customize via `TELEMETRY_NAMESPACE` for multi-developer disambiguation)
-- `service.version`: Set to `"local"`
-- `service.instance.id`: Unique per server restart (includes UUID to prevent collisions)
+Although OTLP exporter packages are installed, `setup_tracing()` currently
+registers only the local `JSONFileSpanExporter`. Setting
+`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, or related
+variables does not add a network span processor.
 
-**Deployed Environments:**
-- `service.namespace`: Automatically set to Terraform workspace name (`default`, `dev`, `stage`, `prod`)
-- `service.version`: Automatically set to Cloud Run revision ID
-- `service.instance.id`: Unique per container instance
+Remote OTLP support requires an implementation change with tests. Do not assume
+that traces reach Axiom, Honeycomb, Langfuse, Jaeger, or Google Cloud because an
+environment variable is present.
 
-## Callback Logging
+## Retention
 
-`LoggingCallbacks` (in `callbacks.py`) logs agent lifecycle events (start/end, model calls, tool invocations) with automatic trace context correlation.
+The application files append and have no built-in size or time rotation.
+Docker's stdout log-driver rotation does not rotate `./logs/*.log`.
 
-## Vendor Neutrality
+Monitor them:
 
-This project uses **OpenTelemetry (OTel)** as the standard protocol for observability. You are **not locked into any specific vendor** — configure your OTLP backend using standard OpenTelemetry environment variables.
-
-### Configuration
-
-Set the standard `OTEL_EXPORTER_OTLP_*` environment variables for your chosen backend:
-
-**Example: Axiom**
 ```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://api.axiom.co
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://api.axiom.co/v1/traces
-OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://api.axiom.co/v1/logs
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer YOUR_API_TOKEN,X-Axiom-Dataset=YOUR_DATASET
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+du -sh logs
 ```
 
-**Example: Jaeger (Local)**
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-```
+Configure host-side retention before long-running use. Archive or clear files
+only during a maintenance window after preserving anything needed for an
+incident.
 
-**Example: Honeycomb**
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://api.honeycomb.io
-OTEL_EXPORTER_OTLP_HEADERS=x-honeycomb-team=YOUR_API_KEY
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-```
+## Failure behavior
 
-**Example: Langfuse**
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com/api/public/otel
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic BASE64_ENCODED_KEYS
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-```
-
-For complete OTLP configuration options, see the [OpenTelemetry Environment Variables specification](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
-
-## Message Content Capture
-
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` controls LLM content capture:
-- `TRUE`: Full content (debugging, higher costs, sensitive data)
-- `FALSE`: Metadata only (production, lower costs, privacy)
-
-> [!IMPORTANT]
-> Must be explicitly set to `TRUE` for ADK to capture conversation content
-
-## Resources
-
-- [Vertex AI | Agent Engine | Trace an Agent](https://cloud.google.com/vertex-ai/generative-ai/docs/agent-engine/manage/tracing)
-- [Google Cloud Observability | Instrument ADK Applications with OpenTelemetry](https://cloud.google.com/stackdriver/docs/instrumentation/ai-agent-adk)
-- [Google Cloud Trace | View Generative AI Events](https://cloud.google.com/trace/docs/finding-traces#view_generative_ai_events)
-- [OpenTelemetry | Generative AI Instrumentation](https://opentelemetry.io/blog/2024/otel-generative-ai/)
-- [OpenTelemetry | Semantic Conventions for Generative AI](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
-- [OpenTelemetry Environment Variables](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/)
+If the application cannot create its log directory or file handler, it reports
+the error and continues with stdout logging. Treat that as degraded
+observability, not a successful persistence setup.

@@ -1,145 +1,94 @@
-# Telegram Bot Setup Guide
+# Telegram setup
 
-This guide walks you through setting up a Telegram bot for the blacki agent.
+Blacki connects to Telegram with long polling. It does not implement webhook
+mode, so you do not need a public domain, TLS certificate, or inbound Telegram
+port.
 
-## Prerequisites
+## 1. Create a bot
 
-- A Telegram account
-- Access to the blacki server environment
+1. Open the verified
+   [BotFather](https://core.telegram.org/bots/features#botfather) account in
+   Telegram.
+2. Send `/newbot`.
+3. Choose a display name and a username ending in `bot`.
+4. Copy the token.
 
-## Step 1: Create a Telegram Bot
+Treat the token like a password. Anyone with it can control the bot.
 
-1. **Open Telegram** and search for **@BotFather** (the official Telegram bot for creating bots)
+## 2. Configure Blacki
 
-2. **Start a conversation** with @BotFather by clicking "Start" or sending `/start`
+In `.env`:
 
-3. **Create a new bot** by sending the command:
-   ```
-   /newbot
-   ```
-
-4. **Choose a name** for your bot (this is the display name, e.g., "Blacki AI Assistant")
-
-5. **Choose a username** for your bot (must end with `bot`, e.g., `blacki_ai_bot`)
-
-6. **Copy the API token** that @BotFather gives you. It looks like:
-   ```
-   1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
-   ```
-
-   ⚠️ **Keep this token secret!** Anyone with this token can control your bot.
-
-## Step 2: Configure the Bot
-
-Add the token to your `.env` file:
-
-```bash
-# Telegram Configuration
+```dotenv
 TELEGRAM_ENABLED=true
-TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyz
+TELEGRAM_BOT_TOKEN=replace-me
+TELEGRAM_TOOL_NOTIFICATIONS=false
 ```
 
-## Step 3: Deploy
+Replace `replace-me` with the token from BotFather. Blacki validates that the
+token is present and follows Telegram's `number:string` format at startup.
 
-After updating the `.env` file:
+At least one model provider must also be configured. See
+[Configuration](base-infra/environment-variables.md).
+
+## 3. Start or recreate the service
+
+Docker Compose:
 
 ```bash
-# If running locally
-uv run python -m blacki.server
-
-# If running with Docker
-docker compose up -d
+docker compose up --build -d
+docker compose logs --tail=100 agent
 ```
 
-## Step 4: Test the Bot
+Local Python:
 
-1. **Find your bot** on Telegram by searching for the username you chose
-2. **Start a conversation** by clicking "Start" or sending `/start`
-3. **Send a message** and verify the bot responds
+```bash
+uv run python -m blacki.server
+```
 
-## Bot Commands
+Look for startup logs confirming that the Telegram configuration was detected
+and polling started.
 
-The blacki Telegram bot supports these commands:
+## 4. Verify
 
-| Command | Description |
-|---------|-------------|
-| `/start` | Start a conversation and see welcome message |
-| `/help` | Show available commands and usage |
-| `/clear` | Clear conversation for fresh start |
+Open the bot in Telegram and send:
 
-## Security Considerations
+| Command | Behavior |
+| --- | --- |
+| `/start` | Show the welcome message |
+| `/help` | Show the supported command summary |
 
-### Token Security
+Then send a normal message and confirm the model responds. Blacki does not
+currently implement a `/clear` command.
 
-- **Never commit** the bot token to git
-- Use environment variables or secret management
-- If the token is compromised, regenerate it via @BotFather:
-  ```
-  /mybots
-  → Select your bot
-  → API Token
-  → Revoke Token
-  ```
+## Tool notifications
 
-### Bot Privacy
+`TELEGRAM_TOOL_NOTIFICATIONS=true` sends short tool-use notices for Telegram
+turns. It is opt-in because it adds chat traffic and may expose tool names.
 
-By default, bots can only see:
-- Messages that start with `/` (commands)
-- Messages where the bot is mentioned
-- Messages in groups where the bot has privacy mode disabled
+## Security
 
-For 1-on-1 conversations, the bot sees all messages.
+- Never paste the token into an issue, log, command history, or committed file.
+- Keep `.env` mode `600`.
+- If the token is exposed, revoke and regenerate it through BotFather.
+- Group privacy settings are controlled through BotFather; review them before
+  adding the bot to a group.
 
 ## Troubleshooting
 
-### Bot Not Responding
+If the bot does not respond:
 
-1. **Check the logs:**
-   ```bash
-   docker compose logs -f
-   ```
+```bash
+docker compose ps
+docker compose logs --tail=200 agent
+```
 
-2. **Verify the token:**
-   - Make sure `TELEGRAM_ENABLED=true`
-   - Check that the token is correct in `.env`
+Check that:
 
-3. **Check network connectivity:**
-   - The bot needs to reach Telegram's API servers
-   - If behind a firewall, ensure outbound HTTPS is allowed
+- `TELEGRAM_ENABLED=true`;
+- the token contains no quotes or trailing whitespace;
+- one real model API key is active;
+- the model identifier matches that provider; and
+- the VPS can make outbound HTTPS requests.
 
-### Bot Responds with Errors
-
-1. **Check LLM configuration:**
-   - Verify `OPENROUTER_API_KEY` is set
-   - Verify `ROOT_AGENT_MODEL` is correct
-
-2. **Check database:**
-   - Verify `DATABASE_URL` is correct
-   - Ensure the database is accessible
-
-## Advanced Configuration
-
-### Custom Model for Telegram
-
-To use a different model for Telegram responses, you can modify the bot's `model` parameter in `server.py`.
-
-### Webhook Mode (Production)
-
-For high-traffic bots, consider using webhooks instead of polling:
-
-1. Set up a domain with HTTPS
-2. Configure `TELEGRAM_WEBHOOK_URL` in `.env`
-3. Modify `bot.py` to use webhook mode
-
-Webhook mode is more efficient but requires:
-- A public domain
-- Valid SSL certificate
-- Port 443 accessible from the internet
-
-## Rate Limits
-
-Telegram has rate limits for bots:
-- ~30 messages/second to the same group
-- ~1 message/second to the same user
-
-The bot handles these automatically with the `python-telegram-bot` library.
+See [Troubleshooting](troubleshooting.md) for startup and model failures.

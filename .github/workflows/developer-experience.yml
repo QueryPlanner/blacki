@@ -1,0 +1,104 @@
+name: Developer Experience
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".dockerignore"
+      - ".env.example"
+      - ".env.minimal"
+      - ".github/workflows/developer-experience.yml"
+      - ".github/workflows/docker-publish.yml"
+      - "Dockerfile"
+      - "README.md"
+      - "compose.yaml"
+      - "docs/**"
+      - "entrypoint.sh"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "setup.sh"
+      - "systemd/**"
+      - "tests/test_deployment_contract.py"
+      - "uv.lock"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".dockerignore"
+      - ".env.example"
+      - ".env.minimal"
+      - ".github/workflows/developer-experience.yml"
+      - ".github/workflows/docker-publish.yml"
+      - "Dockerfile"
+      - "README.md"
+      - "compose.yaml"
+      - "docs/**"
+      - "entrypoint.sh"
+      - "mkdocs.yml"
+      - "pyproject.toml"
+      - "setup.sh"
+      - "systemd/**"
+      - "tests/test_deployment_contract.py"
+      - "uv.lock"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: developer-experience-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  documentation:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install documentation dependencies
+        run: uv sync --locked --only-group docs
+
+      - name: Build documentation in strict mode
+        run: uv run --no-sync mkdocs build --strict
+
+  deployment-contract:
+    name: Validate deployment contract
+    runs-on: ubuntu-latest
+    env:
+      ENV_FILE: .env.minimal
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install project dependencies
+        run: uv sync --locked
+
+      - name: Run deployment contract tests
+        run: uv run pytest tests/test_deployment_contract.py
+
+      - name: Validate shell syntax
+        run: bash -n setup.sh entrypoint.sh
+
+      - name: Validate Docker Compose
+        run: docker compose --env-file .env.minimal config --quiet
+
+      - name: Build the production image
+        run: docker build --tag blacki:contract-test .
