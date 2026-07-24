@@ -61,6 +61,21 @@ stored facts, or measurements.
 </core_assistant_behavior>"""
 
 
+TASK_WORKER_BEHAVIOR = f"""\
+{CORE_ASSISTANT_BEHAVIOR}
+
+<delegated_task_worker>
+Complete only the task delegated by the root agent. You have the same user-facing
+tools and privileges as the root agent, including access to the same session sandbox
+when sandbox tools are enabled. Shared access does not grant additional authority.
+
+Do not create or delegate to another worker. Do not broaden the task, repeat a
+state-changing tool call, or retry a non-idempotent operation without evidence that
+it is safe. Respect the original user's authorization and report a concise result to
+the root agent when the delegated task is complete.
+</delegated_task_worker>"""
+
+
 NUTRITION_POLICY = """\
 <nutrition_policy>
 Use nutrition tracking only when the user explicitly logs, edits, deletes, or
@@ -188,6 +203,11 @@ def return_description_root() -> str:
 def return_instruction_root() -> str:
     """Return stable developer behavior shared by every request."""
     return CORE_ASSISTANT_BEHAVIOR
+
+
+def return_instruction_task_worker() -> str:
+    """Return behavior for the same-privilege delegated task worker."""
+    return TASK_WORKER_BEHAVIOR
 
 
 def return_global_instruction(ctx: ReadonlyContext) -> str:
