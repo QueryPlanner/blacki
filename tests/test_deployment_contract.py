@@ -256,12 +256,16 @@ def test_compose_env_serializer_preserves_secret_characters(tmp_path: Path) -> N
         'backslash\\\\ space & equals="\n'
     )
 
-    subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+    image = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
         [DOCKER_EXECUTABLE, "image", "inspect", "blacki:contract-test"],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if image.returncode != 0:
+        pytest.skip(
+            "runtime round-trip requires the deployment-contract production image"
+        )
     try:
         runtime = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
             [
@@ -354,6 +358,10 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         "validate_observability_environment",
     ):
         assert command in workflow
+
+    assert workflow.index("docker build --tag blacki:contract-test .") < (
+        workflow.index("pytest tests/test_deployment_contract.py")
+    )
 
 
 def test_smoke_overlay_is_isolated_and_side_effect_free() -> None:
