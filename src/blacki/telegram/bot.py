@@ -18,6 +18,7 @@ from .streaming import split_long_message
 from .types import (
     BotCommand,
     CallbackQuery,
+    ChatType,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -261,6 +262,7 @@ class TelegramBot:
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             user_message=user_message,
+            chat_type=message.chat.type,
         )
 
     async def _route_non_text_message(self, message: Message) -> None:
@@ -293,6 +295,7 @@ class TelegramBot:
             file_id=file_id,
             file_name=file_name,
             caption=message.caption,
+            chat_type=message.chat.type,
         )
 
     async def _handle_command(self, message: Message, command: str) -> None:
@@ -481,6 +484,7 @@ class TelegramBot:
         file_id: str,
         file_name: str,
         caption: str | None,
+        chat_type: ChatType = ChatType.PRIVATE,
     ) -> None:
         """Handle incoming file uploads, save to sandbox, and message agent."""
         from blacki.sandbox.manager import get_sandbox_manager
@@ -493,6 +497,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            chat_type=chat_type,
         )
 
         manager = get_sandbox_manager()
@@ -575,6 +580,7 @@ class TelegramBot:
         chat_id: int,
         message_thread_id: int | None,
         user_message: str,
+        chat_type: ChatType = ChatType.PRIVATE,
     ) -> None:
         """Handle a regular text message with typing + final response."""
         session_identity = self._build_session_identity(
@@ -595,6 +601,7 @@ class TelegramBot:
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
+                chat_type=chat_type,
             )
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
@@ -642,6 +649,12 @@ class TelegramBot:
         logger.info("Handling scheduled reminder %s for chat %s", reminder.id, chat_id)
 
         try:
+            from blacki.routes.scheduling import (
+                build_scheduled_route_prompt,
+                parse_route_update_event,
+            )
+
+            route_event = parse_route_update_event(reminder.message)
             await self.api.send_chat_action(
                 chat_id=chat_id,
                 action="typing",
@@ -652,13 +665,19 @@ class TelegramBot:
                 chat_id=chat_id_str,
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
+                chat_type=(ChatType.PRIVATE if chat_id > 0 else ChatType.SUPERGROUP),
+            )
+            message_text = (
+                build_scheduled_route_prompt(route_event)
+                if route_event
+                else f"[Scheduled Event] {reminder.message}"
             )
             final_response = await self.runtime.run_user_turn(
                 locator=SessionLocator(
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
                 ),
-                message_text=f"[Scheduled Event] {reminder.message}",
+                message_text=message_text,
                 state=state,
             )
             await self._send_final_response(
@@ -672,7 +691,15 @@ class TelegramBot:
                 reminder.id,
                 chat_id,
             )
-            text = format_for_telegram(f"⏰ *Reminder*\n\n{reminder.message}")
+            from blacki.routes.scheduling import parse_route_update_event
+
+            route_event = parse_route_update_event(reminder.message)
+            fallback_message = (
+                "⏰ I couldn't refresh your scheduled route right now."
+                if route_event
+                else f"⏰ *Reminder*\n\n{reminder.message}"
+            )
+            text = format_for_telegram(fallback_message)
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
@@ -757,12 +784,14 @@ class TelegramBot:
         chat_id: str,
         message_thread_id: int | None,
         conversation_key: str,
+        chat_type: ChatType = ChatType.PRIVATE,
     ) -> dict[str, str]:
         """Build explicit session state for ADK callbacks and observability."""
         session_state: dict[str, str] = {
             "user_id": f"telegram-{conversation_key}",
             "telegram_chat_id": chat_id,
             "telegram_conversation_key": conversation_key,
+            "telegram_chat_type": chat_type.value,
         }
         if message_thread_id is not None:
             session_state["telegram_thread_id"] = str(message_thread_id)

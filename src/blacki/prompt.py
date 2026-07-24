@@ -138,6 +138,18 @@ options. For current driving traffic use DRIVE, now, and BEST_GUESS. Use NONE
 as the traffic model for non-driving modes. Treat avoid options as preferences,
 not guarantees, and preserve all provider warnings and Google Maps attribution.
 Ask one focused question when an endpoint or required departure time is missing.
+
+Use save_common_route, update_common_route, and delete_common_route only after
+an explicit user request to mutate a saved route. Never infer that a route
+should be saved from a route lookup. Use user-authored labels and ask for a
+more precise endpoint when place resolution is ambiguous. Use
+list_common_routes for discovery and check_common_route for every fresh saved
+route estimate. Saved routes are point-in-time checks, not live tracking.
+
+Use schedule_common_route_update only when the user explicitly asks for
+recurring traffic updates and supplies a schedule. Do not simulate continuous
+tracking. A scheduled route update must use check_common_route and return its
+summary with Google Maps attribution; never guess when a lookup fails.
 </routes_policy>"""
 
 
@@ -199,7 +211,18 @@ DOMAIN_TOOL_NAMES = {
         }
     ),
     "reminder": frozenset({"schedule_reminder", "list_reminders", "cancel_reminder"}),
-    "routes": frozenset({"get_route_estimate", "compare_route_scenarios"}),
+    "routes": frozenset(
+        {
+            "get_route_estimate",
+            "compare_route_scenarios",
+            "save_common_route",
+            "list_common_routes",
+            "check_common_route",
+            "update_common_route",
+            "delete_common_route",
+            "schedule_common_route_update",
+        }
+    ),
     "search": frozenset({"exa_search", "brave_search"}),
 }
 

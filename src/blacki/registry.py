@@ -61,7 +61,9 @@ def build_tools(config: ToolConfig) -> list[Any]:
         logger.info("Brave Search tool enabled")
 
     if config.google_maps_routes_api_key:
-        tools.extend(_build_google_routes_tools())
+        tools.extend(
+            _build_google_routes_tools(include_saved_routes=bool(config.sqlite_path))
+        )
         logger.info("Google Maps Routes tools enabled")
 
     if config.sqlite_path:
@@ -109,12 +111,33 @@ def _build_brave_search_tools() -> list[Any]:
         return []
 
 
-def _build_google_routes_tools() -> list[Any]:
+def _build_google_routes_tools(*, include_saved_routes: bool = False) -> list[Any]:
     """Build Google Maps Routes tools."""
     try:
-        from blacki.routes import compare_route_scenarios, get_route_estimate
+        from blacki.routes import (
+            check_common_route,
+            compare_route_scenarios,
+            delete_common_route,
+            get_route_estimate,
+            list_common_routes,
+            save_common_route,
+            schedule_common_route_update,
+            update_common_route,
+        )
 
-        return [get_route_estimate, compare_route_scenarios]
+        tools = [get_route_estimate, compare_route_scenarios]
+        if include_saved_routes:
+            tools.extend(
+                [
+                    save_common_route,
+                    list_common_routes,
+                    check_common_route,
+                    update_common_route,
+                    delete_common_route,
+                    schedule_common_route_update,
+                ]
+            )
+        return tools
     except ImportError as e:
         logger.warning("Failed to load Google Maps Routes tools: %s", e)
         return []

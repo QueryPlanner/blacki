@@ -69,7 +69,11 @@ async def test_route_eval_boundary_is_deterministic() -> None:
                 "duration": "1800s",
                 "staticDuration": "1200s",
             }
-        ]
+        ],
+        "geocodingResults": {
+            "origin": {"placeId": "eval-origin-place"},
+            "destination": {"placeId": "eval-destination-place"},
+        },
     }
 
 

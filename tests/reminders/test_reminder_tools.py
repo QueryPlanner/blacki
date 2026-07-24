@@ -555,3 +555,21 @@ class TestFormatReminder:
         assert result["is_recurring"] is True
         assert result["schedule_type"] == "recurring"
         assert result["recurrence"] == "every 15 minutes"
+
+    def test_format_route_update_hides_internal_event(self) -> None:
+        """Should present a route update without exposing its stored route ID."""
+        reminder = Reminder(
+            id=2,
+            user_id="user1",
+            message=(
+                '{"kind":"blacki.route_traffic_update","version":1,"route_id":17}'
+            ),
+            trigger_time="2026-04-18T12:00:00+00:00",
+            recurrence_rule="0 8 * * *",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        result = _format_reminder(reminder)
+
+        assert result["message"] == "Scheduled traffic update for a saved route"
+        assert "17" not in result["message"]

@@ -49,6 +49,19 @@ For a current driving estimate, the agent uses:
 `OPTIMISTIC` and `PESSIMISTIC` are also supported for driving. Non-driving
 modes use `NONE` because Google traffic models are limited to driving routes.
 
+## Saved routes and scheduled updates
+
+When SQLite storage is enabled, Blacki can save common routes and schedule
+recurring traffic checks. It persists only Google place IDs, user-authored
+labels, route preferences, and reminder metadata. Raw addresses, API responses,
+and traffic snapshots are not stored.
+
+Saved-route operations are owner-scoped. In Telegram they are intentionally
+limited to private chats because group and topic sessions use a shared chat
+identity. `GOOGLE_MAPS_SAVED_ROUTE_LIMIT` defaults to 20 saved routes per user,
+and `GOOGLE_MAPS_ROUTE_UPDATE_LIMIT` defaults to 10 active traffic updates.
+Scheduled checks must be at least 15 minutes apart.
+
 ## Location and time inputs
 
 Plain location strings are sent as addresses. A known Google place ID can be

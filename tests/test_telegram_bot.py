@@ -12,6 +12,7 @@ import pytest
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
 from blacki.reminders.storage import Reminder
+from blacki.routes.scheduling import encode_route_update_event
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
@@ -31,7 +32,7 @@ from blacki.telegram.streaming import (
     _merge_stream_text,
     split_long_message,
 )
-from blacki.telegram.types import BotCommand, Message, ParseMode, Update
+from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
 
 
 class RecordingRuntime:
@@ -247,6 +248,7 @@ def test_build_session_state_includes_thread_when_present(
     assert session_state["user_id"] == "telegram-chat-123-thread-99"
     assert session_state["telegram_chat_id"] == "123"
     assert session_state["telegram_thread_id"] == "99"
+    assert session_state["telegram_chat_type"] == "private"
 
 
 def test_create_bot_configured(
@@ -2529,7 +2531,10 @@ class TestTelegramBotEdgeCases:
         await bot._handle_update(update)
 
         bot._handle_message.assert_called_once_with(
-            chat_id=123, message_thread_id=None, user_message="Regular message"
+            chat_id=123,
+            message_thread_id=None,
+            user_message="Regular message",
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -2840,6 +2845,7 @@ class TestRouteNonTextMessage:
             file_id="doc123",
             file_name="report.pdf",
             caption=None,
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -2882,6 +2888,7 @@ class TestRouteNonTextMessage:
             file_id="large",
             file_name="photo.jpg",
             caption=None,
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -2916,6 +2923,7 @@ class TestRouteNonTextMessage:
             file_id="aud123",
             file_name="song.mp3",
             caption=None,
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -2952,6 +2960,7 @@ class TestRouteNonTextMessage:
             file_id="vid123",
             file_name="clip.mp4",
             caption=None,
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -2985,6 +2994,7 @@ class TestRouteNonTextMessage:
             file_id="voi123",
             file_name="voice.ogg",
             caption=None,
+            chat_type=ChatType.PRIVATE,
         )
 
     @pytest.mark.asyncio
@@ -3339,6 +3349,61 @@ class TestTelegramBotScheduledReminders:
         mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert call_kwargs["message_thread_id"] == 678
+
+    @pytest.mark.asyncio
+    async def test_handle_scheduled_route_uses_controlled_prompt(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test route events become controlled ADK instructions without addresses."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock(return_value=True)
+        bot._api = mock_api
+        reminder = Reminder(
+            id=7,
+            user_id="telegram-chat-12345",
+            message=encode_route_update_event(17),
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert 'route_reference "id:17"' in call["message_text"]
+        assert "blacki.route_traffic_update" not in call["message_text"]
+        assert call["state"]["telegram_chat_type"] == "private"
+
+    @pytest.mark.asyncio
+    async def test_scheduled_route_failure_does_not_expose_event(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test route-event fallback is safe when the ADK runtime fails."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_error = RuntimeError("failed")
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock(return_value=True)
+        bot._api = mock_api
+        reminder = Reminder(
+            id=8,
+            user_id="telegram-chat-12345",
+            message=encode_route_update_event(99),
+            trigger_time="2026-04-18T12:00:00+00:00",
+            created_at="2026-04-18T10:00:00+00:00",
+        )
+
+        await bot.handle_scheduled_reminder(reminder)
+
+        fallback = mock_api.send_message.await_args.kwargs["text"]
+        assert "couldn't refresh" in fallback
+        assert "99" not in fallback
+        assert "route_traffic_update" not in fallback
 
     @pytest.mark.asyncio
     async def test_handle_scheduled_reminder_fallback(

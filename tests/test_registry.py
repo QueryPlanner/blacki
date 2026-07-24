@@ -83,6 +83,24 @@ class TestBuildTools:
         assert {"get_route_estimate", "compare_route_scenarios"} <= tool_names
         assert len(tools) == 10
 
+    def test_saved_route_tools_require_maps_and_sqlite(self) -> None:
+        """Should add saved-route tools only when both dependencies exist."""
+        config = ToolConfig(
+            google_maps_routes_api_key="routes-key",
+            sqlite_path="/tmp/blacki.db",
+        )
+
+        tool_names = {tool.__name__ for tool in build_tools(config)}
+
+        assert {
+            "save_common_route",
+            "list_common_routes",
+            "check_common_route",
+            "update_common_route",
+            "delete_common_route",
+            "schedule_common_route_update",
+        } <= tool_names
+
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when sqlite path provided."""
         config = ToolConfig(sqlite_path="/tmp/blacki.db")

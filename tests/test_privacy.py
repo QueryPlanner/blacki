@@ -54,3 +54,19 @@ def test_route_payload_preserves_only_safe_operational_metadata() -> None:
         "attribution": "Google Maps",
     }
     assert "canary" not in str(redacted)
+
+
+def test_saved_route_payload_is_redacted() -> None:
+    payload = {
+        "status": "success",
+        "route": {"origin_label": "home-canary"},
+        "count": 1,
+        "cancelled_updates": 2,
+    }
+
+    assert redact_route_tool_payload("list_common_routes", payload) == {
+        "details": REDACTED_ROUTE_DETAILS,
+        "status": "success",
+        "count": 1,
+        "cancelled_updates": 2,
+    }
