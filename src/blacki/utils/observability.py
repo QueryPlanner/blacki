@@ -7,16 +7,22 @@ OpenTelemetry environment variables for vendor-neutral operation.
 import json
 import logging
 import os
+import re
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+    OTLPSpanExporter as GrpcOTLPSpanExporter,
+)
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+    OTLPSpanExporter as HttpOTLPSpanExporter,
+)
 from opentelemetry.sdk.resources import (
     SERVICE_INSTANCE_ID,
     SERVICE_NAME,
@@ -41,8 +47,9 @@ class OTLPTraceConfig:
     """Validated, trace-specific OTLP exporter settings."""
 
     endpoint: str
+    endpoint_is_trace_specific: bool
     protocol: str
-    headers: str | None
+    headers: Mapping[str, str] | None
 
 
 _OTLP_ENDPOINT_KEYS = (
@@ -57,6 +64,10 @@ _OTLP_HEADER_KEYS = (
     "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     "OTEL_EXPORTER_OTLP_HEADERS",
 )
+_OTLP_PROTOCOLS = frozenset({"grpc", "http/protobuf"})
+_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_HTTP_HEADER_VALUE = re.compile(r"^[\x20-\x7e]*$")
+_HTTP_TRACE_PATH = "v1/traces"
 
 
 def configure_otel_resource(agent_name: str) -> None:
@@ -201,24 +212,55 @@ class JSONFileSpanExporter(SpanExporter):
         pass
 
 
-def _first_environment_value(keys: Sequence[str]) -> str:
-    """Return the first non-empty environment value in precedence order."""
+def _first_environment_setting(keys: Sequence[str]) -> tuple[str, str] | None:
+    """Return the first non-empty environment setting in precedence order."""
     for key in keys:
         value = os.getenv(key, "").strip()
         if value:
-            return value
-    return ""
+            return key, value
+    return None
 
 
-def _validate_otlp_endpoint(endpoint: str) -> None:
-    """Reject endpoints that are invalid or embed credential material."""
+def _parse_otlp_headers(headers: str) -> Mapping[str, str]:
+    """Parse OTLP environment headers without logging credential material."""
+    parsed_headers: dict[str, str] = {}
+    for raw_header in headers.split(","):
+        header = raw_header.strip()
+        if not header or "=" not in header:
+            raise ConfigurationError(
+                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
+            )
+
+        raw_name, raw_value = header.split("=", maxsplit=1)
+        name = unquote(raw_name).strip().lower()
+        value = unquote(raw_value).strip()
+        if (
+            not name
+            or _HTTP_HEADER_NAME.fullmatch(name) is None
+            or _HTTP_HEADER_VALUE.fullmatch(value) is None
+        ):
+            raise ConfigurationError(
+                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
+            )
+        parsed_headers[name] = value
+
+    return parsed_headers
+
+
+def _normalize_otlp_endpoint(
+    endpoint: str,
+    *,
+    protocol: str,
+    trace_specific: bool,
+) -> str:
+    """Validate an OTLP endpoint and apply protocol-specific path semantics."""
     try:
         parsed = urlparse(endpoint)
         _ = parsed.port
-    except ValueError as e:
+    except ValueError:
         raise ConfigurationError(
             "Invalid OTLP trace endpoint. Use an http(s) collector URL."
-        ) from e
+        ) from None
 
     if (
         parsed.scheme not in {"http", "https"}
@@ -228,22 +270,32 @@ def _validate_otlp_endpoint(endpoint: str) -> None:
         or parsed.params
         or parsed.query
         or parsed.fragment
-        or parsed.path not in {"", "/"}
     ):
         raise ConfigurationError(
             "Invalid OTLP trace endpoint. Use an http(s) collector URL "
-            "without credentials, paths, queries, or fragments."
+            "without credentials, queries, or fragments."
         )
+
+    if protocol == "grpc":
+        if parsed.params or parsed.path not in {"", "/"}:
+            raise ConfigurationError(
+                "Invalid gRPC OTLP trace endpoint. Use a collector URL without a path."
+            )
+        return endpoint
+
+    if trace_specific:
+        return endpoint
+    return f"{endpoint.rstrip('/')}/{_HTTP_TRACE_PATH}"
 
 
 def _load_otlp_trace_config() -> OTLPTraceConfig | None:
     """Load OTLP trace settings with trace-specific values taking precedence."""
-    endpoint = _first_environment_value(_OTLP_ENDPOINT_KEYS)
-    protocol = _first_environment_value(_OTLP_PROTOCOL_KEYS)
-    headers = _first_environment_value(_OTLP_HEADER_KEYS)
+    endpoint_setting = _first_environment_setting(_OTLP_ENDPOINT_KEYS)
+    protocol_setting = _first_environment_setting(_OTLP_PROTOCOL_KEYS)
+    header_setting = _first_environment_setting(_OTLP_HEADER_KEYS)
 
-    if not endpoint:
-        if protocol or headers:
+    if endpoint_setting is None:
+        if protocol_setting is not None or header_setting is not None:
             raise ConfigurationError(
                 "OTLP trace protocol or headers require "
                 "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or "
@@ -251,18 +303,50 @@ def _load_otlp_trace_config() -> OTLPTraceConfig | None:
             )
         return None
 
-    selected_protocol = protocol.casefold() if protocol else "grpc"
-    if selected_protocol != "grpc":
+    endpoint_key, endpoint = endpoint_setting
+    selected_protocol = (
+        protocol_setting[1].casefold() if protocol_setting is not None else "grpc"
+    )
+    if selected_protocol not in _OTLP_PROTOCOLS:
         raise ConfigurationError(
-            "Unsupported OTLP trace protocol. This deployment supports grpc."
+            "Unsupported OTLP trace protocol. This deployment supports "
+            "grpc and http/protobuf."
         )
 
-    _validate_otlp_endpoint(endpoint)
-    return OTLPTraceConfig(
-        endpoint=endpoint,
+    trace_specific = endpoint_key == "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+    normalized_endpoint = _normalize_otlp_endpoint(
+        endpoint,
         protocol=selected_protocol,
-        headers=headers or None,
+        trace_specific=trace_specific,
     )
+    headers = (
+        _parse_otlp_headers(header_setting[1]) if header_setting is not None else None
+    )
+    return OTLPTraceConfig(
+        endpoint=normalized_endpoint,
+        endpoint_is_trace_specific=trace_specific,
+        protocol=selected_protocol,
+        headers=headers,
+    )
+
+
+def _create_otlp_exporter(
+    otlp_config: OTLPTraceConfig,
+) -> tuple[SpanExporter, str]:
+    """Construct the selected network exporter without sending any spans."""
+    exporter_headers = dict(otlp_config.headers) if otlp_config.headers else None
+    if otlp_config.protocol == "grpc":
+        otlp_exporter: SpanExporter = GrpcOTLPSpanExporter(
+            endpoint=otlp_config.endpoint,
+            headers=exporter_headers,
+        )
+    else:
+        otlp_exporter = HttpOTLPSpanExporter(
+            endpoint=otlp_config.endpoint,
+            headers=exporter_headers,
+        )
+    mode = "grpc" if otlp_config.protocol == "grpc" else "http-protobuf"
+    return otlp_exporter, mode
 
 
 def _create_tracer_provider(log_path: Path) -> tuple[TracerProvider, str]:
@@ -276,16 +360,23 @@ def _create_tracer_provider(log_path: Path) -> tuple[TracerProvider, str]:
     if otlp_config is None:
         return provider, "local"
 
-    otlp_exporter = OTLPSpanExporter(
-        endpoint=otlp_config.endpoint,
-        headers=otlp_config.headers,
-    )
+    otlp_exporter, mode = _create_otlp_exporter(otlp_config)
     provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-    return provider, "local+otlp-grpc"
+    return provider, f"local+otlp-{mode}"
+
+
+def validate_observability_environment() -> None:
+    """Construct and close the configured exporter without sending spans."""
+    otlp_config = _load_otlp_trace_config()
+    if otlp_config is None:
+        return
+
+    otlp_exporter, _ = _create_otlp_exporter(otlp_config)
+    otlp_exporter.shutdown()
 
 
 def setup_tracing() -> TracerProvider | None:
-    """Set up local JSON tracing and opt-in remote gRPC OTLP export."""
+    """Set up local JSON tracing and opt-in remote OTLP export."""
     log_dir = get_log_dir()
     log_path = log_dir / "blacki-traces.log"
 

@@ -1,7 +1,8 @@
 # Observability
 
 Blacki always provides local structured logs and local OpenTelemetry span files.
-It can additionally export spans to a remote collector through gRPC OTLP.
+It can additionally export spans to a remote collector through gRPC or
+HTTP/protobuf OTLP.
 
 ## Outputs
 
@@ -27,7 +28,7 @@ At startup Blacki:
 2. instruments Google ADK with `GoogleADKInstrumentor`;
 3. configures stdout and JSON file logging; and
 4. registers a `TracerProvider` with `JSONFileSpanExporter`; and
-5. adds a gRPC OTLP exporter when a validated trace endpoint is configured.
+5. adds the selected OTLP exporter when a validated trace endpoint is configured.
 
 The resource contains:
 
@@ -45,10 +46,10 @@ Capturing prompts and responses can expose personal data, credentials, and
 tool results. Enable it only for a deliberate debugging session with an
 appropriate retention policy.
 
-## Remote gRPC OTLP export
+## Remote OTLP export
 
 Local-only mode is the default and never creates a network exporter. To add
-remote span export, set either:
+remote gRPC span export, set:
 
 ```dotenv
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com:4317
@@ -56,16 +57,31 @@ OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
 OTEL_EXPORTER_OTLP_TRACES_HEADERS=authorization=replace-me
 ```
 
-or the global `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, and
-`OTEL_EXPORTER_OTLP_HEADERS` fallbacks. Trace-specific values take precedence.
-The protocol defaults to `grpc` when omitted. HTTP/protobuf is not installed or
-accepted.
+For HTTP/protobuf, set:
+
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com:4318/v1/traces
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=authorization=Bearer%20replace-me
+```
+
+You can instead use the global `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_PROTOCOL`, and `OTEL_EXPORTER_OTLP_HEADERS` fallbacks.
+Trace-specific values take precedence. The protocol defaults to `grpc` when
+omitted.
 
 The endpoint must use `http` or `https`, identify a host, and contain no
-embedded username, password, path, query, or fragment. Protocol or header
-settings without an endpoint fail startup with a secret-free configuration
-error. The application logs only `local` or `local+otlp-grpc` once; it never
-logs the endpoint or headers.
+embedded username, password, query, or fragment. gRPC endpoints cannot contain a
+path. A trace-specific HTTP/protobuf endpoint is used exactly as configured; a
+global HTTP/protobuf endpoint receives `/v1/traces` after any existing base
+path. Headers use comma-separated, URL-encoded `name=value` pairs.
+Use `https` whenever headers contain credentials. Plain `http` sends headers
+without transport encryption and is appropriate only for a trusted local
+collector.
+
+Protocol or header settings without an endpoint fail startup with a secret-free
+configuration error. The application logs only `local`, `local+otlp-grpc`, or
+`local+otlp-http-protobuf` once; it never logs the endpoint or headers.
 
 ## Retention
 
