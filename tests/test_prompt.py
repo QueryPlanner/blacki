@@ -36,6 +36,8 @@ ALL_DOMAIN_TOOLS = frozenset(
         "schedule_reminder",
         "list_reminders",
         "cancel_reminder",
+        "get_route_estimate",
+        "compare_route_scenarios",
         "exa_search",
         "brave_search",
     }
@@ -123,7 +125,14 @@ class TestStablePromptLayers:
         ("I ate a sandwich for lunch", ("nutrition",)),
         ("Log my resistance workout", ("workout",)),
         ("Suggest a reminder schedule", ("reminder",)),
+        ("What is the current traffic on my commute?", ("routes",)),
+        ("How far is Pune from Mumbai?", ("routes",)),
+        ("Drive from Pune to Mumbai", ("routes",)),
+        ("What is the ETA to the airport?", ("routes",)),
         ("What is the latest verified Python news?", ("search",)),
+        ("Walk me through the latest Python news", ("search",)),
+        ("Find current Google Drive news", ("search",)),
+        ("Explain Levenshtein distance", ()),
         ("Explain dependency injection", ()),
     ],
 )
@@ -176,6 +185,22 @@ class TestDomainPolicyAssembly:
 
         assert "discussing a possible schedule is read-only" in instruction
         assert "Ask for a missing required\ntime" in instruction
+
+    def test_routes_policy_uses_fresh_dedicated_data(self) -> None:
+        instruction = build_domain_instruction(
+            "Compare current traffic for my commute",
+            {"get_route_estimate", "compare_route_scenarios", "exa_search"},
+        )
+
+        assert "<routes_policy>" in instruction
+        assert "requires a fresh route lookup" in instruction
+        assert "not continuous tracking" in instruction
+        assert "Use get_route_estimate for one route" in instruction
+        assert "compare_route_scenarios only when" in instruction
+        assert (
+            "For current driving traffic use DRIVE, now, and BEST_GUESS" in instruction
+        )
+        assert "<search_policy>" not in instruction
 
     @pytest.mark.parametrize(
         ("tools", "expected", "unexpected"),
@@ -294,6 +319,39 @@ class TestDomainPolicyPlugin:
         assert isinstance(second_tool, types.Tool)
         assert second_tool.function_declarations is None
         assert request.config.tools[-1] is opaque_tool
+
+    @pytest.mark.asyncio
+    async def test_route_request_hides_generic_search_declarations(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = _request_with_tools(
+            "get_route_estimate",
+            "compare_route_scenarios",
+            "exa_search",
+            "brave_search",
+        )
+        context = SimpleNamespace(
+            user_content=_user_content(
+                "Compare the current traffic for my drive to work"
+            ),
+            state={},
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert "<routes_policy>" in str(request.config.system_instruction)
+        assert "temp:blacki_search_primary" not in context.state
+        assert request.config.tools is not None
+        first_tool = request.config.tools[0]
+        assert isinstance(first_tool, types.Tool)
+        declarations = first_tool.function_declarations
+        assert declarations is not None
+        assert [declaration.name for declaration in declarations] == [
+            "get_route_estimate",
+            "compare_route_scenarios",
+        ]
 
     @pytest.mark.asyncio
     async def test_successful_search_removes_search_tools_on_next_model_call(

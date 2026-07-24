@@ -18,7 +18,9 @@ def mock_dependencies() -> Generator[MagicMock]:
         patch("google.adk.cli.fast_api.get_fast_api_app") as mock_get_app,
         patch("blacki.utils.initialize_environment") as mock_init_env,
         patch("blacki.utils.configure_otel_resource"),
-        patch("openinference.instrumentation.google_adk.GoogleADKInstrumentor"),
+        patch(
+            "openinference.instrumentation.google_adk.GoogleADKInstrumentor"
+        ) as mock_instrumentor,
         patch("blacki.utils.setup_logging"),
         patch("blacki.utils.setup_tracing"),
     ):
@@ -35,6 +37,7 @@ def mock_dependencies() -> Generator[MagicMock]:
 
         mock_init_env.return_value = mock_env
         mock_get_app.return_value = FastAPI()
+        mock_get_app.instrumentor = mock_instrumentor
 
         yield mock_get_app
 
@@ -50,6 +53,24 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     call_kwargs = mock_dependencies.call_args[1]
 
     assert call_kwargs["session_service_uri"] is None
+
+
+def test_routes_enabled_redacts_openinference_content(
+    mock_dependencies: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Routes-enabled tracing hides tool/model inputs and outputs."""
+    monkeypatch.setenv("GOOGLE_MAPS_ROUTES_API_KEY", "configured")
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server  # noqa: F401
+
+    instrument = mock_dependencies.instrumentor.return_value.instrument
+    instrument.assert_called_once()
+    config = instrument.call_args.kwargs["config"]
+    assert config.hide_inputs is True
+    assert config.hide_outputs is True
 
 
 @pytest.mark.asyncio
@@ -68,6 +89,7 @@ async def test_server_lifespan_closes_search_clients(
     close_container = AsyncMock()
     close_brave = AsyncMock()
     close_exa = AsyncMock()
+    close_routes = AsyncMock()
     close_notify = AsyncMock()
     log_warning = MagicMock()
 
@@ -85,6 +107,7 @@ async def test_server_lifespan_closes_search_clients(
         patch.object(server.logger, "warning", new=log_warning),
         patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
         patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch("blacki.routes.close_shared_routes_client", new=close_routes),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
     ):
         async with server.lifespan(server.app):
@@ -94,6 +117,7 @@ async def test_server_lifespan_closes_search_clients(
     close_container.assert_awaited_once()
     close_brave.assert_awaited_once()
     close_exa.assert_awaited_once()
+    close_routes.assert_awaited_once()
     close_notify.assert_awaited_once()
     log_warning.assert_called_once_with("test warning")
 
@@ -115,6 +139,7 @@ async def test_lifespan_cleans_up_after_validation_failure(
     stop_scheduler = AsyncMock()
     close_brave = AsyncMock()
     close_exa = AsyncMock()
+    close_routes = AsyncMock()
     close_notify = AsyncMock()
 
     with (
@@ -133,6 +158,7 @@ async def test_lifespan_cleans_up_after_validation_failure(
         ),
         patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
         patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch("blacki.routes.close_shared_routes_client", new=close_routes),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
         pytest.raises(server.ConfigurationError, match="invalid"),
     ):
@@ -144,6 +170,7 @@ async def test_lifespan_cleans_up_after_validation_failure(
     close_container.assert_awaited_once()
     close_brave.assert_awaited_once()
     close_exa.assert_awaited_once()
+    close_routes.assert_awaited_once()
     close_notify.assert_awaited_once()
 
 
@@ -162,6 +189,7 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
     close_container = AsyncMock()
     close_brave = AsyncMock()
     close_exa = AsyncMock()
+    close_routes = AsyncMock()
     close_notify = AsyncMock()
 
     with (
@@ -177,6 +205,7 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
         patch.object(server.validation, "validate_configuration", return_value=[]),
         patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
         patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch("blacki.routes.close_shared_routes_client", new=close_routes),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
     ):
         async with server.lifespan(server.app):
@@ -185,6 +214,7 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
     close_container.assert_not_awaited()
     close_brave.assert_awaited_once()
     close_exa.assert_awaited_once()
+    close_routes.assert_awaited_once()
     close_notify.assert_awaited_once()
 
 

@@ -38,6 +38,7 @@ def _task_worker_test_config() -> ToolConfig:
     """Build a deterministic config with sandbox and skill toolsets enabled."""
     skills_dir = Path(__file__).parents[1] / "src" / "blacki" / "skills"
     return ToolConfig(
+        google_maps_routes_api_key="routes-key",
         sandbox_enabled=True,
         skills_dir=skills_dir,
         weather_enabled=False,
@@ -110,6 +111,8 @@ def test_enabled_task_worker_has_equivalent_isolated_toolsets(
     worker_capabilities.pop("finish_task")
 
     assert root_capabilities == worker_capabilities
+    assert root_capabilities["get_route_estimate"] == 1
+    assert root_capabilities["compare_route_scenarios"] == 1
 
     root_toolsets = [tool for tool in agent.tools if isinstance(tool, BaseToolset)]
     worker_toolsets = [tool for tool in worker.tools if isinstance(tool, BaseToolset)]

@@ -1,0 +1,94 @@
+{
+  "eval_set_id": "routes",
+  "name": "Google Maps route behavior",
+  "description": "Validates dedicated route-tool selection and focused clarification.",
+  "eval_cases": [
+    {
+      "eval_id": "current_traffic_uses_route_tool",
+      "conversation": [
+        {
+          "invocation_id": "routes-current-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Call get_route_estimate exactly once for current driving traffic from 'Home address' to 'Office address'. Use travel_mode DRIVE, departure_time now, traffic_model BEST_GUESS, set every avoid option to false, and do not request alternatives."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "get_route_estimate",
+                "args": {
+                  "origin": "Home address",
+                  "destination": "Office address",
+                  "travel_mode": "DRIVE",
+                  "departure_time": "now",
+                  "traffic_model": "BEST_GUESS",
+                  "avoid_tolls": false,
+                  "avoid_highways": false,
+                  "avoid_ferries": false,
+                  "include_alternatives": false
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "routes-eval-user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "missing_endpoint_does_not_guess",
+      "conversation": [
+        {
+          "invocation_id": "routes-missing-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "How long will my commute take right now? I have not told you either endpoint. Ask one focused question and do not call any tool."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "routes-eval-user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "non_route_distance_stays_read_only",
+      "conversation": [
+        {
+          "invocation_id": "routes-distance-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Explain Levenshtein distance without using any tool."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "routes-eval-user",
+        "state": {}
+      }
+    }
+  ]
+}

@@ -452,6 +452,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert "--env OPENROUTER_API_KEY" not in workflow
 
     for setting in (
+        "GOOGLE_MAPS_ROUTES_API_KEY",
         "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     ):

@@ -25,6 +25,34 @@ _container_lock = asyncio.Lock()
 _active_invocations = 0
 
 
+async def _route_eval_compute_routes(
+    payload: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    """Return deterministic provider data for route behavior evaluations."""
+    del payload, api_key
+    return {
+        "routes": [
+            {
+                "distanceMeters": 12500,
+                "duration": "1800s",
+                "staticDuration": "1200s",
+            }
+        ]
+    }
+
+
+def _configure_route_eval_boundary() -> None:
+    """Replace only the external Maps boundary when explicitly requested."""
+    if os.environ.get("BLACKI_EVAL_ROUTES", "").strip().lower() != "true":
+        return
+
+    os.environ.setdefault("GOOGLE_MAPS_ROUTES_API_KEY", "eval-only")
+    from blacki.routes import tools as route_tools
+
+    route_tools.compute_routes = _route_eval_compute_routes
+
+
 async def _ensure_eval_container(*, callback_context: Any) -> None:
     """Initialize the real storage container once for stateful eval cases."""
     global _active_invocations
@@ -128,4 +156,5 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
     return eval_agent
 
 
+_configure_route_eval_boundary()
 root_agent = create_eval_agent()

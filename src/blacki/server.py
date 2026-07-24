@@ -15,6 +15,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
+from openinference.instrumentation import TraceConfig
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
@@ -28,6 +29,7 @@ from .utils import (
     setup_tracing,
     validation,
 )
+from .utils.privacy import route_data_redaction_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +39,13 @@ configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-GoogleADKInstrumentor().instrument()
+_route_data_redaction = route_data_redaction_enabled()
+GoogleADKInstrumentor().instrument(
+    config=TraceConfig(
+        hide_inputs=True if _route_data_redaction else None,
+        hide_outputs=True if _route_data_redaction else None,
+    )
+)
 
 setup_logging(log_level=env.log_level)
 setup_tracing()
@@ -186,6 +194,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         from .search import close_shared_exa_search_client
 
         await close_shared_exa_search_client()
+
+        from .routes import close_shared_routes_client
+
+        await close_shared_routes_client()
 
         from .callbacks import close_shared_notify_client
 

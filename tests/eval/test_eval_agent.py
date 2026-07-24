@@ -1,5 +1,6 @@
 """Tests for the ADK CLI evaluation adapter."""
 
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -7,7 +8,9 @@ from google.adk.agents import LlmAgent
 
 from eval.blacki_eval.agent import (
     _callback_list,
+    _configure_route_eval_boundary,
     _ensure_eval_container,
+    _route_eval_compute_routes,
     create_eval_agent,
 )
 
@@ -50,3 +53,52 @@ async def test_eval_container_requires_explicit_sqlite_path(
         assert str(error) == "SQLITE_PATH is required for prompt evaluations"
     else:
         raise AssertionError("missing SQLITE_PATH should fail")
+
+
+@pytest.mark.asyncio
+async def test_route_eval_boundary_is_deterministic() -> None:
+    result = await _route_eval_compute_routes(
+        {"origin": {"address": "private"}},
+        "eval-only",
+    )
+
+    assert result == {
+        "routes": [
+            {
+                "distanceMeters": 12500,
+                "duration": "1800s",
+                "staticDuration": "1200s",
+            }
+        ]
+    }
+
+
+def test_route_eval_boundary_requires_explicit_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blacki.routes import tools as route_tools
+
+    original = route_tools.compute_routes
+    monkeypatch.delenv("BLACKI_EVAL_ROUTES", raising=False)
+    monkeypatch.delenv("GOOGLE_MAPS_ROUTES_API_KEY", raising=False)
+
+    _configure_route_eval_boundary()
+
+    assert route_tools.compute_routes is original
+    assert "GOOGLE_MAPS_ROUTES_API_KEY" not in os.environ
+
+
+def test_route_eval_boundary_replaces_only_maps_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from blacki.routes import tools as route_tools
+
+    original = route_tools.compute_routes
+    monkeypatch.setenv("BLACKI_EVAL_ROUTES", "true")
+    monkeypatch.delenv("GOOGLE_MAPS_ROUTES_API_KEY", raising=False)
+    monkeypatch.setattr(route_tools, "compute_routes", original)
+
+    _configure_route_eval_boundary()
+
+    assert route_tools.compute_routes is _route_eval_compute_routes
+    assert os.environ["GOOGLE_MAPS_ROUTES_API_KEY"] == "eval-only"

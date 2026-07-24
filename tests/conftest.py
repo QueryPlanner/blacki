@@ -387,6 +387,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "HOST",
         "PORT",
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+        "GOOGLE_MAPS_ROUTES_API_KEY",
     ]
 
     for var in env_vars_to_clean:

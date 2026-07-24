@@ -124,6 +124,23 @@ time instead of guessing it, and use the shared temporal context for its date.
 </reminder_policy>"""
 
 
+ROUTES_POLICY = """\
+<routes_policy>
+Use the dedicated route tools for distance, travel time, current traffic, route
+alternatives, and route-scenario comparisons. Do not use general web search,
+browser automation, or memory for those values. A request for current or live
+traffic requires a fresh route lookup; the result is a point-in-time estimate,
+not continuous tracking.
+
+Use get_route_estimate for one route and compare_route_scenarios only when the
+user asks to compare departure times, modes, traffic assumptions, or avoid
+options. For current driving traffic use DRIVE, now, and BEST_GUESS. Use NONE
+as the traffic model for non-driving modes. Treat avoid options as preferences,
+not guarantees, and preserve all provider warnings and Google Maps attribution.
+Ask one focused question when an endpoint or required departure time is missing.
+</routes_policy>"""
+
+
 DOMAIN_PATTERNS = {
     "nutrition": re.compile(
         r"\b(?:ate|eaten|eating|drank|drink|food|meal|breakfast|lunch|dinner|"
@@ -137,6 +154,16 @@ DOMAIN_PATTERNS = {
     ),
     "reminder": re.compile(
         r"\b(?:remind|reminder|schedule|alarm|notify|notification)\b",
+        re.IGNORECASE,
+    ),
+    "routes": re.compile(
+        r"\b(?:route|routes|directions?|distance\s+(?:from|to|between)|how\s+far|"
+        r"travel\s+time|traffic|"
+        r"commute|avoid\s+(?:tolls?|highways?|ferries)|get\s+there|on\s+foot|"
+        r"by\s+(?:car|bike|bicycle|transit)|"
+        r"eta\s+(?:to|from|between|for\s+(?:the\s+)?(?:route|trip|commute))|"
+        r"(?:drive|driving|walk|walking|bicycle|bicycling|bike|biking|"
+        r"two[-\s]wheeler)\s+(?:to|from|between))\b",
         re.IGNORECASE,
     ),
     "search": re.compile(
@@ -172,6 +199,7 @@ DOMAIN_TOOL_NAMES = {
         }
     ),
     "reminder": frozenset({"schedule_reminder", "list_reminders", "cancel_reminder"}),
+    "routes": frozenset({"get_route_estimate", "compare_route_scenarios"}),
     "search": frozenset({"exa_search", "brave_search"}),
 }
 
@@ -231,12 +259,18 @@ def select_domain_policy_names(
 ) -> tuple[str, ...]:
     """Select request-relevant domains that also have enabled tools."""
     selected = []
-    for domain in ("nutrition", "workout", "reminder", "search"):
+    for domain in ("nutrition", "workout", "reminder", "routes"):
         if (
             DOMAIN_PATTERNS[domain].search(user_text)
             and DOMAIN_TOOL_NAMES[domain] & available_tool_names
         ):
             selected.append(domain)
+    if (
+        "routes" not in selected
+        and DOMAIN_PATTERNS["search"].search(user_text)
+        and DOMAIN_TOOL_NAMES["search"] & available_tool_names
+    ):
+        selected.append("search")
     return tuple(selected)
 
 
@@ -258,6 +292,8 @@ def build_domain_instruction(
             blocks.append(workout_policy)
         elif domain == "reminder":
             blocks.append(REMINDER_POLICY)
+        elif domain == "routes":
+            blocks.append(ROUTES_POLICY)
         elif domain == "search":  # pragma: no branch - search is the final domain
             blocks.append(_build_search_policy(available_tool_names))
     return "\n\n".join(blocks)
@@ -308,15 +344,18 @@ class DomainPolicyPlugin(BasePlugin):
         if not user_text:
             return
 
-        instruction = build_domain_instruction(
-            user_text, frozenset(llm_request.tools_dict)
-        )
+        available_tools = frozenset(llm_request.tools_dict)
+        selected_domains = select_domain_policy_names(user_text, available_tools)
+        instruction = build_domain_instruction(user_text, available_tools)
         if instruction:
             llm_request.append_instructions([instruction])
 
-        if "search" in select_domain_policy_names(
-            user_text, frozenset(llm_request.tools_dict)
-        ):
+        if "routes" in selected_domains:
+            _hide_tools(
+                llm_request,
+                set(DOMAIN_TOOL_NAMES["search"] & available_tools),
+            )
+        elif "search" in selected_domains:
             _apply_search_tool_budget(callback_context, llm_request)
 
     async def before_tool_callback(

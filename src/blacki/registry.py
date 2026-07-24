@@ -24,6 +24,7 @@ class ToolConfig:
     Attributes:
         exa_api_key: API key for Exa Search.
         brave_search_api_key: API key for Brave Search.
+        google_maps_routes_api_key: API key for Google Maps Routes.
         sqlite_path: Path to SQLite database for storage-backed tools.
         sandbox_enabled: Whether to enable sandbox tools.
         skills_dir: Directory containing skill definitions.
@@ -32,6 +33,7 @@ class ToolConfig:
 
     exa_api_key: str | None = None
     brave_search_api_key: str | None = None
+    google_maps_routes_api_key: str | None = None
     sqlite_path: str | None = None
     sandbox_enabled: bool = False
     skills_dir: Path | None = None
@@ -57,6 +59,10 @@ def build_tools(config: ToolConfig) -> list[Any]:
     if config.brave_search_api_key:
         tools.extend(_build_brave_search_tools())
         logger.info("Brave Search tool enabled")
+
+    if config.google_maps_routes_api_key:
+        tools.extend(_build_google_routes_tools())
+        logger.info("Google Maps Routes tools enabled")
 
     if config.sqlite_path:
         tools.extend(_build_reminder_tools())
@@ -100,6 +106,17 @@ def _build_brave_search_tools() -> list[Any]:
         return [brave_search]
     except ImportError as e:
         logger.warning("Failed to load Brave Search tool: %s", e)
+        return []
+
+
+def _build_google_routes_tools() -> list[Any]:
+    """Build Google Maps Routes tools."""
+    try:
+        from blacki.routes import compare_route_scenarios, get_route_estimate
+
+        return [get_route_estimate, compare_route_scenarios]
+    except ImportError as e:
+        logger.warning("Failed to load Google Maps Routes tools: %s", e)
         return []
 
 
@@ -304,6 +321,8 @@ def build_tool_config_from_env() -> ToolConfig:
     return ToolConfig(
         exa_api_key=os.getenv("EXA_API_KEY", "").strip() or None,
         brave_search_api_key=os.getenv("BRAVE_SEARCH_API_KEY", "").strip() or None,
+        google_maps_routes_api_key=os.getenv("GOOGLE_MAPS_ROUTES_API_KEY", "").strip()
+        or None,
         sqlite_path=sqlite_path,
         sandbox_enabled=os.getenv("SANDBOX_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
