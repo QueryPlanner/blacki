@@ -205,6 +205,15 @@ class TestAppContainer:
         assert container._declarative_db_storage is storage
 
     @pytest.mark.asyncio
+    async def test_saved_route_storage_property(self, conn, lock) -> None:
+        """Should lazily instantiate saved-route storage."""
+        container = AppContainer(conn=conn, _lock=lock)
+
+        storage = container.saved_route_storage
+        assert storage is not None
+        assert container._saved_route_storage is storage
+
+    @pytest.mark.asyncio
     async def test_close_closes_connection_and_storages(self, conn, lock) -> None:
         """Should close connection and all storage instances."""
         container = AppContainer(conn=conn, _lock=lock)
@@ -214,11 +223,14 @@ class TestAppContainer:
 
         declarative_db = container.declarative_db_storage
         declarative_db.close = AsyncMock()
+        saved_routes = container.saved_route_storage
+        saved_routes.close = AsyncMock()
 
         await container.close()
 
         reminder.close.assert_called_once()
         declarative_db.close.assert_called_once()
+        saved_routes.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_storages_resets_references(self, conn, lock) -> None:
@@ -230,6 +242,7 @@ class TestAppContainer:
         _ = container.workout_storage
         _ = container.preferences_storage
         _ = container.declarative_db_storage
+        _ = container.saved_route_storage
 
         await container._close_storages()
 
@@ -238,6 +251,7 @@ class TestAppContainer:
         assert container._workout_storage is None
         assert container._preferences_storage is None
         assert container._declarative_db_storage is None
+        assert container._saved_route_storage is None
 
     @pytest.mark.asyncio
     async def test_close_storages_partial(self, conn, lock) -> None:
@@ -248,6 +262,7 @@ class TestAppContainer:
         _ = container.workout_storage
         _ = container.preferences_storage
         _ = container.declarative_db_storage
+        _ = container.saved_route_storage
 
         await container._close_storages()
 
@@ -256,6 +271,7 @@ class TestAppContainer:
         assert container._workout_storage is None
         assert container._preferences_storage is None
         assert container._declarative_db_storage is None
+        assert container._saved_route_storage is None
         assert container._workout_storage is None
         assert container._preferences_storage is None
 
@@ -268,11 +284,13 @@ class TestAppContainer:
         calorie = container.calorie_storage
         workout = container.workout_storage
         preferences = container.preferences_storage
+        saved_routes = container.saved_route_storage
 
         reminder.initialize = AsyncMock()
         calorie.initialize = AsyncMock()
         workout.initialize = AsyncMock()
         preferences.initialize = AsyncMock()
+        saved_routes.initialize = AsyncMock()
 
         await container.initialize_all_storages()
 
@@ -280,6 +298,7 @@ class TestAppContainer:
         calorie.initialize.assert_called_once()
         workout.initialize.assert_called_once()
         preferences.initialize.assert_called_once()
+        saved_routes.initialize.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_create_creates_container_with_connection(self) -> None:

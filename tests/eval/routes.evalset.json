@@ -89,6 +89,186 @@
         "user_id": "routes-eval-user",
         "state": {}
       }
+    },
+    {
+      "eval_id": "explicit_saved_route_mutations_use_dedicated_tools",
+      "conversation": [
+        {
+          "invocation_id": "routes-save-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Save my commute now. Call save_common_route exactly once with route_name 'Commute', origin '1 Home Street, Pune', destination '2 Office Road, Pune', origin_label 'Home', destination_label 'Office', travel_mode DRIVE, and every avoid option false."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "save_common_route",
+                "args": {
+                  "route_name": "Commute",
+                  "origin": "1 Home Street, Pune",
+                  "destination": "2 Office Road, Pune",
+                  "origin_label": "Home",
+                  "destination_label": "Office",
+                  "travel_mode": "DRIVE",
+                  "avoid_tolls": false,
+                  "avoid_highways": false,
+                  "avoid_ferries": false
+                }
+              }
+            ]
+          }
+        },
+        {
+          "invocation_id": "routes-update-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Rename that route. Call update_common_route exactly once with route_reference 'Commute' and changes containing only new_name 'Weekday Commute'."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "update_common_route",
+                "args": {
+                  "route_reference": "Commute",
+                  "changes": {
+                    "new_name": "Weekday Commute"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "invocation_id": "routes-delete-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Delete it now. Call delete_common_route exactly once with route_reference 'Weekday Commute'."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "delete_common_route",
+                "args": {
+                  "route_reference": "Weekday Commute"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "saved-routes-mutation-eval-user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "saved_route_reads_and_schedule_use_dedicated_tools",
+      "conversation": [
+        {
+          "invocation_id": "routes-list-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Call list_common_routes exactly once and do not call any other tool."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "list_common_routes",
+                "args": {}
+              }
+            ]
+          }
+        },
+        {
+          "invocation_id": "routes-check-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Call check_common_route exactly once with route_reference 'Commute'."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "check_common_route",
+                "args": {
+                  "route_reference": "Commute"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "invocation_id": "routes-schedule-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Schedule weekday updates. Call schedule_common_route_update exactly once with route_reference 'Commute' and recurrence '0 8 * * 1-5'."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "schedule_common_route_update",
+                "args": {
+                  "route_reference": "Commute",
+                  "recurrence": "0 8 * * 1-5"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "saved-routes-read-eval-user",
+        "state": {}
+      }
+    },
+    {
+      "eval_id": "saved_route_suggestion_does_not_mutate",
+      "conversation": [
+        {
+          "invocation_id": "routes-no-mutation-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Suggest a short name for a route I might save later. Do not call any tool and do not save, update, delete, or schedule anything."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "saved-routes-readonly-eval-user",
+        "state": {}
+      }
     }
   ]
 }

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from blacki.calories.storage import SqliteCalorieStorage
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
     from blacki.reminders.storage import SqliteReminderStorage
+    from blacki.routes.storage import SqliteSavedRouteStorage
     from blacki.utils.preferences import SqlitePreferencesStorage
     from blacki.workouts.storage import SqliteWorkoutStorage
 
@@ -138,6 +139,9 @@ class AppContainer:
     _declarative_db_storage: SqliteDeclarativeDbStorage | None = field(
         default=None, init=False, repr=False
     )
+    _saved_route_storage: SqliteSavedRouteStorage | None = field(
+        default=None, init=False, repr=False
+    )
 
     @classmethod
     async def create(cls, sqlite_path: str | Path) -> Self:
@@ -182,6 +186,10 @@ class AppContainer:
             await self._declarative_db_storage.close()
             self._declarative_db_storage = None
 
+        if self._saved_route_storage is not None:
+            await self._saved_route_storage.close()
+            self._saved_route_storage = None
+
     async def initialize_all_storages(self) -> None:
         """Initialize all storage instances.
 
@@ -193,6 +201,7 @@ class AppContainer:
         await self.workout_storage.initialize()
         await self.preferences_storage.initialize()
         await self.declarative_db_storage.initialize()
+        await self.saved_route_storage.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -245,3 +254,12 @@ class AppContainer:
                 self.conn, self._lock
             )
         return self._declarative_db_storage
+
+    @property
+    def saved_route_storage(self) -> SqliteSavedRouteStorage:
+        """Get or create the saved-route storage instance."""
+        if self._saved_route_storage is None:
+            from blacki.routes.storage import SqliteSavedRouteStorage
+
+            self._saved_route_storage = SqliteSavedRouteStorage(self.conn, self._lock)
+        return self._saved_route_storage

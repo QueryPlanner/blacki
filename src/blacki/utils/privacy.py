@@ -9,6 +9,12 @@ ROUTE_TOOL_NAMES = frozenset(
     {
         "get_route_estimate",
         "compare_route_scenarios",
+        "save_common_route",
+        "list_common_routes",
+        "check_common_route",
+        "update_common_route",
+        "delete_common_route",
+        "schedule_common_route_update",
     }
 )
 REDACTED_ROUTE_DETAILS = "<route details redacted>"
@@ -33,6 +39,8 @@ def redact_route_tool_payload(
         "error_code",
         "scenario_count",
         "successful_scenarios",
+        "count",
+        "cancelled_updates",
         "attribution",
     ):
         if key in payload:

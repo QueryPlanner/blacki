@@ -270,9 +270,12 @@ def _parse_reminder_datetime(datetime_val: str | int | float) -> datetime:
 def _format_reminder(reminder: Reminder) -> dict[str, Any]:
     """Format a reminder for display."""
     next_trigger_time = format_stored_instant_for_display(reminder.trigger_time)
+    message = reminder.message
+    if message.startswith('{"kind":"blacki.route_traffic_update"'):
+        message = "Scheduled traffic update for a saved route"
     return {
         "id": reminder.id,
-        "message": reminder.message,
+        "message": message,
         "trigger_time": next_trigger_time,
         "next_trigger_time": next_trigger_time,
         "is_sent": reminder.is_sent,
