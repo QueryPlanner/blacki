@@ -14,11 +14,14 @@ on:
       - "compose.yaml"
       - "compose.dev.yaml"
       - "compose.prod.yaml"
+      - "compose.smoke.yaml"
       - "docs/**"
       - "entrypoint.sh"
       - "mkdocs.yml"
       - "pyproject.toml"
+      - "scripts/write_compose_env.py"
       - "setup.sh"
+      - "src/**"
       - "systemd/**"
       - "tests/test_deployment_contract.py"
       - "uv.lock"
@@ -35,11 +38,14 @@ on:
       - "compose.yaml"
       - "compose.dev.yaml"
       - "compose.prod.yaml"
+      - "compose.smoke.yaml"
       - "docs/**"
       - "entrypoint.sh"
       - "mkdocs.yml"
       - "pyproject.toml"
+      - "scripts/write_compose_env.py"
       - "setup.sh"
+      - "src/**"
       - "systemd/**"
       - "tests/test_deployment_contract.py"
       - "uv.lock"
@@ -95,6 +101,9 @@ jobs:
       - name: Install project dependencies
         run: uv sync --locked
 
+      - name: Build the production image
+        run: docker build --tag blacki:contract-test .
+
       - name: Run deployment contract tests
         run: uv run pytest tests/test_deployment_contract.py
 
@@ -108,8 +117,58 @@ jobs:
           docker compose --env-file .env.minimal \
             -f compose.yaml -f compose.dev.yaml config --quiet
 
-      - name: Build the production image
-        run: docker build --tag blacki:contract-test .
+      - name: Smoke test production startup
+        env:
+          ENV_FILE: .env.minimal
+          IMAGE: blacki:contract-test
+          SMOKE_PROJECT: blacki-contract-smoke
+        run: |
+          cleanup() {
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml down --remove-orphans >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker compose --project-name "$SMOKE_PROJECT" \
+            --env-file "$ENV_FILE" -f compose.smoke.yaml up -d
+          CONTAINER_ID=$(
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml ps --all -q agent
+          )
+          if [ -z "$CONTAINER_ID" ]; then
+            echo "Production smoke test did not create the agent container."
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml logs --no-color
+            exit 1
+          fi
+
+          for attempt in $(seq 1 15); do
+            if docker exec "$CONTAINER_ID" python -c \
+              'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/ready", timeout=3).read()' \
+              >/dev/null 2>&1; then
+              echo "Production image readiness check passed."
+              exit 0
+            fi
+
+            RUNNING=$(
+              docker inspect --format '{{.State.Running}}' \
+                "$CONTAINER_ID" 2>/dev/null || true
+            )
+            if [ "$RUNNING" != "true" ]; then
+              echo "Production image exited before becoming ready."
+              docker compose --project-name "$SMOKE_PROJECT" \
+                -f compose.smoke.yaml logs --no-color
+              exit 1
+            fi
+
+            echo "Readiness attempt $attempt/15 failed; retrying in 2s..."
+            sleep 2
+          done
+
+          echo "Production image did not become ready."
+          docker compose --project-name "$SMOKE_PROJECT" \
+            -f compose.smoke.yaml logs --no-color
+          exit 1
 
       - name: Validate production OTLP exporters
         run: |

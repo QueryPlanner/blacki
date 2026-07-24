@@ -92,6 +92,31 @@ docker compose -f compose.yaml -f compose.prod.yaml ps
 Pin a release tag for reproducible upgrades. A floating branch tag trades
 convenience for weaker rollback guarantees.
 
+## Automated deployment safeguards
+
+Pull requests that change application source or deployment inputs build the
+production image and start it with `compose.smoke.yaml`. The smoke service uses
+disposable container state, publishes no host port, and forces Telegram off so
+validation cannot poll the production bot or execute scheduled reminders. It
+does exercise the image entrypoint, ADK instrumentation, application startup,
+SQLite initialization, and `/ready`. Model-provider and Telegram credentials
+remain separate integration checks.
+
+The `main` deployment workflow repeats that isolated startup check against the
+exact image digest before stopping the active service. If the active deployment
+is healthy, the workflow preserves its revision, environment, and image. A
+failed promoted `/ready` check automatically restores that captured deployment.
+The successful image digest is persisted as `IMAGE` in `.env` so later Compose
+commands keep using the verified artifact.
+
+Deployment credentials are serialized without Compose interpolation and staged
+in unique, private transfer directories. The workflow removes those temporary
+files after both successful and failed deployment attempts.
+
+Automatic rollback is unavailable when no healthy service is running at the
+start of deployment. The workflow reports that condition explicitly instead of
+treating an unhealthy container as a safe rollback target.
+
 ## Roll back
 
 For a source build, switch to a known release tag or commit and rebuild. Restore

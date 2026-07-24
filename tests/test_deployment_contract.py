@@ -3,9 +3,11 @@
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from blacki.utils.config import ServerEnv
@@ -13,6 +15,7 @@ from blacki.utils.config import ServerEnv
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASH_EXECUTABLE = shutil.which("bash")
 DOCKER_EXECUTABLE = shutil.which("docker")
+COMPOSE_ENV_WRITER = REPO_ROOT / "scripts" / "write_compose_env.py"
 
 
 def _read(relative_path: str) -> str:
@@ -185,6 +188,146 @@ def test_readme_exposes_the_complete_first_run() -> None:
     assert "docs/DEPLOYMENT.md" in readme
 
 
+def test_operations_document_automated_deployment_safety() -> None:
+    """Operators must know the smoke-test boundary and rollback behavior."""
+    operations = _read("docs/operations.md")
+
+    for required in (
+        "compose.smoke.yaml",
+        "forces Telegram off",
+        "exact image digest",
+        "automatically restores",
+        "Automatic rollback is unavailable",
+    ):
+        assert required in operations
+
+
+def test_compose_env_serializer_preserves_secret_characters(tmp_path: Path) -> None:
+    """Transferred secrets must reach a container without interpolation."""
+    assert DOCKER_EXECUTABLE is not None
+    sample_value = "dollar$VAR${OTHER} quote\" single' backslash\\ space & equals="
+    env_file = tmp_path / "deploy.env"
+    compose_file = tmp_path / "compose.yaml"
+    project_name = f"blacki-env-{os.getpid()}"
+
+    subprocess.run(  # noqa: S603 - current test interpreter is trusted
+        [sys.executable, str(COMPOSE_ENV_WRITER), str(env_file), "SECRET"],
+        env={**os.environ, "SECRET": sample_value},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    compose_file.write_text(
+        "services:\n"
+        "  agent:\n"
+        "    image: blacki:contract-test\n"
+        f"    env_file:\n      - {env_file}\n"
+        "    entrypoint: []\n"
+        "    command:\n"
+        "      - python\n"
+        "      - -c\n"
+        "      - import os; print(os.environ['SECRET'], end='')\n"
+    )
+    result = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [
+            DOCKER_EXECUTABLE,
+            "compose",
+            "--project-name",
+            project_name,
+            "--env-file",
+            str(env_file),
+            "-f",
+            str(compose_file),
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    service = yaml.safe_load(result.stdout)["services"]["agent"]
+
+    assert env_file.stat().st_mode & 0o777 == 0o600
+    # Canonical Compose output escapes literal dollars for safe re-parsing.
+    assert service["environment"]["SECRET"] == sample_value.replace("$", "$$")
+    assert env_file.read_text() == (
+        'SECRET="dollar$$VAR$${OTHER} quote\\" single\' '
+        'backslash\\\\ space & equals="\n'
+    )
+
+    image = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [DOCKER_EXECUTABLE, "image", "inspect", "blacki:contract-test"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if image.returncode != 0:
+        pytest.skip(
+            "runtime round-trip requires the deployment-contract production image"
+        )
+    try:
+        runtime = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+            [
+                DOCKER_EXECUTABLE,
+                "compose",
+                "--project-name",
+                project_name,
+                "--env-file",
+                str(env_file),
+                "-f",
+                str(compose_file),
+                "run",
+                "--rm",
+                "--no-deps",
+                "agent",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+            [
+                DOCKER_EXECUTABLE,
+                "compose",
+                "--project-name",
+                project_name,
+                "--env-file",
+                str(env_file),
+                "-f",
+                str(compose_file),
+                "down",
+                "--remove-orphans",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert runtime.stdout == sample_value
+
+
+@pytest.mark.parametrize("unsafe_character", ["\r", "\n"])
+def test_compose_env_serializer_rejects_line_injection(
+    tmp_path: Path,
+    unsafe_character: str,
+) -> None:
+    """Control characters must not create extra dotenv assignments."""
+    env_file = tmp_path / "deploy.env"
+    result = subprocess.run(  # noqa: S603 - current test interpreter is trusted
+        [sys.executable, str(COMPOSE_ENV_WRITER), str(env_file), "SECRET"],
+        env={**os.environ, "SECRET": f"before{unsafe_character}after"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "cannot contain NUL or line breaks" in result.stderr
+    assert not env_file.exists()
+
+
 def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
     """Relevant files must trigger checks that exercise docs, Compose, and Docker."""
     workflow = _read(".github/workflows/developer-experience.yml")
@@ -196,8 +339,11 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         '"compose.yaml"',
         '"compose.dev.yaml"',
         '"compose.prod.yaml"',
+        '"compose.smoke.yaml"',
         '"docs/**"',
+        '"scripts/write_compose_env.py"',
         '"setup.sh"',
+        '"src/**"',
     ):
         assert workflow.count(path) == 2
 
@@ -207,9 +353,34 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         "-f compose.yaml -f compose.prod.yaml config --quiet",
         "-f compose.yaml -f compose.dev.yaml config --quiet",
         "docker build --tag blacki:contract-test .",
+        "-f compose.smoke.yaml up -d",
+        'docker exec "$CONTAINER_ID" python -c',
         "validate_observability_environment",
     ):
         assert command in workflow
+
+    assert workflow.index("docker build --tag blacki:contract-test .") < (
+        workflow.index("pytest tests/test_deployment_contract.py")
+    )
+
+
+def test_smoke_overlay_is_isolated_and_side_effect_free() -> None:
+    """Startup smoke tests must not share state or start external integrations."""
+    service = _load_yaml("compose.smoke.yaml")["services"]["agent"]
+
+    assert service["image"].startswith("${IMAGE:")
+    assert service["env_file"] == ["${ENV_FILE:-.env}"]
+    assert service["restart"] == "no"
+    assert "volumes" not in service
+    assert "ports" not in service
+    assert service["environment"] == {
+        "HOST": "0.0.0.0",  # noqa: S104 - no host port is published
+        "PORT": 8080,
+        "RELOAD_AGENTS": "false",
+        "SERVE_WEB_INTERFACE": "false",
+        "TELEGRAM_ENABLED": "false",
+        "TELEGRAM_TOOL_NOTIFICATIONS": "false",
+    }
 
 
 def test_production_deployment_preflights_before_stopping_service() -> None:
@@ -217,19 +388,27 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     workflow = _read(".github/workflows/docker-publish.yml")
     workflow_config = _load_yaml(".github/workflows/docker-publish.yml")
     deploy_concurrency = workflow_config["jobs"]["deploy"]["concurrency"]
+    deployment = workflow[
+        workflow.index(
+            'git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"'
+        ) :
+    ]
     ordered_steps = (
         'git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"',
-        "write_app_env .env.next",
+        'cp "$DEPLOY_ENV_FILE" .env.next',
         'docker pull "$IMAGE_NAME"',
-        "ENV_FILE=.env.next docker compose --env-file .env.next",
-        "validate_observability_environment",
+        "--env-file .env.next -f compose.smoke.yaml up -d",
+        '"$SMOKE_CONTAINER_ID" "Candidate"',
+        "cleanup_smoke",
+        "PROMOTION_STARTED=true",
         "down --remove-orphans",
         "mv .env.next .env",
-        "docker compose -f compose.yaml -f compose.prod.yaml up -d",
-        "curl -sf http://localhost:${HOST_PORT}/ready",
+        "-f compose.yaml -f compose.prod.yaml up -d",
+        '"$HOST_PORT" "$PROMOTED_CONTAINER_ID" "Promoted deployment"',
+        "DEPLOYMENT_HEALTHY=true",
         "docker image prune -af",
     )
-    positions = [workflow.index(step) for step in ordered_steps]
+    positions = [deployment.index(step) for step in ordered_steps]
 
     assert positions == sorted(positions)
     assert deploy_concurrency == {
@@ -237,14 +416,39 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
         "cancel-in-progress": False,
     }
     assert "trap cleanup EXIT" in workflow
-    assert 'rm -f "$PROJECT_DIR/.env.next" /tmp/deploy.env' in workflow
+    assert "trap cleanup_transfer EXIT" in workflow
+    assert 'rm -f "$PROJECT_DIR/.env.next"' in workflow
+    assert 'rm -f "$ROLLBACK_ENV"' in workflow
+    assert "/tmp/deploy.env" not in workflow
+    assert "/tmp/ghcr.token" not in workflow
+    assert "umask 077" in workflow
+    assert 'mktemp -d "${RUNNER_TEMP}/blacki-deploy.XXXXXX"' in workflow
+    assert 'mktemp -d "$HOME/.blacki-deploy/run.XXXXXX"' in workflow
+    assert 'chmod 600 "$transfer_dir/deploy.env"' in workflow
+    assert "python3 scripts/write_compose_env.py" in workflow
+    assert "PREVIOUS_REVISION=$(git rev-parse HEAD)" in workflow
+    assert "PREVIOUS_IMAGE=$(" in workflow
+    assert 'cp .env "$ROLLBACK_ENV"' in workflow
+    assert "rollback_deployment" in workflow
+    assert "Stopping failed promoted deployment" in workflow
+    assert "CHECKOUT_CHANGED=true" in workflow
+    assert 'elif [ "$CHECKOUT_CHANGED" = true ]' in workflow
+    assert "Automatic rollback failed" in workflow
+    assert "Preserved rollback environment at $ROLLBACK_ENV" in workflow
     assert "down --remove-orphans 2>/dev/null || true" not in workflow
+    assert "docker system prune" not in workflow
+    assert "--volumes" not in workflow
     assert "git pull" not in workflow
     assert "image-digest: ${{ steps.build-push.outputs.digest }}" in workflow
     assert "DEPLOY_SHA: ${{ github.sha }}" in workflow
     assert "IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}" in workflow
     assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
-    assert '"$IMAGE_NAME" -c' in workflow
+    assert 'printf \'IMAGE="%s"\\n\' "$IMAGE_NAME"' in workflow
+    assert 'printf \'DEPLOY_SHA="%s"\\n\' "$DEPLOY_SHA"' in workflow
+    assert 'SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"' in workflow
+    assert "source /tmp/deploy.env" not in workflow
+    assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
+    assert "TELEGRAM_ENABLED=false" not in workflow
     assert "--env OPENROUTER_API_KEY" not in workflow
 
     for setting in (
@@ -252,7 +456,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
     ):
         assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
-        assert workflow.count(f'{setting}="${{{setting}}}"') == 2
+        assert f'{setting}="${{{setting}}}"' not in workflow
 
 
 def test_production_deployment_shell_is_valid_bash() -> None:
@@ -269,6 +473,26 @@ def test_production_deployment_shell_is_valid_bash() -> None:
     subprocess.run(  # noqa: S603 - executable resolved with shutil.which
         [BASH_EXECUTABLE, "-n"],
         input=deploy_script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_ci_startup_smoke_shell_is_valid_bash() -> None:
+    """The production-image startup check must remain valid executable Bash."""
+    assert BASH_EXECUTABLE is not None
+    workflow = _load_yaml(".github/workflows/developer-experience.yml")
+    steps = workflow["jobs"]["deployment-contract"]["steps"]
+    smoke_step = next(
+        step for step in steps if step["name"] == "Smoke test production startup"
+    )
+    smoke_script = smoke_step["run"]
+    assert isinstance(smoke_script, str)
+
+    subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [BASH_EXECUTABLE, "-n"],
+        input=smoke_script,
         check=True,
         capture_output=True,
         text=True,
