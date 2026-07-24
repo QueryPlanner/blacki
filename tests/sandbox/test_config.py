@@ -129,6 +129,26 @@ class TestLoadSandboxConfig:
             config = load_sandbox_config()
             assert config.api_key is None
 
+    def test_host_credentials_are_not_loaded_into_sandbox_config(self) -> None:
+        """General sandbox configuration must ignore every standing credential."""
+        hostile_env = {
+            "SANDBOX_GEMINI_API_KEY": "sandbox-gemini-canary",
+            "GEMINI_API_KEY": "gemini-canary",
+            "GOOGLE_API_KEY": "google-canary",
+            "OPENROUTER_API_KEY": "openrouter-canary",
+            "SANDBOX_GITHUB_TOKEN": "sandbox-github-canary",
+            "GITHUB_TOKEN": "github-canary",
+            "TELEGRAM_BOT_TOKEN": "telegram-canary",
+        }
+
+        with patch.dict(os.environ, hostile_env, clear=False):
+            config = load_sandbox_config()
+
+        dumped = config.model_dump()
+        assert all(canary not in str(dumped) for canary in hostile_env.values())
+        assert "gemini_api_key" not in dumped
+        assert "github_token" not in dumped
+
 
 class TestConstants:
     """Tests for module constants."""

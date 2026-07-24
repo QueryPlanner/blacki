@@ -105,7 +105,6 @@ jobs:
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
           SANDBOX_ENABLED: ${{ secrets.SANDBOX_ENABLED }}
           SANDBOX_DOMAIN: ${{ secrets.SANDBOX_DOMAIN }}
-          SANDBOX_GITHUB_TOKEN: ${{ secrets.SANDBOX_GITHUB_TOKEN }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           MEM0_QDRANT_URL: ${{ secrets.MEM0_QDRANT_URL }}
@@ -138,7 +137,6 @@ jobs:
           BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
-          SANDBOX_GITHUB_TOKEN="${SANDBOX_GITHUB_TOKEN}"
           GH_TOKEN="${GH_TOKEN}"
           GOOGLE_API_KEY="${GOOGLE_API_KEY}"
           MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
@@ -179,7 +177,8 @@ jobs:
 
           # 4. Stop existing container before pull (save resources on small servers)
           echo "Stopping existing containers..."
-          docker compose down --remove-orphans 2>/dev/null || true
+          docker compose -f compose.yaml -f compose.prod.yaml \
+            down --remove-orphans 2>/dev/null || true
 
           # 5. Aggressive cleanup for small servers
           echo "Cleaning up old Docker resources..."
@@ -218,7 +217,6 @@ jobs:
           HOST_PORT="${HOST_PORT}"
           SANDBOX_ENABLED="${SANDBOX_ENABLED}"
           SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
-          SANDBOX_GITHUB_TOKEN="${SANDBOX_GITHUB_TOKEN}"
           GOOGLE_API_KEY="${GOOGLE_API_KEY}"
           MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
           MEM0_QDRANT_API_KEY="${MEM0_QDRANT_API_KEY}"
@@ -235,8 +233,8 @@ jobs:
           # 9. Pull and start containers
           echo "Pulling and starting containers..."
           export IMAGE="$IMAGE_NAME"
-          docker compose pull
-          docker compose up -d
+          docker compose -f compose.yaml -f compose.prod.yaml pull
+          docker compose -f compose.yaml -f compose.prod.yaml up -d
 
           # 10. Final cleanup of unused images
           echo "Final cleanup..."
@@ -248,7 +246,7 @@ jobs:
           RETRY_COUNT=0
           HEALTH_OK=false
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -sf http://localhost:${HOST_PORT}/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:${HOST_PORT}/ready > /dev/null 2>&1; then
               HEALTH_OK=true
               break
             fi
@@ -261,13 +259,13 @@ jobs:
             echo "✅ Health check passed on port ${HOST_PORT}!"
           else
             echo "⚠️ Health check failed after $MAX_RETRIES attempts, checking logs..."
-            docker compose logs --tail=100
+            docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100
             exit 1
           fi
 
           # 12. Show status
           echo "=== Deployment Complete ==="
-          docker compose ps
+          docker compose -f compose.yaml -f compose.prod.yaml ps
           df -h /
 
           # 13. Cleanup temp env file

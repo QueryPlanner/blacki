@@ -113,3 +113,12 @@ def test_split_long_message_infinite_loop_prevention() -> None:
     # Then chunk="*_", entities=[], closing="".
     assert chunks[0] == "*_"
     assert chunks[1] == "~A"
+
+
+def test_split_long_message_keeps_escape_pairs_together() -> None:
+    """A limit boundary cannot strand a Markdown escape backslash."""
+    chunks = split_long_message(r"aaaa\*bbbb", limit=5)
+
+    assert chunks == ["aaaa", r"\*bbb", "b"]
+    assert all(not chunk.endswith("\\") for chunk in chunks)
+    assert all(_get_open_entities(chunk) == [] for chunk in chunks)

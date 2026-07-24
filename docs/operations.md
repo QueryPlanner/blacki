@@ -3,19 +3,19 @@
 ## Check status
 
 ```bash
-docker compose ps
-docker compose logs --tail=100 agent
-curl --fail http://127.0.0.1:8080/health
+docker compose -f compose.yaml -f compose.prod.yaml ps
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100 agent
+curl --fail http://127.0.0.1:8080/ready
 ```
 
-The container health status is a TCP liveness check. The application health
-JSON can say `degraded` when optional memory is unavailable; inspect each
-reported check.
+The container health status is the application readiness check. SQLite is
+critical; optional memory is not. Use `/live` only to distinguish an alive
+process from a dependency-readiness failure.
 
 ## Follow logs
 
 ```bash
-docker compose logs --follow agent
+docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 ```
 
 Blacki also appends application JSON logs and traces to `logs/` on the host.
@@ -33,7 +33,7 @@ anything required for incident analysis.
 ## Restart
 
 ```bash
-docker compose restart agent
+docker compose -f compose.yaml -f compose.prod.yaml restart agent
 ```
 
 HTTP and ADK web sessions are in memory and reset. SQLite-backed tool state and
@@ -49,9 +49,9 @@ The state directories are:
 For a consistent filesystem copy, briefly stop the service:
 
 ```bash
-docker compose stop agent
+docker compose -f compose.yaml -f compose.prod.yaml stop agent
 tar -czf blacki-state-backup.tgz .adk_state data
-docker compose start agent
+docker compose -f compose.yaml -f compose.prod.yaml start agent
 ```
 
 Store the archive away from the VPS. Back up `.env` separately in an encrypted
@@ -69,8 +69,8 @@ procedures instead of assuming `data/` contains the remote vectors.
 
    ```bash
    git pull --ff-only
-   docker compose up --build -d
-   docker compose ps
+   docker compose -f compose.yaml -f compose.prod.yaml up --build -d
+   docker compose -f compose.yaml -f compose.prod.yaml ps
    ```
 
 4. Inspect logs and the health payload.
@@ -84,9 +84,9 @@ Only use this path when the configured image tag and registry access are
 verified:
 
 ```bash
-docker compose pull
-docker compose up --no-build -d
-docker compose ps
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up --no-build -d
+docker compose -f compose.yaml -f compose.prod.yaml ps
 ```
 
 Pin a release tag for reproducible upgrades. A floating branch tag trades
@@ -101,14 +101,14 @@ damaged; code rollback and data rollback are separate decisions.
 For a prebuilt image, restore the previous image tag in `.env` and run:
 
 ```bash
-docker compose pull
-docker compose up --no-build -d
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up --no-build -d
 ```
 
 ## Remove containers without removing state
 
 ```bash
-docker compose down
+docker compose -f compose.yaml -f compose.prod.yaml down
 ```
 
 This removes the service container and network. The bind-mounted

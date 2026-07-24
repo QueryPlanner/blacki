@@ -42,6 +42,36 @@ async def test_log_workout_success(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
+@patch("blacki.workouts.tools.get_storage")
+async def test_log_workout_includes_previous_session_comparison(
+    mock_get_storage,
+    mock_tool_context,
+) -> None:
+    """A new session should include the prior split session for comparison."""
+    mock_storage = AsyncMock()
+    mock_get_storage.return_value = mock_storage
+    previous = WorkoutSession(
+        id=7,
+        user_id="user1",
+        workout_date="2020-01-01",
+        split_name="push",
+        created_at="2020-01-01T10:00:00",
+    )
+    mock_storage.get_latest_split_session.return_value = previous
+    mock_storage.create_session.return_value = 8
+
+    result = await log_workout(
+        mock_tool_context,
+        split_name="push",
+        exercises=[{"name": "bench press", "sets": [{"weight_kg": 100, "reps": 10}]}],
+    )
+
+    assert result["status"] == "success"
+    assert result["comparison"]["last_workout_date"] == "2020-01-01"
+    assert result["comparison"]["last_session"]["id"] == 7
+
+
+@pytest.mark.asyncio
 async def test_log_workout_validation(mock_tool_context) -> None:
     result = await log_workout(
         mock_tool_context, split_name="push", exercises=[{"invalid": "format"}]
@@ -207,6 +237,8 @@ async def test_get_todays_workout_rest_day(
 async def test_log_workout_shorthand_sets(mock_get_storage, mock_tool_context):
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
+    mock_storage.get_latest_split_session.return_value = None
+    mock_storage.create_session.return_value = 1
 
     exercises = [
         {

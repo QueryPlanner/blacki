@@ -19,7 +19,12 @@ from blacki.telegram.bot import (
     TelegramSessionIdentity,
     create_telegram_bot,
 )
-from blacki.telegram.formatting import escape_markdown, format_for_telegram
+from blacki.telegram.formatting import (
+    escape_markdown,
+    escape_markdown_plain,
+    format_for_telegram,
+    get_open_markdown_entities,
+)
 from blacki.telegram.streaming import (
     TELEGRAM_MESSAGE_LIMIT,
     StreamSession,
@@ -2130,6 +2135,51 @@ class TestFormattingSpecialChars:
         formatted = format_for_telegram(text)
         assert r"\*\*" in formatted
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "unclosed *bold",
+            "unclosed _italic",
+            "unclosed ~strike",
+            "unclosed `code",
+            "unclosed ```code block",
+            "unclosed __underline",
+            "unclosed ||spoiler",
+        ],
+    )
+    def test_malformed_entities_degrade_to_fully_escaped_plain_text(
+        self, text: str
+    ) -> None:
+        """Every unclosed Telegram entity is converted to parser-safe text."""
+        formatted = format_for_telegram(text)
+
+        assert formatted == escape_markdown_plain(text)
+        assert get_open_markdown_entities(formatted) == []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "*bold*",
+            "_italic_",
+            "~strike~",
+            "`code`",
+            "```code block```",
+            "__underline__",
+            "||spoiler||",
+            r"escaped \* marker",
+        ],
+    )
+    def test_balanced_and_escaped_entities_remain_closed(self, text: str) -> None:
+        """Balanced controls never leave an entity open after formatting."""
+        assert get_open_markdown_entities(format_for_telegram(text)) == []
+
+    def test_code_block_escapes_backticks_and_backslashes(self) -> None:
+        """Telegram's additional code-entity escape rules are enforced."""
+        formatted = format_for_telegram("```path\\with`tick```")
+
+        assert formatted == "```path\\\\with\\`tick```"
+        assert get_open_markdown_entities(formatted) == []
+
     def test_format_for_telegram_bold_with_code(self) -> None:
         """Test bold containing code block and inline code."""
         text = "**Bold with `inline` and ```code block```**"
@@ -2305,6 +2355,83 @@ class TestTelegramBotEdgeCases:
         mock_api.send_message.assert_called()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "apologize" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_final_response_escapes_unmatched_bold_marker(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Malformed model Markdown is safe before the Telegram API call."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._send_final_response(
+            chat_id=123,
+            message_thread_id=None,
+            response_text="This is *unmatched",
+        )
+
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert call_kwargs["text"] == r"This is \*unmatched"
+        assert call_kwargs["parse_mode"] == ParseMode.MARKDOWN_V2
+
+    @pytest.mark.asyncio
+    async def test_send_final_response_retries_parse_failure_as_plain_text(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Telegram grammar rejection cannot prevent final-response delivery."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock(
+            side_effect=[
+                TelegramApiError(
+                    "HTTP 400: Bad Request: can't parse entities",
+                    error_code=400,
+                ),
+                MagicMock(),
+            ]
+        )
+        bot._api = mock_api
+
+        await bot._send_final_response(
+            chat_id=123,
+            message_thread_id=9,
+            response_text="**Balanced but rejected**",
+        )
+
+        assert mock_api.send_message.await_count == 2
+        first_call, second_call = mock_api.send_message.await_args_list
+        assert first_call.kwargs["parse_mode"] == ParseMode.MARKDOWN_V2
+        assert second_call.kwargs["parse_mode"] is None
+        assert second_call.kwargs["text"] == first_call.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_final_response_does_not_mask_non_parse_failure(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Only entity-parser failures should trigger the plain-text retry."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock(
+            side_effect=TelegramApiError("Server unavailable", error_code=500)
+        )
+        bot._api = mock_api
+
+        with pytest.raises(TelegramApiError, match="Server unavailable"):
+            await bot._send_final_response(
+                chat_id=123,
+                message_thread_id=None,
+                response_text="Valid response",
+            )
+
+        mock_api.send_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_handle_update_with_no_message(

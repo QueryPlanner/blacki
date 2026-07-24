@@ -344,6 +344,15 @@ class TestBuildSkillTools:
 
         assert tools == []
 
+    def test_does_not_register_credentialed_gemini_cli_skill(self) -> None:
+        """General sandboxes must not advertise a credential-dependent skill."""
+        from blacki.registry import _build_skill_tools
+
+        tools = _build_skill_tools(Path("src/blacki/skills"))
+
+        assert len(tools) == 1
+        assert "gemini_cli" not in tools[0]._skills
+
 
 class TestBuildDeclarativeDbTools:
     """Tests for _build_declarative_db_tools."""

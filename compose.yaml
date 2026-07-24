@@ -2,8 +2,6 @@ services:
   agent:
     image: ${IMAGE:-blacki:local}
     build: .
-    ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8080}:8080"
     environment:
       HOST: 0.0.0.0
       PORT: 8080
@@ -25,8 +23,9 @@ services:
         - python
         - -c
         - >-
-          import socket;
-          socket.create_connection(("127.0.0.1", 8080), timeout=3).close()
+          import urllib.request;
+          urllib.request.urlopen(
+          "http://127.0.0.1:8080/ready", timeout=3).read()
       interval: 30s
       timeout: 5s
       retries: 3

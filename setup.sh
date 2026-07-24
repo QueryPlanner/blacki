@@ -64,8 +64,6 @@ ufw default allow outgoing
 ufw allow ssh
 ufw allow 80/tcp
 ufw allow 443/tcp
-# Allow custom agent port if needed (default 8080 for agent)
-ufw allow 8080/tcp
 
 # Enable UFW non-interactively
 if ! ufw status | grep -q "Status: active"; then
@@ -129,4 +127,4 @@ log "To deploy your agent:"
 log "  1. Switch to user: su - $AGENT_USER"
 log "  2. Clone repo: git clone <your-repo-url>"
 log "  3. Configure .env"
-log "  4. Run: docker compose up -d"
+log "  4. Run: docker compose -f compose.yaml -f compose.prod.yaml up -d"

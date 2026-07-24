@@ -115,11 +115,8 @@ source = ["src"]
 branch = true
 omit = [
     "src/blacki/**/__init__.py",
-    "src/blacki/server.py",
     "src/blacki/**/agent.py",
-    "src/blacki/utils/observability.py",
     "src/blacki/memory/config.py",
-    "src/blacki/memory/tools.py",
 ]
 
 [tool.coverage.report]
@@ -133,6 +130,13 @@ directory = "htmlcov"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 filterwarnings = [
+    "error::RuntimeWarning",
+    "error::ResourceWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+    # google-genai still emits this third-party warning while constructing types.
     "ignore::pydantic.warnings.PydanticDeprecatedSince212:google.genai.types",
+    # mem0 still uses instance-level model_fields in its project client.
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20:mem0.client.project",
 ]

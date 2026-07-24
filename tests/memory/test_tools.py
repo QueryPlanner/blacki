@@ -74,23 +74,26 @@ class TestSaveMemory:
         assert "not configured" in result["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_save_memory_custom_user_id(
+    async def test_save_memory_uses_context_user_id(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should use provided user_id."""
+        """Should use the authenticated context user_id."""
         monkeypatch.setenv("MEM0_API_KEY", "test_key")
-        tool_context = self._tool_context()
+        tool_context = cast(
+            ToolContext,
+            MockToolContext(state=MockState({}), user_id="context_user"),
+        )
 
         mock_client = MagicMock()
         mock_client.add.return_value = {"id": "mem_123"}
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
-            result = await save_memory("test", tool_context, user_id="custom_user")
+            result = await save_memory("test", tool_context)
 
         assert result["status"] == "success"
         mock_client.add.assert_called_once()
         call_kwargs = mock_client.add.call_args
-        assert call_kwargs[1]["user_id"] == "custom_user"
+        assert call_kwargs[1]["user_id"] == "context_user"
 
 
 class TestSearchMemory:
@@ -224,6 +227,7 @@ class TestGetMemory:
             "memory": "User likes pizza",
             "created_at": "2024-01-01",
             "metadata": {"source": "chat"},
+            "user_id": "test_user",
         }
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
@@ -270,6 +274,11 @@ class TestUpdateMemory:
         tool_context = self._tool_context()
 
         mock_client = MagicMock()
+        mock_client.get.return_value = {
+            "id": "mem_123",
+            "memory": "Original text",
+            "user_id": "test_user",
+        }
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
             result = await update_memory("mem_123", "Updated text", tool_context)
@@ -300,6 +309,11 @@ class TestDeleteMemory:
         tool_context = self._tool_context()
 
         mock_client = MagicMock()
+        mock_client.get.return_value = {
+            "id": "mem_123",
+            "memory": "Text to delete",
+            "user_id": "test_user",
+        }
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
             result = await delete_memory("mem_123", tool_context)

@@ -1,20 +1,24 @@
 ---
 name: gemini_cli
-description: Allows the agent to use the Google Gemini CLI within an OpenSandbox container.
+description: Reference for a disabled Gemini CLI sandbox capability.
 ---
 
 # Gemini CLI Skill
 
 The Gemini CLI (`@google/gemini-cli`) is a command-line interface for interacting with the Google Gemini API.
-You can use it to delegate complex coding or research tasks to a nested agent.
+Blacki does not register this skill. General-purpose sandboxes intentionally
+receive no model or repository credentials, so enabling the commands below would
+create a non-functional or unsafe capability.
 
 ## Pre-requisites
-The Gemini CLI must be installed in the sandbox. You should run this command FIRST before trying to use the CLI in a new sandbox session:
+Do not enable this skill by injecting a standing API key. A future implementation
+must use an explicit, least-privilege capability broker with short-lived
+credentials and separate allow/deny tests.
+
+For reference, the Gemini CLI installation command is:
 ```bash
 hash gemini 2>/dev/null || npm install -g @google/gemini-cli@latest
 ```
-
-The authentication variables (`GEMINI_API_KEY`, etc.) are automatically injected into the sandbox environment, so you do NOT need to pass them manually.
 
 ## Usage
 Since you are an automated agent, you MUST use the Gemini CLI in non-interactive mode.

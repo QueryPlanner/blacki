@@ -6,7 +6,7 @@ which requires special handling for reserved characters.
 
 import re
 
-MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~>#+-=|{}.!\\")
+MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~`>#+-=|{}.!\\")
 
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 BULLET_PATTERN = re.compile(r"^(\s*)[*\-+]\s+", re.MULTILINE)
@@ -60,11 +60,79 @@ def format_for_telegram(text: str) -> str:
     - * item, - item to • item (bullet character)
     - Escapes remaining special characters
     """
+    original_text = text
     text = _convert_headings_to_bold(text)
     text = _convert_bullets(text)
     text = _convert_bold(text)
     text = _escape_remaining(text)
+    if get_open_markdown_entities(text):
+        return escape_markdown_plain(original_text)
     return text
+
+
+def escape_markdown_plain(text: str) -> str:
+    """Escape every MarkdownV2 control character without preserving entities."""
+    return "".join(
+        f"\\{char}" if char in MARKDOWN_SPECIAL_CHARS else char for char in text
+    )
+
+
+def get_open_markdown_entities(text: str) -> list[str]:
+    """Return unclosed MarkdownV2 entities while respecting escaped markers."""
+    open_entities: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+
+        if text[i : i + 3] == "```":
+            if "`" in open_entities:
+                i += 3
+                continue
+            if open_entities and open_entities[-1] == "```":
+                open_entities.pop()
+            else:
+                open_entities.append("```")
+            i += 3
+            continue
+
+        if text[i] == "`":
+            if "```" in open_entities:
+                i += 1
+                continue
+            if open_entities and open_entities[-1] == "`":
+                open_entities.pop()
+            else:
+                open_entities.append("`")
+            i += 1
+            continue
+
+        if "```" in open_entities or "`" in open_entities:
+            i += 1
+            continue
+
+        if text[i : i + 2] in ("__", "||"):
+            marker = text[i : i + 2]
+            if open_entities and open_entities[-1] == marker:
+                open_entities.pop()
+            else:
+                open_entities.append(marker)
+            i += 2
+            continue
+
+        if text[i] in ("*", "_", "~"):
+            marker = text[i]
+            if open_entities and open_entities[-1] == marker:
+                open_entities.pop()
+            else:
+                open_entities.append(marker)
+            i += 1
+            continue
+
+        i += 1
+
+    return open_entities
 
 
 def _convert_headings_to_bold(text: str) -> str:
@@ -178,6 +246,11 @@ def _escape_remaining(text: str) -> str:
             result.append("*")
             i += 1
             continue
+
+        if ((in_code_block or in_inline_code) and text[i] == "\\") or (
+            in_code_block and text[i] == "`"
+        ):
+            result.append("\\")
 
         if (
             not in_code_block

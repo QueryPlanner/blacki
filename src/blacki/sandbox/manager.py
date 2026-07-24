@@ -86,29 +86,19 @@ class SandboxManager:
                 return {"sandbox": sandbox, "error": None}
             except SandboxException as e:
                 logger.warning(
-                    "Failed to reconnect to sandbox %s, creating new one: %s",
+                    "Failed to reconnect to sandbox %s; creating a new one (%s)",
                     sandbox_id,
-                    e,
+                    type(e).__name__,
                 )
 
         try:
-            env = {}
-            if self._config.gemini_api_key:
-                env["GEMINI_API_KEY"] = self._config.gemini_api_key
-            if self._config.gemini_base_url:
-                env["GEMINI_BASE_URL"] = self._config.gemini_base_url
-            if self._config.gemini_model:
-                env["GEMINI_MODEL"] = self._config.gemini_model
-            if self._config.github_token:
-                env["GITHUB_TOKEN"] = self._config.github_token
-
             sandbox = await Sandbox.create(
                 self._config.image,
                 connection_config=self._connection_config,
                 entrypoint=self._config.entrypoint,
                 timeout=self._config.timeout,
                 resource=self._config.resource,
-                env=env if env else None,
+                env=None,
             )
             state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)
@@ -117,23 +107,25 @@ class SandboxManager:
         except SandboxReadyTimeoutException as e:
             error_msg = (
                 f"Sandbox startup timed out. "
-                f"Ensure opensandbox-server is running at {self._config.domain}. "
-                f"Error: {e}"
+                f"Ensure opensandbox-server is running at {self._config.domain}."
             )
-            logger.error(error_msg)
+            logger.error("%s (%s)", error_msg, type(e).__name__)
             return {"sandbox": None, "error": error_msg}
         except SandboxException as e:
-            error_msg = f"Failed to create sandbox: {e}"
-            logger.exception(error_msg)
+            error_msg = "Failed to create sandbox."
+            logger.error("%s (%s)", error_msg, type(e).__name__)
             return {"sandbox": None, "error": error_msg}
         except Exception as e:
-            error_msg = f"Unexpected error creating sandbox: {e}"
-            logger.exception(error_msg)
+            error_msg = "Unexpected error creating sandbox."
+            logger.error("%s (%s)", error_msg, type(e).__name__)
             return {"sandbox": None, "error": error_msg}
 
     async def close(self) -> None:
         """Close the connection config transport if owned."""
         try:
             await self._connection_config.close_transport_if_owned()
-        except Exception:
-            logger.exception("Error closing connection config transport")
+        except Exception as e:
+            logger.error(
+                "Error closing connection config transport (%s)",
+                type(e).__name__,
+            )

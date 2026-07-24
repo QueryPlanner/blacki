@@ -695,12 +695,31 @@ class TelegramBot:
             message_chunks = ["I apologize, but I couldn't generate a response\\."]
 
         for message_chunk in message_chunks:
-            await self.api.send_message(
-                chat_id=chat_id,
-                text=message_chunk,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=message_thread_id,
-            )
+            try:
+                await self.api.send_message(
+                    chat_id=chat_id,
+                    text=message_chunk,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    message_thread_id=message_thread_id,
+                )
+            except TelegramApiError as error:
+                error_text = str(error).casefold()
+                parse_failure = error.error_code == 400 and (
+                    "can't parse entities" in error_text
+                    or "can't find end of" in error_text
+                )
+                if not parse_failure:
+                    raise
+
+                logger.warning(
+                    "Telegram rejected MarkdownV2 entities; retrying as plain text"
+                )
+                await self.api.send_message(
+                    chat_id=chat_id,
+                    text=message_chunk,
+                    parse_mode=None,
+                    message_thread_id=message_thread_id,
+                )
 
     def _build_session_identity(
         self,

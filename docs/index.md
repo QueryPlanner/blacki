@@ -57,8 +57,8 @@ Docker Compose plugin.
 - `AGENT_NAME` and at least one model API key are required.
 - SQLite and optional local memory data are stored in host-mounted directories.
 - HTTP and ADK web sessions are in memory and reset on restart.
-- Logs and traces are written to local JSON files; remote OTLP export is not
-  currently configured by environment variables alone.
+- Logs and traces are always written to local JSON files; a validated endpoint
+  can additionally enable gRPC OTLP span export.
 
 ## Next steps
 

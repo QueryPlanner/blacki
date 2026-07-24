@@ -33,9 +33,9 @@ chmod 600 .env
 Replace every `replace-me` value in `.env`, then validate and start Blacki:
 
 ```bash
-docker compose config --quiet
-docker compose up --build -d
-docker compose ps
+docker compose -f compose.yaml -f compose.prod.yaml config --quiet
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml ps
 ```
 
 The HTTP port binds to `127.0.0.1` by default. Telegram polling needs outbound
