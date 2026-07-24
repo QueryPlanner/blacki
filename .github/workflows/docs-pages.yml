@@ -4,6 +4,7 @@ on:
   push:
     branches: ["main"]
     paths:
+      - ".github/workflows/docs-pages.yml"
       - "docs/**"
       - "mkdocs.yml"
       - "pyproject.toml"

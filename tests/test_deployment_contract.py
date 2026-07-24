@@ -142,6 +142,20 @@ def test_mkdocs_navigation_targets_existing_files() -> None:
     assert missing == []
 
 
+def test_documentation_deployment_triggers_on_its_own_workflow() -> None:
+    """Pages changes must deploy the workflow that defines them."""
+    workflow = _read(".github/workflows/docs-pages.yml")
+
+    assert workflow.count('".github/workflows/docs-pages.yml"') == 1
+
+    for required in (
+        "mkdocs build --strict",
+        "actions/upload-pages-artifact@v4",
+        "actions/deploy-pages@v4",
+    ):
+        assert required in workflow
+
+
 def test_server_environment_is_covered_by_configuration_reference() -> None:
     """Required runtime settings should not silently disappear from the docs."""
     reference = _read("docs/base-infra/environment-variables.md")
