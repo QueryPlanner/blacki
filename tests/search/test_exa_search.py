@@ -99,7 +99,8 @@ class TestExaSearch:
         declaration = FunctionTool(exa_search)._get_declaration()
 
         assert declaration is not None
-        parameters = declaration.model_dump(exclude_none=True)["parameters"]
+        parameters = declaration.parameters_json_schema
+        assert parameters is not None
         assert set(parameters["properties"]) == {"query", "num_results"}
         assert parameters["required"] == ["query", "num_results"]
 

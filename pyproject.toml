@@ -9,14 +9,14 @@ authors = [
 requires-python = ">=3.11,<3.14"
 dependencies = [
     # Pin ADK to test releases before locking upgrades
-    "google-adk==1.25.1",
+    "google-adk[mcp]==2.5.0",
     "google-auth>=2.40.3,<3.0.0",
     "google-cloud-logging>=3.12.1,<4.0.0",
     "opentelemetry-exporter-gcp-logging>=1.9.0a0,<2.0.0",
-    "opentelemetry-exporter-otlp-proto-grpc==1.37.0",
-    "opentelemetry-exporter-otlp-proto-http==1.37.0",
+    "opentelemetry-exporter-otlp-proto-grpc==1.42.1",
+    "opentelemetry-exporter-otlp-proto-http==1.42.1",
     "opentelemetry-instrumentation-google-genai>=0.4b0,<0.5",
-    "opentelemetry-instrumentation-logging>=0.58b0,<0.59",
+    "opentelemetry-instrumentation-logging>=0.63b0,<0.64",
     "pydantic>=2.11.0,<3.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
     "litellm>=1.60.0",
@@ -37,6 +37,7 @@ server = "blacki.server:main"
 
 [dependency-groups]
 dev = [
+    "google-adk[eval]==2.5.0",
     "ruff>=0.12.7,<1.0.0",
     "mypy>=1.17.1,<2.0.0",
     "pytest>=8.3.4,<9.0.0",

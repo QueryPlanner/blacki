@@ -16,9 +16,10 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 from google.adk.agents.readonly_context import ReadonlyContext
+from google.adk.features import FeatureName, override_feature_enabled
 from google.adk.models.llm_request import LlmRequest
-from google.adk.skills import format_skills_as_xml
 from google.adk.skills.models import Frontmatter, Resources, Skill
+from google.adk.skills.prompt import format_skills_as_xml
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SKILL_STATE_PREFIX = "mcp_skill_activated_"
+
+# Blacki's bundled skills use snake_case names. ADK 2.5 supports them behind
+# an explicit compatibility flag while keeping kebab-case as its default.
+override_feature_enabled(FeatureName.SNAKE_CASE_SKILL_NAME, True)
 
 
 def load_skill_from_dir(skill_path: Path) -> Skill | None:
@@ -385,8 +390,9 @@ class McpSkillToolset(BaseToolset):
         llm_request: LlmRequest,
     ) -> None:
         """Adds available skills to the system instruction."""
-        skill_frontmatters = self._list_skills()
-        skills_xml = format_skills_as_xml(skill_frontmatters)
+        skills_for_prompt: list[Frontmatter | Skill] = []
+        skills_for_prompt.extend(self._list_skills())
+        skills_xml = format_skills_as_xml(skills_for_prompt)
 
         skill_si = f"""
 You can use specialized 'skills' to help you with complex tasks.

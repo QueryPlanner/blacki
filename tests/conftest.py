@@ -380,6 +380,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "LOG_LEVEL",
         "SERVE_WEB_INTERFACE",
         "RELOAD_AGENTS",
+        "TASK_WORKER_ENABLED",
         "AGENT_ENGINE",
         "ARTIFACT_SERVICE_URI",
         "ALLOW_ORIGINS",

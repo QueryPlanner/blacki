@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
-from google.adk.agents import LlmAgent
+from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.apps import App
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
@@ -26,6 +26,7 @@ from .prompt import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
+    return_instruction_task_worker,
 )
 from .registry import build_tool_config_from_env, build_tools
 
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 logging_callbacks = LoggingCallbacks()
+TASK_WORKER_NAME = "task_worker"
+TASK_WORKER_ENABLED_VALUES = frozenset({"1", "true", "yes"})
 
 
 class TelegramModelOverridePlugin(BasePlugin):
@@ -148,6 +151,14 @@ def _build_model() -> str | LiteLlm:
     return model
 
 
+def _task_worker_enabled() -> bool:
+    """Return whether the same-privilege delegated task worker is enabled."""
+    return (
+        os.getenv("TASK_WORKER_ENABLED", "false").strip().lower()
+        in TASK_WORKER_ENABLED_VALUES
+    )
+
+
 def create_agent() -> LlmAgent:
     """Create and configure the root agent.
 
@@ -157,11 +168,11 @@ def create_agent() -> LlmAgent:
     Returns:
         Configured LlmAgent instance.
     """
-    from google.adk.tools.preload_memory_tool import preload_memory_tool
+    from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 
     tool_config = build_tool_config_from_env()
     agent_tools = build_tools(tool_config)
-    agent_tools.append(preload_memory_tool)
+    agent_tools.append(PreloadMemoryTool())
 
     before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
     after_model_callbacks: list[Any] = [logging_callbacks.after_model]
@@ -173,6 +184,30 @@ def create_agent() -> LlmAgent:
         )
         before_tool_callbacks.append(notify_telegram_before_tool)
         after_model_callbacks.append(notify_telegram_after_model)
+
+    sub_agents: list[BaseAgent] = []
+    if _task_worker_enabled():
+        worker_tools = build_tools(tool_config)
+        worker_tools.append(PreloadMemoryTool())
+        sub_agents.append(
+            LlmAgent(
+                name=TASK_WORKER_NAME,
+                description=(
+                    "Complete one complex delegated task with the same tools, "
+                    "privileges, and session sandbox as Blacki"
+                ),
+                mode="task",
+                before_agent_callback=logging_callbacks.before_agent,
+                after_agent_callback=logging_callbacks.after_agent,
+                model=_build_model(),
+                instruction=return_instruction_task_worker(),
+                tools=worker_tools,
+                before_model_callback=logging_callbacks.before_model,
+                after_model_callback=after_model_callbacks.copy(),
+                before_tool_callback=before_tool_callbacks.copy(),
+                after_tool_callback=logging_callbacks.after_tool,
+            )
+        )
 
     return LlmAgent(
         name="blacki",
@@ -186,6 +221,7 @@ def create_agent() -> LlmAgent:
         after_model_callback=after_model_callbacks,
         before_tool_callback=before_tool_callbacks,
         after_tool_callback=logging_callbacks.after_tool,
+        sub_agents=sub_agents,
     )
 
 
