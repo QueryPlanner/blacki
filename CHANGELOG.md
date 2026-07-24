@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Add a tested Material for MkDocs documentation site
+- Add a safe first-VPS deployment and operations contract
+
+### Changed
+- Make Docker Compose private, persistent, and health-checked by default
+- Restrict owner infrastructure deployment to the QueryPlanner repository
+
 ## [0.1.0] - 2026-05-07
 
 ### Added

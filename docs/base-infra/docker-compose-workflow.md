@@ -1,184 +1,124 @@
-# Docker Compose Local Development Workflow
+# Docker Compose contract
 
-This guide covers the recommended workflow for local development using Docker Compose.
+`compose.yaml` defines one service named `agent`. The same file supports a
+source build and an explicitly configured prebuilt image.
 
-## Quick Start
+## Resolve the configuration
 
-### Daily Development (Recommended)
+Before every first start or configuration change:
 
 ```bash
-docker compose up --build --watch
+docker compose config --quiet
 ```
 
-**Why both flags?**
-- `--build`: Ensures you have the latest code and dependencies
-- `--watch`: Enables hot reloading for instant feedback
+To validate a different environment file:
 
-**What happens:**
-- Container starts with your latest code
-- Watch mode monitors your files for changes
-- Edits to `src/` files are **synced instantly** (no rebuild needed)
-- Changes to `pyproject.toml` or `uv.lock` **trigger automatic rebuild**
-
-**Leave it running** while you develop - changes are applied automatically!
-
----
-
-## Common Commands
-
-### Start with hot reloading (default workflow)
 ```bash
-docker compose up --build --watch
+ENV_FILE=.env.production docker compose --env-file .env.production config --quiet
 ```
 
-### Stop the service
+Compose interpolation and container environment injection are separate. Pass
+the same file through `--env-file` and `ENV_FILE` when its name is not `.env`.
+
+## Source-build path
+
+The default image name is `blacki:local`, and the service includes `build: .`.
+
 ```bash
-# Press Ctrl+C to gracefully stop
-# Or in another terminal:
+docker compose up --build -d
+```
+
+Use this path unless a registry image and its access policy have been verified.
+
+## Prebuilt-image path
+
+Set an exact registry reference:
+
+```dotenv
+IMAGE=ghcr.io/your-owner/blacki:your-tag
+```
+
+Then:
+
+```bash
+docker compose pull
+docker compose up --no-build -d
+```
+
+The `--no-build` flag prevents an accidental local rebuild under the registry
+tag.
+
+## Network defaults
+
+The mapping is:
+
+```yaml
+ports:
+  - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8080}:8080"
+```
+
+The process listens on `0.0.0.0:8080` inside the container, while the VPS
+publishes it only on loopback by default. Telegram long polling needs no inbound
+port.
+
+For temporary browser access, enable the web interface and use an SSH tunnel.
+Treat `BIND_ADDRESS=0.0.0.0` as an explicit public-network decision.
+
+## Persistent mounts
+
+| Host | Container | Data |
+| --- | --- | --- |
+| `./.adk_state` | `/app/src/.adk` | SQLite and ADK artifacts |
+| `./data` | `/app/data` | Optional local memory data |
+| `./logs` | `/app/logs` | Application JSON logs and traces |
+
+The entrypoint starts as root only long enough to create and assign these bind
+mounts, then executes the server as the non-root `app` user.
+
+## Liveness
+
+The healthcheck uses Python's standard `socket` module to connect to
+`127.0.0.1:8080` inside the container. It proves the server is accepting TCP
+connections without calling the richer `/health` endpoint or initializing
+optional Mem0 configuration.
+
+```bash
+docker compose ps
+```
+
+Use `/health` manually when you need database and memory details.
+
+## Lifecycle
+
+```bash
+# Attached source build
+docker compose up --build
+
+# Detached source build
+docker compose up --build -d
+
+# Status
+docker compose ps
+
+# Logs
+docker compose logs --follow agent
+
+# Restart
+docker compose restart agent
+
+# Stop and remove the container and network
 docker compose down
 ```
 
-### View logs
-```bash
-# If running in detached mode
-docker compose logs -f
+`docker compose down` does not delete the bind-mounted host directories.
 
-# View just the app logs
-docker compose logs -f app
-```
+## Source changes
 
-### Rebuild without starting
-```bash
-docker compose build
-```
+Compose Watch is not configured. Rebuild after source or dependency changes:
 
-### Run without watch mode
 ```bash
 docker compose up --build
 ```
 
----
-
-## How Watch Mode Works
-
-Watch mode uses the configuration in `docker-compose.yml`:
-
-```yaml
-develop:
-  watch:
-    # Sync: Instant file copy, no rebuild
-    - action: sync
-      path: ./src
-      target: /app/src
-
-    # Rebuild: Triggers full image rebuild
-    - action: rebuild
-      path: ./pyproject.toml
-
-    - action: rebuild
-      path: ./uv.lock
-```
-
-### Sync Action
-- **Triggers when:** You edit files in `src/`
-- **What happens:** Files are copied into running container instantly
-- **Speed:** Immediate (no rebuild)
-- **Use case:** Code changes during development
-
-### Rebuild Action
-- **Triggers when:** You edit `pyproject.toml` or `uv.lock`
-- **What happens:** Full image rebuild, container recreated
-- **Speed:** ~5-10 seconds (with cache)
-- **Use case:** Dependency changes
-
----
-
-## File Locations
-
-### Source Code
-- **Host:** `./src/`
-- **Container:** `/app/src`
-- **Sync:** Automatic via watch mode
-
-### Data Directory
-- **Host:** `./data/`
-- **Container:** `/app/data` (read-only)
-- **Purpose:** Optional data files for agent
-
----
-
-## Environment Variables
-
-Docker Compose loads `.env` automatically. Key variables:
-
-```bash
-# Identity
-AGENT_NAME=my-local-agent
-
-# API Keys
-GOOGLE_API_KEY=your-key
-OPENROUTER_API_KEY=your-key
-
-# Observability (Optional)
-# OTEL_EXPORTER_OTLP_ENDPOINT=https://api.axiom.co
-# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer YOUR_TOKEN,X-Axiom-Dataset=YOUR_DATASET
-# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-
-# Logging verbosity
-LOG_LEVEL=DEBUG
-
-# Enable web UI
-SERVE_WEB_INTERFACE=true
-```
-
-**Note:** The container uses `HOST=0.0.0.0` to allow connections from the host machine.
-
----
-
-## Troubleshooting
-
-### Container keeps restarting
-- Check logs: `docker compose logs -f`
-- Verify `.env` file exists and has required variables
-
-### Changes not appearing
-- **For code changes:** Should sync instantly via watch mode
-- **For dependency changes:** Watch should auto-rebuild
-- **If stuck:** Stop and restart with `docker compose up --build --watch`
-
-### Port already in use
-```bash
-# Check what's using port 8080
-lsof -i :8080
-
-# Stop the conflicting process or change PORT in .env
-PORT=8001
-```
-
----
-
-## Direct Docker Commands (Without Compose)
-
-If you need to build and run without docker-compose:
-
-```bash
-# Build the image with BuildKit
-DOCKER_BUILDKIT=1 docker build -t your-agent-name:latest .
-
-# Run directly
-docker run \
-  -v ./data:/app/data:ro \
-  -p 127.0.0.1:8080:8080 \
-  --env-file .env \
-  your-agent-name:latest
-```
-
-**Note:** Docker Compose is recommended - it handles volumes, environment, and networking automatically.
-
----
-
-## References
-
-- [Docker Compose Documentation](https://docs.docker.com/compose/)
-- [Docker Compose Watch Mode](https://docs.docker.com/compose/file-watch/)
-- [Dockerfile Strategy Guide](./dockerfile-strategy.md) - Architecture decisions and design rationale
+For faster Python iteration, use the
+[local uv workflow](../development.md#install-and-run-with-python).

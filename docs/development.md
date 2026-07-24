@@ -1,86 +1,112 @@
-## Development
+# Local development
 
-### Goals
+## Requirements
 
-- Use Google ADK features locally **without** requiring Google Cloud services.
-- Keep the codebase easy to reason about (small, explicit modules).
-- Enforce a “green build”: **pytest + mypy + ruff must pass**.
+- Python 3.11, 3.12, or 3.13
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)
+- Git
+- optionally, Docker Engine with Docker Compose
 
-### Repo layout
+## Configure
 
-- `src/blacki/server.py`: Main platform entrypoint (FastAPI + ADK + Postgres)
-- `src/blacki/agent.py`: Agent definition (exports `root_agent`)
-- `src/blacki/utils/`: Shared helper modules (config + observability)
-- `tests/`: Unit and integration tests
-- `.env`: Configuration file (API keys, DB URL)
+```bash
+git clone https://github.com/QueryPlanner/blacki.git
+cd blacki
+cp .env.example .env
+```
 
-### Environment variables
+Set a unique `AGENT_NAME`, activate exactly one model provider, and replace its
+key. For local browser development, opt in to:
 
-Create `.env` in the project root:
+```dotenv
+SERVE_WEB_INTERFACE=true
+RELOAD_AGENTS=true
+```
 
-- `AGENT_NAME`: Unique identifier for the agent service (required)
-- `GOOGLE_API_KEY`: Google AI Studio key (optional if using OpenRouter)
-- `OPENROUTER_API_KEY`: OpenRouter API key (required for non-Google models)
-- `DATABASE_URL`: Postgres URL for sessions (required for persistence)
+The full sample keeps these settings false because it is also the basis for VPS
+deployments.
 
-Observability (Optional):
-- `OTEL_EXPORTER_OTLP_ENDPOINT`: OTLP backend URL
-- `OTEL_EXPORTER_OTLP_HEADERS`: Authentication headers
-- `OTEL_EXPORTER_OTLP_PROTOCOL`: Protocol (http/protobuf or grpc)
-
-Optional:
-
-- `HOST`: server bind host (default: `127.0.0.1`)
-- `PORT`: server port (default: `8080`)
-- `LOG_LEVEL`: Logging verbosity (default: `INFO`)
-- `SERVE_WEB_INTERFACE`: Whether to serve the ADK web UI (default: `false`)
-
-### Install
+## Install and run with Python
 
 ```bash
 uv sync
-```
-
-### Run the server
-
-**Local Python:**
-```bash
 uv run python -m blacki.server
 ```
 
-**Docker Compose (Recommended for full stack):**
-```bash
-docker compose up --build --watch
-```
+The default local bind address is `127.0.0.1:8080`.
 
-### Workflow
-
-1.  **Develop:** Edit files in `src/`.
-2.  **Test:** Run unit tests frequently.
-3.  **Check:** Run quality checks before committing.
-
-### Code Quality & Standards
-
-We enforce high standards to ensure long-term maintainability.
-
-**Commands (Must be 100% Green):**
-```bash
-uv run ruff check .          # Linting
-uv run ruff format --check . # Formatting check
-uv run mypy .                # Type checking
-uv run pytest                # Unit tests (100% coverage required)
-```
-
-**Standards:**
-- **Type Hints:** Strict `mypy`. Use modern Python 3.13+ syntax (e.g., `str | None`, `list[str]`). Pydantic for validation.
-- **Code Style:** `ruff` default configuration (88-char lines). Use `pathlib.Path` instead of `os.path` where possible.
-- **Docstrings:** Google-style format. Document arguments, return values, and exceptions.
-- **Testing:** 100% coverage required for new code.
-
-### Dependency Management
+## Run with Docker Compose
 
 ```bash
-uv add package-name              # Add runtime dependency
-uv add --group dev package-name  # Add dev dependency
-uv lock --upgrade                # Update all dependencies
+docker compose up --build
 ```
+
+Compose does not currently configure file-watch synchronization. Rebuild the
+image after source changes:
+
+```bash
+docker compose up --build
+```
+
+Use `Ctrl+C` in attached mode, or run `docker compose down` from another
+terminal.
+
+## Quality checks
+
+Run the same sequence expected by CI:
+
+```bash
+uv run ruff format
+uv run ruff check
+uv run mypy .
+uv run pytest --cov=src
+```
+
+If any command changes files or you fix a failure, restart the sequence from
+`ruff format`.
+
+The coverage threshold is 100% branch coverage. Tests should exercise real
+internal classes and mock only external boundaries.
+
+## Documentation
+
+Install the documentation group and start the live preview:
+
+```bash
+uv sync --group docs
+uv run mkdocs serve
+```
+
+Build exactly as CI does:
+
+```bash
+uv run mkdocs build --strict
+```
+
+Strict mode validates MkDocs configuration and internal documentation
+references that emit warnings. It does not check whether external URLs are
+reachable.
+
+## Deployment contract checks
+
+The targeted checks cover Compose defaults, environment samples, build-context
+isolation, documentation navigation, and owner-only deployment gating:
+
+```bash
+uv run pytest tests/test_deployment_contract.py
+ENV_FILE=.env.minimal docker compose --env-file .env.minimal config --quiet
+bash -n setup.sh entrypoint.sh
+docker build --tag blacki:contract-test .
+```
+
+The Docker build is required for deployment-related changes.
+
+## Repository automation
+
+Pull requests run code quality and developer-experience workflows. A merge to
+`main` builds the container image. The Tailscale production deployment is
+gated to `QueryPlanner/blacki`, so forks do not attempt to use the owner's
+infrastructure secrets.
+
+Merging to `main` in the owner repository still triggers that production
+deployment. Review its workflow and required secrets before merging.

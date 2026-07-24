@@ -1,107 +1,166 @@
-# Environment Variables
+# Configuration
 
-Complete reference for all environment variables used in this project.
+Copy `.env.minimal` for the Telegram golden path or `.env.example` for all
+documented options. Keep `.env` private.
 
-## Configuration
+## Required values
 
-### Database
+**`AGENT_NAME`**
 
-**DATABASE_URL**
-- **When:** Always required
-- **Value:** Postgres connection string (e.g., `postgresql://user:pass@localhost:5432/dbname`)
-- **Purpose:** Persistent storage for agent sessions and memory
+:   Required unique service identifier. Compose fails during interpolation when
+    it is absent.
 
-### API Keys
+**One model API key**
 
-**GOOGLE_API_KEY**
-- **When:** Required if using Google models
-- **Value:** AI Studio API Key
+:   Set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`. Startup validation fails when
+    both are absent.
 
-**OPENROUTER_API_KEY**
-- **When:** Required if using OpenRouter models
-- **Value:** OpenRouter API Key
+An explicit `ROOT_AGENT_MODEL` is strongly recommended so provider routing does
+not depend on a default.
 
-### Google Cloud (Optional)
+## Docker Compose host settings
 
-**GOOGLE_CLOUD_PROJECT**
-- **When:** Optional (required for Vertex AI or Cloud Observability)
-- **Value:** Your GCP project ID
-- **Purpose:** Identifies the Google Cloud project
+These values are consumed by Compose rather than `ServerEnv`.
 
-**GOOGLE_CLOUD_LOCATION**
-- **When:** Optional
-- **Value:** GCP region (e.g., `us-central1`)
-- **Purpose:** Region for Vertex AI calls
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BIND_ADDRESS` | `127.0.0.1` | Host interface for the published HTTP port |
+| `HOST_PORT` | `8080` | Host-side port |
+| `RESTART_POLICY` | `unless-stopped` | Compose restart policy |
+| `IMAGE` | `blacki:local` | Image name or verified registry reference |
+| `ENV_FILE` | `.env` | File injected into the container |
 
-### Agent Runtime Configuration
+`HOST` and `PORT` are different: they control the process inside the container.
+Compose sets them to `0.0.0.0` and `8080`; use `BIND_ADDRESS` and `HOST_PORT` to
+control exposure on the VPS.
 
-**AGENT_NAME**
-- **When:** Optional
-- **Value:** Unique identifier (e.g., `my-agent`)
-- **Default:** `agent`
-- **Purpose:** Identifies logs and traces
+## Server
 
-**LOG_LEVEL**
-- **Options:** `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
-- **Default:** `INFO`
-- **Purpose:** Controls logging verbosity
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AGENT_NAME` | None | Required identity for the service and telemetry |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `HOST` | `127.0.0.1` | Process bind address outside Compose |
+| `PORT` | `8080` | Process port outside Compose |
+| `AGENT_DIR` | `src` | ADK agents and local-state base directory |
+| `SERVE_WEB_INTERFACE` | `false` | Enable the ADK development web interface |
+| `RELOAD_AGENTS` | `false` | Reload agent definitions; development only |
+| `ALLOW_ORIGINS` | local origins JSON | JSON array of CORS origins |
+| `AGENT_ENGINE` | unset | Optional Agent Engine identifier |
+| `SQLITE_PATH` | `{AGENT_DIR}/.adk/tools.db` | SQLite file for application tools |
 
-**HOST**
-- **Default:** `127.0.0.1`
-- **Purpose:** Server bind address (use `0.0.0.0` for Docker)
+For `ALLOW_ORIGINS`, use a JSON array string:
 
-**PORT**
-- **Default:** `8080`
-- **Purpose:** Server listening port
+```dotenv
+ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
+```
 
-### Feature Flags
+## Model providers
 
-**SERVE_WEB_INTERFACE**
-- **Default:** `FALSE`
-- **Purpose:** Enables ADK web UI at http://127.0.0.1:8080
-- **Options:** `TRUE` / `FALSE`
+=== "OpenRouter"
 
-**RELOAD_AGENTS**
-- **Default:** `FALSE`
-- **Purpose:** Enable agent hot-reloading on file changes (development only)
+    ```dotenv
+    ROOT_AGENT_MODEL=openrouter/google/gemini-2.5-flash
+    OPENROUTER_API_KEY=replace-me
+    ```
 
-**OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT**
-- **Default:** `FALSE`
-- **Purpose:** Capture full prompts/responses in traces. Set to `TRUE` to see conversation content in your OTLP backend.
+    Blacki builds a LiteLLM model and normalizes common model identifiers to
+    OpenRouter form when this key is present.
 
-### Observability (OpenTelemetry OTLP)
+=== "Google AI Studio"
 
-Configure your OTLP backend using standard OpenTelemetry environment variables. See `.env.example` for provider-specific examples (Axiom, Jaeger, Honeycomb, Langfuse).
+    ```dotenv
+    ROOT_AGENT_MODEL=gemini-2.5-flash
+    GOOGLE_API_KEY=replace-me
+    ```
 
-**OTEL_EXPORTER_OTLP_ENDPOINT**
-- **Value:** OTLP backend URL (e.g., `https://api.axiom.co`)
-- **Purpose:** Base endpoint for all OTLP signals (traces, logs, metrics)
+Do not leave a fake `OPENROUTER_API_KEY` active in a Google-only configuration;
+its presence changes model routing.
 
-**OTEL_EXPORTER_OTLP_TRACES_ENDPOINT**
-- **Value:** Traces-specific endpoint (e.g., `https://api.axiom.co/v1/traces`)
-- **Purpose:** Override the traces endpoint (optional)
+## Telegram
 
-**OTEL_EXPORTER_OTLP_LOGS_ENDPOINT**
-- **Value:** Logs-specific endpoint (e.g., `https://api.axiom.co/v1/logs`)
-- **Purpose:** Override the logs endpoint (optional)
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
+| `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
+| `TELEGRAM_TOOL_NOTIFICATIONS` | `false` | Send short tool-use notices |
 
-**OTEL_EXPORTER_OTLP_HEADERS**
-- **Value:** Authentication headers (e.g., `Authorization=Bearer token,X-Axiom-Dataset=name`)
-- **Purpose:** Authentication and provider-specific headers
+The token is required and format-validated when Telegram is enabled.
 
-**OTEL_EXPORTER_OTLP_PROTOCOL**
-- **Value:** `http/protobuf` (recommended) or `grpc`
-- **Purpose:** OTLP transport protocol
+## Search and browser tools
 
-For complete configuration options, see [OpenTelemetry Environment Variables](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/).
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EXA_API_KEY` | unset | Primary Exa search integration |
+| `BRAVE_SEARCH_API_KEY` | unset | Brave search fallback |
+| `BROWSER_USE_API_KEY` | unset | Browser Use Cloud automation |
 
-## Environment Variable Precedence
+These integrations are optional. Their absence should not replace the required
+model key.
 
-1. **Environment variables** (highest priority)
-2. **.env file** (loaded via `python-dotenv`)
-3. **Default values** (defined in code)
+## Mem0 memory
 
-## Security Best Practices
+Mem0 is optional. The current samples support:
 
-- **Never commit `.env` files** - Already gitignored
-- **Rotate credentials** - If `.env` is accidentally committed, rotate all credentials
+- `MEM0_LLM_PROVIDER`, `MEM0_LLM_MODEL`, `MEM0_LLM_API_KEY`,
+  `MEM0_LLM_TEMPERATURE`, and `MEM0_LLM_MAX_TOKENS`;
+- `MEM0_EMBEDDER_PROVIDER`, `MEM0_EMBEDDER_MODEL`,
+  `MEM0_EMBEDDER_DIMS`, and `MEM0_EMBEDDER_API_KEY`;
+- `MEM0_USER_ID`, `MEM0_COLLECTION_NAME`, and `MEM0_SEARCH_LIMIT`;
+- Qdrant Cloud through `MEM0_QDRANT_URL` and `MEM0_QDRANT_API_KEY`;
+- local embedded Qdrant through `MEM0_QDRANT_PATH`; or
+- a remote server through `MEM0_QDRANT_HOST` and `MEM0_QDRANT_PORT`.
+
+Compose mounts `./data` at `/app/data`. Use a path under `/app/data` for local
+memory that must persist:
+
+```dotenv
+MEM0_QDRANT_PATH=/app/data/qdrant
+```
+
+If Qdrant Cloud values are present, the provider stores the vectors remotely.
+
+## OpenSandbox
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `SANDBOX_ENABLED` | `false` | Register code-execution tools |
+| `SANDBOX_DOMAIN` | `localhost:9090` | OpenSandbox server address |
+| `SANDBOX_API_KEY` | unset | Optional server credential |
+| `SANDBOX_TIMEOUT_MINUTES` | `30` | Sandbox lifetime |
+| `SANDBOX_MEMORY_LIMIT` | `512Mi` | Per-sandbox memory setting |
+| `SANDBOX_CPU_LIMIT` | `0.5` | Per-sandbox CPU setting |
+| `SANDBOX_IMAGE` | project default | Code-interpreter image |
+
+Running a local OpenSandbox server adds Docker and resource requirements beyond
+the Blacki golden path.
+
+## Observability
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Allow instrumentors to capture message content |
+
+Blacki currently exports spans to local JSON files only. Setting
+`OTEL_EXPORTER_OTLP_*` variables by itself does not install a remote exporter.
+See [Observability](observability.md).
+
+## Precedence
+
+For Docker Compose:
+
+1. shell values and `--env-file` drive Compose interpolation;
+2. the service's `environment` mapping overrides matching `env_file` values;
+3. remaining values come from `ENV_FILE`, which defaults to `.env`.
+
+For local Python, `initialize_environment` loads the nearest `.env` with
+`override=True`, so values in that file can replace existing process values.
+
+## Secret handling
+
+- Keep `.env` out of Git; it is already ignored.
+- Run `chmod 600 .env` on a multi-user VPS.
+- Never include secrets in `docker compose config` output shared with others.
+- Rotate a token immediately if it appears in Git, logs, an issue, or chat.
+- Prefer provider-scoped, least-privilege credentials.

@@ -1,128 +1,85 @@
-# Telegram Bot Template - Google ADK on Bare Metal
+# Blacki
 
-Deploy your own AI assistant on Telegram with Google ADK — no cloud lock-in, no per-request fees. Run on a **$5/mo VPS** (vs Railway's $20/mo minimum). Use any LLM via OpenRouter. Own your infrastructure.
+Blacki is a self-hosted personal assistant built with
+[Google ADK](https://google.github.io/adk-docs/). It runs on your own Linux
+server, talks to an LLM through OpenRouter or Google AI Studio, and can expose
+the assistant through Telegram long polling or the ADK web interface.
 
-**Why This Matters**
+Blacki keeps the runtime small and delegates expensive capabilities to managed
+services when configured. You own the server and data volumes; model and
+optional service providers may still charge for API usage.
 
-| Platform | Monthly Cost | Lock-in | LLM Choice |
-|----------|-------------|---------|------------|
-| Railway | $20+ | High | Limited |
-| Vercel AI | $20+ | High | Limited |
-| **Blacki (this project)** | **$5** | **None** | **Any via OpenRouter** |
+## Start here
 
-A **production-ready template** for building and deploying Google ADK agents on your own infrastructure (bare metal, VPS, or private cloud) without the complexity or lock-in of heavy cloud providers.
+| Goal | Guide |
+| --- | --- |
+| Put Blacki on an Ubuntu or Debian VPS | [First VPS deployment](docs/DEPLOYMENT.md) |
+| Create and connect a Telegram bot | [Telegram setup](docs/telegram-setup.md) |
+| Work on Blacki locally | [Development](docs/development.md) |
+| Understand every setting | [Configuration](docs/base-infra/environment-variables.md) |
+| Run upgrades and backups | [Day-two operations](docs/operations.md) |
 
-**Philosophy**
-We believe you should own your agents. This template is designed to strip away the "cloud magic" and give you a clean, performant, and observable foundation that runs anywhere—from a $5/mo VPS to a Raspberry Pi cluster.
+## First run with Docker Compose
 
-## Key Features
-
-- 🐳 **Deploy Anywhere**: Pre-configured Docker & Compose setup. Runs on Hetzner, DigitalOcean, or your basement server.
-- 🛠️ **Automated Setup**: Includes a `setup.sh` script to harden your server (UFW, Fail2Ban) and install dependencies in minutes.
-- 🔄 **CI/CD Included**: GitHub Actions workflow builds multi-arch images (AMD64/ARM64) and pushes to GHCR automatically.
-- 🔭 **Open Observability**: Built-in OpenTelemetry (OTel) instrumentation. Configure any OTLP-compatible backend (Axiom, Jaeger, Honeycomb, Langfuse, etc.) via standard environment variables.
-- 🚀 **Modern Stack**: Python 3.11+, `uv`, `fastapi`, `asyncpg`.
-- ⚡ **Fast Response Times**: In-memory sessions for low-latency agent responses.
-
-## Quickstart
-
-### Prerequisites
-- Python **3.11+**
-- [`uv`](https://github.com/astral-sh/uv)
-- An LLM API Key (OpenRouter or Google)
-
-Optional:
-- A Postgres connection string (for Reminders system)
-- A Telegram bot token (for Telegram bot integration)
-
-### 1) Configure Environment
-
-**Quick Start (Minimal Config)**
-
-Copy `.env.minimal` to `.env` for the minimal required configuration:
+Install Docker Engine with the Compose plugin, then:
 
 ```bash
+git clone https://github.com/QueryPlanner/blacki.git
+cd blacki
 cp .env.minimal .env
+chmod 600 .env
 ```
 
-Edit `.env` and set:
-- **`AGENT_NAME`**: Unique ID for your agent.
-- **`OPENROUTER_API_KEY`**: Get one at https://openrouter.ai/keys
-- **`TELEGRAM_BOT_TOKEN`**: Get from @BotFather on Telegram
+Replace every `replace-me` value in `.env`, then validate and start Blacki:
 
-**Full Configuration**
+```bash
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps
+```
 
-For all available options, copy `.env.example` instead:
+The HTTP port binds to `127.0.0.1` by default. Telegram polling needs outbound
+HTTPS only, so a Telegram deployment does not need a public application port.
+See the [deployment guide](docs/DEPLOYMENT.md) for verification, secure browser
+access, and upgrade notes.
+
+## What persists
+
+| Data | Host path | Notes |
+| --- | --- | --- |
+| Tools, reminders, preferences, and Telegram state | `.adk_state/` | SQLite |
+| Optional local Mem0/Qdrant data | `data/` | Used only when local memory is configured |
+| Application JSON logs and traces | `logs/` | Monitor and rotate these files |
+| ADK HTTP/web sessions | Not persisted | In-memory and reset on restart |
+
+Back up `.adk_state/` and `data/`. Keep `.env` private and never commit it.
+
+## Local Python
+
+Blacki supports Python 3.11 through 3.13 and uses
+[uv](https://docs.astral.sh/uv/):
 
 ```bash
 cp .env.example .env
-```
-
-### 2) Install Dependencies
-
-```bash
 uv sync
-```
-
-### 3) Run Locally
-
-```bash
 uv run python -m blacki.server
 ```
-Visit `http://127.0.0.1:8080`.
 
-## Deployment: It's Just One Command
-
-We've simplified deployment to the absolute basics. No Kubernetes required.
-
-### Option 1: Using the Pre-built Image (Recommended)
-
-Since we include CI/CD, every push to `main` builds a fresh image. On your server:
-
-```bash
-# 1. Pull the latest image
-docker pull ghcr.io/queryplanner/google-adk-on-bare-metal:main
-
-# 2. Start the service
-docker compose up -d
-```
-
-### Option 2: Build Yourself
-
-```bash
-git pull
-docker compose up --build -d
-```
-
-👉 **[Read the Full Deployment Guide](docs/DEPLOYMENT.md)**
-
-## Upgrading
-
-1. Pull the latest changes:
-   ```bash
-   git pull
-   ```
-
-2. Check `.env.example` for new configuration options:
-   ```bash
-   git diff HEAD~1 .env.example
-   ```
-
-3. If new keys are required, add them to your `.env` file.
-
-4. Restart the server:
-   ```bash
-   docker compose restart
-   ```
-
-For breaking changes, see [CHANGELOG.md](CHANGELOG.md).
-
-## Observability
-
-The template comes pre-wired with **OpenTelemetry** using standard OTLP environment variables. Configure your preferred backend (Axiom, Jaeger, Honeycomb, Langfuse, etc.) by setting `OTEL_EXPORTER_OTLP_*` variables in your `.env`. You are not locked into any specific observability vendor.
+For the complete workflow and quality checks, see
+[Development](docs/development.md).
 
 ## Documentation
 
-- [Development Guide](docs/development.md)
-- [Architecture](docs/architecture.md)
-- [Observability Setup](docs/base-infra/observability.md)
+The documentation site uses Material for MkDocs:
+
+```bash
+uv sync --group docs
+uv run mkdocs serve
+```
+
+Open `http://127.0.0.1:8000`. CI builds the site in strict mode for every
+documentation or deployment change.
+
+## License
+
+See [LICENSE](LICENSE).

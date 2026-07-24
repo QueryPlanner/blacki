@@ -1,3 +1,5 @@
+# Legacy example only. The supported VPS path uses Docker Compose.
+# This file contains host-specific paths and must not be installed unchanged.
 [Unit]
 Description=ADK Agent Platform
 After=network.target

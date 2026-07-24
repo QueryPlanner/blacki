@@ -45,6 +45,9 @@ dev = [
     "types-grpcio>=1.0.0.20251009,<2.0.0.0",
     "types-pyyaml>=6.0.0,<7.0.0",
 ]
+docs = [
+    "mkdocs-material>=9,<10",
+]
 
 [build-system]
 requires = ["uv_build>=0.8.21,<0.9.0"]

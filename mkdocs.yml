@@ -1,0 +1,63 @@
+site_name: Blacki
+site_description: Self-host a personal Google ADK assistant with Docker Compose.
+site_url: https://queryplanner.github.io/blacki/
+repo_url: https://github.com/QueryPlanner/blacki
+repo_name: QueryPlanner/blacki
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Get started:
+      - First VPS deployment: DEPLOYMENT.md
+      - Telegram setup: telegram-setup.md
+      - Local development: development.md
+  - Operate:
+      - Configuration: base-infra/environment-variables.md
+      - Day-two operations: operations.md
+      - Troubleshooting: troubleshooting.md
+      - Observability: base-infra/observability.md
+  - Understand:
+      - Architecture: architecture.md
+      - Docker Compose: base-infra/docker-compose-workflow.md
+      - Docker image: base-infra/dockerfile-strategy.md
+  - Reference:
+      - Documentation map: documentation-map.md

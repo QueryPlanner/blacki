@@ -1,24 +1,36 @@
 services:
   agent:
-    image: ${IMAGE:-}
+    image: ${IMAGE:-blacki:local}
     build: .
     ports:
-      - "${HOST_PORT:-8080}:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8080}:8080"
     environment:
-      - HOST=0.0.0.0
-      - PORT=8080
-      - AGENT_NAME=${AGENT_NAME:-local-dev}
-      - LOG_LEVEL=INFO
-      - RELOAD_AGENTS=true
-      - SERVE_WEB_INTERFACE=true
-      # DATABASE_URL and API Keys will be loaded from the .env file
+      HOST: 0.0.0.0
+      PORT: 8080
+      AGENT_NAME: ${AGENT_NAME:?Set AGENT_NAME in the environment file}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      RELOAD_AGENTS: ${RELOAD_AGENTS:-false}
+      SERVE_WEB_INTERFACE: ${SERVE_WEB_INTERFACE:-false}
     env_file:
-      - .env
-    # Volumes are for hot-reloading and persisting artifacts.
+      - ${ENV_FILE:-.env}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./.adk_state:/app/src/.adk
+      - ./data:/app/data
       - ./logs:/app/logs
-    restart: always
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import socket;
+          socket.create_connection(("127.0.0.1", 8080), timeout=3).close()
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: ${RESTART_POLICY:-unless-stopped}
+    stop_grace_period: 30s
     command: python -m blacki.server
