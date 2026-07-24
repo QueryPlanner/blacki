@@ -124,59 +124,286 @@ jobs:
           OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL }}
           OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
         run: |
+          umask 077
+          LOCAL_DEPLOY_DIR=$(mktemp -d "${RUNNER_TEMP}/blacki-deploy.XXXXXX")
+          LOCAL_ENV_FILE="$LOCAL_DEPLOY_DIR/deploy.env"
+          LOCAL_GHCR_TOKEN_FILE="$LOCAL_DEPLOY_DIR/ghcr.token"
+          REMOTE_DEPLOY_DIR=""
+          REMOTE_DEPLOY_DIR_ARG=""
+
+          cleanup_transfer() {
+            local status=$?
+            trap - EXIT
+            rm -f "$LOCAL_ENV_FILE" "$LOCAL_GHCR_TOKEN_FILE"
+            rmdir "$LOCAL_DEPLOY_DIR" 2>/dev/null || true
+
+            if [ -n "$REMOTE_DEPLOY_DIR" ]; then
+              ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
+                "bash -s -- $REMOTE_DEPLOY_DIR_ARG" << 'REMOTE_CLEANUP' || true
+          set -e
+          transfer_dir=$1
+          case "$transfer_dir" in
+            "$HOME"/.blacki-deploy/run.*) ;;
+            *) exit 1 ;;
+          esac
+          rm -f "$transfer_dir/deploy.env" "$transfer_dir/ghcr.token"
+          rmdir "$transfer_dir" 2>/dev/null || true
+          REMOTE_CLEANUP
+            fi
+
+            exit "$status"
+          }
+          trap cleanup_transfer EXIT
+
           # Setup SSH key
           mkdir -p ~/.ssh
           echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H "$SERVER_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # Create .env file locally to avoid SSH quoting issues with special chars
-          # (DATABASE_URL contains & which breaks SSH command parsing)
-          # Values are double-quoted so shell metacharacters (& ? @ =) are treated literally
-          # when this file is sourced on the remote server.
-          cat > /tmp/deploy.env << ENVFILE
-          DEPLOY_SHA="${DEPLOY_SHA}"
-          IMAGE_DIGEST="${IMAGE_DIGEST}"
-          AGENT_NAME="${AGENT_NAME}"
-          OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
-          ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
-          TELEGRAM_ENABLED="${TELEGRAM_ENABLED}"
-          TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
-          TELEGRAM_TOOL_NOTIFICATIONS="${TELEGRAM_TOOL_NOTIFICATIONS}"
-          EXA_API_KEY="${EXA_API_KEY}"
-          BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
-          BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          SANDBOX_ENABLED="${SANDBOX_ENABLED}"
-          SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
-          GH_TOKEN="${GH_TOKEN}"
-          GOOGLE_API_KEY="${GOOGLE_API_KEY}"
-          MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
-          MEM0_QDRANT_API_KEY="${MEM0_QDRANT_API_KEY}"
-          OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL}"
-          OTEL_EXPORTER_OTLP_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS}"
-          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL}"
-          OTEL_EXPORTER_OTLP_TRACES_HEADERS="${OTEL_EXPORTER_OTLP_TRACES_HEADERS}"
-          ENVFILE
-          chmod 600 /tmp/deploy.env
+          # Serialize secrets without interpolation or shell evaluation.
+          python3 scripts/write_compose_env.py "$LOCAL_ENV_FILE" \
+            AGENT_NAME \
+            OPENROUTER_API_KEY \
+            ROOT_AGENT_MODEL \
+            TELEGRAM_ENABLED \
+            TELEGRAM_BOT_TOKEN \
+            TELEGRAM_TOOL_NOTIFICATIONS \
+            EXA_API_KEY \
+            BRAVE_SEARCH_API_KEY \
+            BROWSER_USE_API_KEY \
+            SANDBOX_ENABLED \
+            SANDBOX_DOMAIN \
+            GOOGLE_API_KEY \
+            MEM0_QDRANT_URL \
+            MEM0_QDRANT_API_KEY \
+            OTEL_EXPORTER_OTLP_ENDPOINT \
+            OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+            OTEL_EXPORTER_OTLP_LOGS_ENDPOINT \
+            OTEL_EXPORTER_OTLP_PROTOCOL \
+            OTEL_EXPORTER_OTLP_HEADERS \
+            OTEL_EXPORTER_OTLP_TRACES_PROTOCOL \
+            OTEL_EXPORTER_OTLP_TRACES_HEADERS
+          printf '%s' "$GH_TOKEN" > "$LOCAL_GHCR_TOKEN_FILE"
 
-          # Copy env file to server
-          scp -o StrictHostKeyChecking=no /tmp/deploy.env "$SERVER_USER@$SERVER_HOST:/tmp/deploy.env"
-
-          # Deploy script - source env file on remote server
+          # Copy into a private, unique remote directory and reapply restrictive
+          # permissions independently of scp's mode behavior.
+          REMOTE_DEPLOY_DIR=$(
+            ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
+              'umask 077; mkdir -p "$HOME/.blacki-deploy"; chmod 700 "$HOME/.blacki-deploy"; mktemp -d "$HOME/.blacki-deploy/run.XXXXXX"'
+          )
+          case "$REMOTE_DEPLOY_DIR" in
+            /*/.blacki-deploy/run.*) ;;
+            *) echo "ERROR: Invalid remote transfer directory."; exit 1 ;;
+          esac
+          printf -v REMOTE_DEPLOY_DIR_ARG '%q' "$REMOTE_DEPLOY_DIR"
+          scp -o StrictHostKeyChecking=no \
+            "$LOCAL_ENV_FILE" "$LOCAL_GHCR_TOKEN_FILE" \
+            "$SERVER_USER@$SERVER_HOST:$REMOTE_DEPLOY_DIR/"
           ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
-            "set -a && source /tmp/deploy.env && set +a && bash -s" << 'DEPLOY_SCRIPT'
+            "bash -s -- $REMOTE_DEPLOY_DIR_ARG" << 'REMOTE_PERMISSIONS'
           set -e
+          transfer_dir=$1
+          case "$transfer_dir" in
+            "$HOME"/.blacki-deploy/run.*) ;;
+            *) exit 1 ;;
+          esac
+          chmod 600 "$transfer_dir/deploy.env" "$transfer_dir/ghcr.token"
+          REMOTE_PERMISSIONS
+
+          # Commit and digest contain only Git-generated hexadecimal identifiers.
+          ssh -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_HOST" \
+            "bash -s -- '$DEPLOY_SHA' '$IMAGE_DIGEST' $REMOTE_DEPLOY_DIR_ARG" \
+            << 'DEPLOY_SCRIPT'
+          set -e
+
+          DEPLOY_SHA=$1
+          IMAGE_DIGEST=$2
+          TRANSFER_DIR=$3
+          case "$TRANSFER_DIR" in
+            "$HOME"/.blacki-deploy/run.*) ;;
+            *) echo "ERROR: Invalid transfer directory."; exit 1 ;;
+          esac
+          DEPLOY_ENV_FILE="$TRANSFER_DIR/deploy.env"
+          GHCR_TOKEN_FILE="$TRANSFER_DIR/ghcr.token"
+          trap 'rm -f "$DEPLOY_ENV_FILE" "$GHCR_TOKEN_FILE"; rmdir "$TRANSFER_DIR" 2>/dev/null || true' EXIT
+          if [ "${#DEPLOY_SHA}" -ne 40 ] || \
+            [ -n "${DEPLOY_SHA//[0-9a-f]/}" ]; then
+            echo "ERROR: Invalid deployment commit."
+            exit 1
+          fi
+          DIGEST_HEX=${IMAGE_DIGEST#sha256:}
+          if [ "${#IMAGE_DIGEST}" -ne 71 ] || \
+            [ "$DIGEST_HEX" = "$IMAGE_DIGEST" ] || \
+            [ -n "${DIGEST_HEX//[0-9a-f]/}" ]; then
+            echo "ERROR: Invalid image digest."
+            exit 1
+          fi
 
           # 1. Set dynamic project directory based on repository name
           PROJECT_NAME="blacki"
           PROJECT_DIR="$HOME/apps/$PROJECT_NAME"
           IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"
+          SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"
+          SMOKE_STARTED=false
+          SMOKE_CONTAINER_ID=""
+          CHECKOUT_CHANGED=false
+          PROMOTION_STARTED=false
+          DEPLOYMENT_HEALTHY=false
+          HAS_ROLLBACK=false
+          ROLLBACK_FAILED=false
+          PREVIOUS_REVISION=""
+          PREVIOUS_IMAGE=""
+          ROLLBACK_ENV="$PROJECT_DIR/.env.rollback"
+
+          wait_for_container_ready() {
+            local container_id=$1
+            local label=$2
+            local attempt=1
+
+            while [ "$attempt" -le 12 ]; do
+              if docker exec "$container_id" python -c \
+                'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/ready", timeout=3).read()' \
+                >/dev/null 2>&1; then
+                echo "$label readiness check passed."
+                return 0
+              fi
+
+              local running
+              running=$(
+                docker inspect --format '{{.State.Running}}' \
+                  "$container_id" 2>/dev/null || true
+              )
+              if [ "$running" != "true" ]; then
+                echo "$label exited before becoming ready."
+                return 1
+              fi
+
+              echo "$label readiness attempt $attempt/12 failed; retrying in 5s..."
+              attempt=$((attempt + 1))
+              sleep 5
+            done
+
+            return 1
+          }
+
+          wait_for_host_ready() {
+            local port=$1
+            local container_id=$2
+            local label=$3
+            local attempt=1
+
+            while [ "$attempt" -le 12 ]; do
+              if curl -sf "http://127.0.0.1:${port}/ready" \
+                >/dev/null 2>&1; then
+                echo "$label readiness check passed on port ${port}."
+                return 0
+              fi
+
+              local running
+              running=$(
+                docker inspect --format '{{.State.Running}}' \
+                  "$container_id" 2>/dev/null || true
+              )
+              if [ "$running" != "true" ]; then
+                echo "$label exited before becoming ready."
+                return 1
+              fi
+
+              echo "$label readiness attempt $attempt/12 failed; retrying in 5s..."
+              attempt=$((attempt + 1))
+              sleep 5
+            done
+
+            return 1
+          }
+
+          cleanup_smoke() {
+            if [ "$SMOKE_STARTED" = true ]; then
+              IMAGE="$IMAGE_NAME" ENV_FILE=.env.next \
+                docker compose --project-name "$SMOKE_PROJECT" \
+                  --env-file .env.next -f compose.smoke.yaml \
+                  down --remove-orphans >/dev/null 2>&1 || true
+              SMOKE_STARTED=false
+              SMOKE_CONTAINER_ID=""
+            fi
+          }
+
+          rollback_deployment() {
+            echo "Stopping failed promoted deployment..."
+            if ! docker compose -f compose.yaml -f compose.prod.yaml \
+              down --remove-orphans; then
+              echo "Failed to stop the promoted deployment."
+              return 1
+            fi
+
+            if [ "$HAS_ROLLBACK" != true ]; then
+              echo "No previously healthy deployment is available for rollback."
+              return 1
+            fi
+
+            echo "Rolling back to ${PREVIOUS_REVISION}..."
+            git -c advice.detachedHead=false checkout --detach "$PREVIOUS_REVISION" \
+              || return 1
+            CHECKOUT_CHANGED=false
+            mv "$ROLLBACK_ENV" .env || return 1
+
+            IMAGE="$PREVIOUS_IMAGE" ENV_FILE=.env \
+              docker compose --env-file .env \
+                -f compose.yaml -f compose.prod.yaml up -d || return 1
+
+            local rollback_container_id
+            rollback_container_id=$(
+              docker compose -f compose.yaml -f compose.prod.yaml \
+                ps --all -q agent
+            )
+            if [ -z "$rollback_container_id" ]; then
+              echo "Rollback did not create the agent container."
+              return 1
+            fi
+
+            if wait_for_host_ready \
+              "$HOST_PORT" "$rollback_container_id" "Rollback"; then
+              echo "Rollback restored the previous healthy deployment."
+              return 0
+            fi
+
+            docker compose -f compose.yaml -f compose.prod.yaml \
+              logs --tail=100
+            return 1
+          }
 
           cleanup() {
-            rm -f "$PROJECT_DIR/.env.next" /tmp/deploy.env
+            local status=$?
+            trap - EXIT
+            set +e
+
+            cleanup_smoke
+            if [ "$PROMOTION_STARTED" = true ]; then
+              if [ "$DEPLOYMENT_HEALTHY" != true ]; then
+                if ! rollback_deployment; then
+                  if [ "$HAS_ROLLBACK" = true ]; then
+                    ROLLBACK_FAILED=true
+                    echo "ERROR: Automatic rollback failed."
+                  fi
+                fi
+              fi
+            elif [ "$CHECKOUT_CHANGED" = true ]; then
+              if ! git -c advice.detachedHead=false checkout --detach \
+                "$PREVIOUS_REVISION"; then
+                echo "ERROR: Failed to restore the pre-deployment revision."
+              fi
+            fi
+
+            rm -f "$PROJECT_DIR/.env.next" \
+              "$DEPLOY_ENV_FILE" "$GHCR_TOKEN_FILE"
+            rmdir "$TRANSFER_DIR" 2>/dev/null || true
+            if [ "$ROLLBACK_FAILED" = true ] && [ -f "$ROLLBACK_ENV" ]; then
+              echo "Preserved rollback environment at $ROLLBACK_ENV."
+            else
+              rm -f "$ROLLBACK_ENV"
+            fi
+            exit "$status"
           }
           trap cleanup EXIT
 
@@ -189,27 +416,9 @@ jobs:
             git clone https://github.com/QueryPlanner/blacki "$PROJECT_DIR"
           fi
 
-          # 3. Navigate and Update Code
+          # 3. Capture the active deployment before checking out the candidate.
           cd "$PROJECT_DIR"
-          git fetch origin main
-          git cat-file -e "${DEPLOY_SHA}^{commit}"
-          git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"
-
-          # 4. Find an available port starting from 8080
-          find_available_port() {
-            local port=8080
-            while ss -tuln | grep -q ":${port} " ; do
-              port=$((port + 1))
-              if [ $port -gt 8100 ]; then
-                echo "ERROR: No available port in range 8080-8100" >&2
-                exit 1
-              fi
-            done
-            echo $port
-          }
-
-          # Preserve the current port so the staged config can be validated while
-          # the existing container remains healthy.
+          PREVIOUS_REVISION=$(git rev-parse HEAD)
           HOST_PORT=$(
             sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' \
               .env 2>/dev/null | tail -n 1
@@ -221,104 +430,112 @@ jobs:
             HOST_PORT=8080
           fi
 
-          # 5. Stage the next .env without replacing the active deployment.
-          # Values are double-quoted so URLs with & ? @ are preserved verbatim.
-          # Docker Compose dotenv parser strips surrounding quotes correctly.
-          write_app_env() {
-            local target=$1
-            cat > "$target" << ENVFILE
-          AGENT_NAME="${AGENT_NAME}"
-          OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
-          ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
-          TELEGRAM_ENABLED="${TELEGRAM_ENABLED}"
-          TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN}"
-          TELEGRAM_TOOL_NOTIFICATIONS="${TELEGRAM_TOOL_NOTIFICATIONS}"
-          EXA_API_KEY="${EXA_API_KEY}"
-          BRAVE_SEARCH_API_KEY="${BRAVE_SEARCH_API_KEY}"
-          BROWSER_USE_API_KEY="${BROWSER_USE_API_KEY}"
-          HOST_PORT="${HOST_PORT}"
-          SANDBOX_ENABLED="${SANDBOX_ENABLED}"
-          SANDBOX_DOMAIN="${SANDBOX_DOMAIN}"
-          GOOGLE_API_KEY="${GOOGLE_API_KEY}"
-          MEM0_QDRANT_URL="${MEM0_QDRANT_URL}"
-          MEM0_QDRANT_API_KEY="${MEM0_QDRANT_API_KEY}"
-          OTEL_EXPORTER_OTLP_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT}"
-          OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL}"
-          OTEL_EXPORTER_OTLP_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS}"
-          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL}"
-          OTEL_EXPORTER_OTLP_TRACES_HEADERS="${OTEL_EXPORTER_OTLP_TRACES_HEADERS}"
-          ENVFILE
-            chmod 600 "$target"
-          }
+          ACTIVE_CONTAINER_ID=$(
+            docker ps \
+              --filter "label=com.docker.compose.project=${PROJECT_NAME}" \
+              --filter "label=com.docker.compose.service=agent" \
+              --format '{{.ID}}' | head -n 1
+          )
+          if [ -n "$ACTIVE_CONTAINER_ID" ] && [ -f .env ] && \
+            curl -sf "http://127.0.0.1:${HOST_PORT}/ready" \
+              >/dev/null 2>&1; then
+            PREVIOUS_IMAGE=$(
+              docker inspect --format '{{.Config.Image}}' "$ACTIVE_CONTAINER_ID"
+            )
+            if [ -n "$PREVIOUS_IMAGE" ]; then
+              cp .env "$ROLLBACK_ENV"
+              chmod 600 "$ROLLBACK_ENV"
+              HAS_ROLLBACK=true
+              echo "Captured healthy deployment for automatic rollback."
+            fi
+          else
+            echo "No healthy active deployment detected; rollback is unavailable."
+          fi
 
+          git fetch origin main
+          git cat-file -e "${DEPLOY_SHA}^{commit}"
+          git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"
+          CHECKOUT_CHANGED=true
+
+          # 4. Stage the transferred app environment and safe deployment metadata.
           echo "Staging deployment environment..."
-          write_app_env .env.next
+          cp "$DEPLOY_ENV_FILE" .env.next
+          {
+            printf 'DEPLOY_SHA="%s"\n' "$DEPLOY_SHA"
+            printf 'IMAGE="%s"\n' "$IMAGE_NAME"
+            printf 'HOST_PORT="%s"\n' "$HOST_PORT"
+          } >> .env.next
+          chmod 600 .env.next
 
-          # 6. Pull and validate the exact image and staged environment before
+          # 5. Pull and start the exact image in an isolated smoke environment before
           # interrupting the running deployment.
-          echo "$GH_TOKEN" | docker login ghcr.io -u queryplanner --password-stdin
+          docker login ghcr.io -u queryplanner \
+            --password-stdin < "$GHCR_TOKEN_FILE"
           export IMAGE="$IMAGE_NAME"
+          export ENV_FILE=.env.next
           echo "Pulling candidate image..."
           docker pull "$IMAGE_NAME"
-          ENV_FILE=.env.next docker compose --env-file .env.next \
+          docker compose --env-file .env.next \
             -f compose.yaml -f compose.prod.yaml config --quiet
-          docker run --rm --entrypoint python \
-            --env OTEL_EXPORTER_OTLP_ENDPOINT \
-            --env OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
-            --env OTEL_EXPORTER_OTLP_PROTOCOL \
-            --env OTEL_EXPORTER_OTLP_TRACES_PROTOCOL \
-            --env OTEL_EXPORTER_OTLP_HEADERS \
-            --env OTEL_EXPORTER_OTLP_TRACES_HEADERS \
-            "$IMAGE_NAME" -c \
-            "from blacki.utils.observability import validate_observability_environment; validate_observability_environment()"
+          SMOKE_STARTED=true
+          docker compose --project-name "$SMOKE_PROJECT" \
+            --env-file .env.next -f compose.smoke.yaml up -d
+          SMOKE_CONTAINER_ID=$(
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml ps --all -q agent
+          )
+          if [ -z "$SMOKE_CONTAINER_ID" ]; then
+            echo "Candidate smoke test did not create the agent container."
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml logs --no-color
+            exit 1
+          fi
 
-          # 7. Promote the preflighted configuration and restart the deployment.
+          if ! wait_for_container_ready \
+            "$SMOKE_CONTAINER_ID" "Candidate"; then
+            echo "Candidate failed isolated startup; active service is unchanged."
+            docker compose --project-name "$SMOKE_PROJECT" \
+              -f compose.smoke.yaml logs --no-color
+            exit 1
+          fi
+          cleanup_smoke
+
+          # 6. Promote the preflighted configuration and restart the deployment.
+          PROMOTION_STARTED=true
           echo "Stopping existing containers..."
           docker compose -f compose.yaml -f compose.prod.yaml \
             down --remove-orphans
 
-          if ss -tuln | grep -q ":${HOST_PORT} " ; then
-            HOST_PORT=$(find_available_port)
-            write_app_env .env.next
-          fi
           echo "Using port: $HOST_PORT"
           mv .env.next .env
+          export ENV_FILE=.env
 
           echo "Starting candidate image..."
-          docker compose -f compose.yaml -f compose.prod.yaml up -d
-
-          # 8. Health check with retries
-          echo "Waiting for health check..."
-          MAX_RETRIES=12
-          RETRY_COUNT=0
-          HEALTH_OK=false
-          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-            if curl -sf http://localhost:${HOST_PORT}/ready > /dev/null 2>&1; then
-              HEALTH_OK=true
-              break
-            fi
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            echo "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 5s..."
-            sleep 5
-          done
-
-          if [ "$HEALTH_OK" = true ]; then
-            echo "✅ Health check passed on port ${HOST_PORT}!"
-          else
-            echo "⚠️ Health check failed after $MAX_RETRIES attempts, checking logs..."
-            docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100
+          docker compose --env-file .env \
+            -f compose.yaml -f compose.prod.yaml up -d
+          PROMOTED_CONTAINER_ID=$(
+            docker compose -f compose.yaml -f compose.prod.yaml \
+              ps --all -q agent
+          )
+          if [ -z "$PROMOTED_CONTAINER_ID" ]; then
+            echo "Promoted deployment did not create the agent container."
             exit 1
           fi
 
-          # 9. Reclaim space only after the candidate is healthy.
+          if ! wait_for_host_ready \
+            "$HOST_PORT" "$PROMOTED_CONTAINER_ID" "Promoted deployment"; then
+            echo "Promoted deployment failed; checking logs before rollback..."
+            docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100
+            exit 1
+          fi
+          DEPLOYMENT_HEALTHY=true
+
+          # 7. Reclaim image and builder cache only after successful promotion.
           echo "Cleaning up old Docker resources..."
           docker image prune -af 2>/dev/null || true
           docker builder prune -af 2>/dev/null || true
-          docker system prune -af --volumes 2>/dev/null || true
 
-          # 10. Show status
+          # 8. Show status
           echo "=== Deployment Complete ==="
           docker compose -f compose.yaml -f compose.prod.yaml ps
           df -h /
@@ -327,4 +544,4 @@ jobs:
       - name: Cleanup SSH
         if: always()
         run: |
-          rm -f ~/.ssh/id_rsa /tmp/deploy.env
+          rm -f ~/.ssh/id_rsa

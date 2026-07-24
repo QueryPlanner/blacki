@@ -1,0 +1,13 @@
+services:
+  agent:
+    image: ${IMAGE:?Set IMAGE to the candidate image}
+    env_file:
+      - ${ENV_FILE:-.env}
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      RELOAD_AGENTS: "false"
+      SERVE_WEB_INTERFACE: "false"
+      TELEGRAM_ENABLED: "false"
+      TELEGRAM_TOOL_NOTIFICATIONS: "false"
+    restart: "no"
