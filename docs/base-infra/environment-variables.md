@@ -140,16 +140,16 @@ the Blacki golden path.
 | --- | --- | --- |
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Allow instrumentors to capture message content |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred gRPC trace collector URL |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol; only `grpc` is supported |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred complete trace collector URL |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback; HTTP adds `/v1/traces` |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol: `grpc` or `http/protobuf` |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Global protocol fallback |
 | `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | unset | Preferred trace authentication headers |
 | `OTEL_EXPORTER_OTLP_HEADERS` | unset | Global authentication-header fallback |
 
 Blacki always exports spans to local JSON. A validated trace-specific or global
-endpoint adds gRPC OTLP export; trace-specific values take precedence. See
-[Observability](observability.md).
+endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
+precedence. See [Observability](observability.md).
 
 ## Precedence
 

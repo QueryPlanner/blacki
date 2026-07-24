@@ -11,6 +11,7 @@ import yaml
 from blacki.utils.config import ServerEnv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+BASH_EXECUTABLE = shutil.which("bash")
 DOCKER_EXECUTABLE = shutil.which("docker")
 
 
@@ -192,8 +193,72 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         "-f compose.yaml -f compose.prod.yaml config --quiet",
         "-f compose.yaml -f compose.dev.yaml config --quiet",
         "docker build --tag blacki:contract-test .",
+        "validate_observability_environment",
     ):
         assert command in workflow
+
+
+def test_production_deployment_preflights_before_stopping_service() -> None:
+    """The candidate image and environment must pass before downtime begins."""
+    workflow = _read(".github/workflows/docker-publish.yml")
+    workflow_config = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_concurrency = workflow_config["jobs"]["deploy"]["concurrency"]
+    ordered_steps = (
+        'git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"',
+        "write_app_env .env.next",
+        'docker pull "$IMAGE_NAME"',
+        "ENV_FILE=.env.next docker compose --env-file .env.next",
+        "validate_observability_environment",
+        "down --remove-orphans",
+        "mv .env.next .env",
+        "docker compose -f compose.yaml -f compose.prod.yaml up -d",
+        "curl -sf http://localhost:${HOST_PORT}/ready",
+        "docker image prune -af",
+    )
+    positions = [workflow.index(step) for step in ordered_steps]
+
+    assert positions == sorted(positions)
+    assert deploy_concurrency == {
+        "group": "blacki-production",
+        "cancel-in-progress": False,
+    }
+    assert "trap cleanup EXIT" in workflow
+    assert 'rm -f "$PROJECT_DIR/.env.next" /tmp/deploy.env' in workflow
+    assert "down --remove-orphans 2>/dev/null || true" not in workflow
+    assert "git pull" not in workflow
+    assert "image-digest: ${{ steps.build-push.outputs.digest }}" in workflow
+    assert "DEPLOY_SHA: ${{ github.sha }}" in workflow
+    assert "IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}" in workflow
+    assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
+    assert '"$IMAGE_NAME" -c' in workflow
+    assert "--env OPENROUTER_API_KEY" not in workflow
+
+    for setting in (
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    ):
+        assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
+        assert workflow.count(f'{setting}="${{{setting}}}"') == 2
+
+
+def test_production_deployment_shell_is_valid_bash() -> None:
+    """Nested staging and preflight heredocs must remain valid shell syntax."""
+    assert BASH_EXECUTABLE is not None
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    steps = workflow["jobs"]["deploy"]["steps"]
+    deploy_step = next(
+        step for step in steps if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    assert isinstance(deploy_script, str)
+
+    subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [BASH_EXECUTABLE, "-n"],
+        input=deploy_script,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_production_overlay_defeats_hostile_environment_overrides() -> None:

@@ -20,6 +20,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      image-digest: ${{ steps.build-push.outputs.digest }}
 
     steps:
       - name: Checkout repository
@@ -78,6 +80,9 @@ jobs:
       github.repository == 'QueryPlanner/blacki'
     runs-on: ubuntu-latest
     environment: production
+    concurrency:
+      group: blacki-production
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -93,6 +98,8 @@ jobs:
           SERVER_HOST: ${{ secrets.SERVER_TAILSCALE_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          DEPLOY_SHA: ${{ github.sha }}
+          IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
           # App secrets for .env generation
           AGENT_NAME: ${{ secrets.AGENT_NAME }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -114,6 +121,8 @@ jobs:
           OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT }}
           OTEL_EXPORTER_OTLP_PROTOCOL: ${{ secrets.OTEL_EXPORTER_OTLP_PROTOCOL }}
           OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_PROTOCOL }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
         run: |
           # Setup SSH key
           mkdir -p ~/.ssh
@@ -126,6 +135,8 @@ jobs:
           # Values are double-quoted so shell metacharacters (& ? @ =) are treated literally
           # when this file is sourced on the remote server.
           cat > /tmp/deploy.env << ENVFILE
+          DEPLOY_SHA="${DEPLOY_SHA}"
+          IMAGE_DIGEST="${IMAGE_DIGEST}"
           AGENT_NAME="${AGENT_NAME}"
           OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
           ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
@@ -146,6 +157,8 @@ jobs:
           OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT}"
           OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL}"
           OTEL_EXPORTER_OTLP_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS}"
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL}"
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS="${OTEL_EXPORTER_OTLP_TRACES_HEADERS}"
           ENVFILE
           chmod 600 /tmp/deploy.env
 
@@ -160,7 +173,12 @@ jobs:
           # 1. Set dynamic project directory based on repository name
           PROJECT_NAME="blacki"
           PROJECT_DIR="$HOME/apps/$PROJECT_NAME"
-          IMAGE_NAME="ghcr.io/queryplanner/blacki:main"
+          IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"
+
+          cleanup() {
+            rm -f "$PROJECT_DIR/.env.next" /tmp/deploy.env
+          }
+          trap cleanup EXIT
 
           echo "=== Deploying $PROJECT_NAME to $PROJECT_DIR ==="
 
@@ -173,19 +191,11 @@ jobs:
 
           # 3. Navigate and Update Code
           cd "$PROJECT_DIR"
-          git pull
+          git fetch origin main
+          git cat-file -e "${DEPLOY_SHA}^{commit}"
+          git -c advice.detachedHead=false checkout --detach "$DEPLOY_SHA"
 
-          # 4. Stop existing container before pull (save resources on small servers)
-          echo "Stopping existing containers..."
-          docker compose -f compose.yaml -f compose.prod.yaml \
-            down --remove-orphans 2>/dev/null || true
-
-          # 5. Aggressive cleanup for small servers
-          echo "Cleaning up old Docker resources..."
-          docker system prune -af --volumes 2>/dev/null || true
-          docker builder prune -af 2>/dev/null || true
-
-          # 6. Find available port starting from 8080
+          # 4. Find an available port starting from 8080
           find_available_port() {
             local port=8080
             while ss -tuln | grep -q ":${port} " ; do
@@ -197,14 +207,26 @@ jobs:
             done
             echo $port
           }
-          HOST_PORT=$(find_available_port)
-          echo "Using port: $HOST_PORT"
 
-          # 7. Generate .env file from GitHub secrets
+          # Preserve the current port so the staged config can be validated while
+          # the existing container remains healthy.
+          HOST_PORT=$(
+            sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' \
+              .env 2>/dev/null | tail -n 1
+          )
+          case "$HOST_PORT" in
+            ''|*[!0-9]*) HOST_PORT=8080 ;;
+          esac
+          if [ "$HOST_PORT" -lt 1 ] || [ "$HOST_PORT" -gt 65535 ]; then
+            HOST_PORT=8080
+          fi
+
+          # 5. Stage the next .env without replacing the active deployment.
           # Values are double-quoted so URLs with & ? @ are preserved verbatim.
           # Docker Compose dotenv parser strips surrounding quotes correctly.
-          echo "Generating .env from secrets..."
-          cat > .env << ENVFILE
+          write_app_env() {
+            local target=$1
+            cat > "$target" << ENVFILE
           AGENT_NAME="${AGENT_NAME}"
           OPENROUTER_API_KEY="${OPENROUTER_API_KEY}"
           ROOT_AGENT_MODEL="${ROOT_AGENT_MODEL}"
@@ -225,22 +247,49 @@ jobs:
           OTEL_EXPORTER_OTLP_LOGS_ENDPOINT="${OTEL_EXPORTER_OTLP_LOGS_ENDPOINT}"
           OTEL_EXPORTER_OTLP_PROTOCOL="${OTEL_EXPORTER_OTLP_PROTOCOL}"
           OTEL_EXPORTER_OTLP_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS}"
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL="${OTEL_EXPORTER_OTLP_TRACES_PROTOCOL}"
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS="${OTEL_EXPORTER_OTLP_TRACES_HEADERS}"
           ENVFILE
-          chmod 600 .env
+            chmod 600 "$target"
+          }
 
-          # 8. Authenticate to GHCR for pulling private packages
+          echo "Staging deployment environment..."
+          write_app_env .env.next
+
+          # 6. Pull and validate the exact image and staged environment before
+          # interrupting the running deployment.
           echo "$GH_TOKEN" | docker login ghcr.io -u queryplanner --password-stdin
-          # 9. Pull and start containers
-          echo "Pulling and starting containers..."
           export IMAGE="$IMAGE_NAME"
-          docker compose -f compose.yaml -f compose.prod.yaml pull
+          echo "Pulling candidate image..."
+          docker pull "$IMAGE_NAME"
+          ENV_FILE=.env.next docker compose --env-file .env.next \
+            -f compose.yaml -f compose.prod.yaml config --quiet
+          docker run --rm --entrypoint python \
+            --env OTEL_EXPORTER_OTLP_ENDPOINT \
+            --env OTEL_EXPORTER_OTLP_TRACES_ENDPOINT \
+            --env OTEL_EXPORTER_OTLP_PROTOCOL \
+            --env OTEL_EXPORTER_OTLP_TRACES_PROTOCOL \
+            --env OTEL_EXPORTER_OTLP_HEADERS \
+            --env OTEL_EXPORTER_OTLP_TRACES_HEADERS \
+            "$IMAGE_NAME" -c \
+            "from blacki.utils.observability import validate_observability_environment; validate_observability_environment()"
+
+          # 7. Promote the preflighted configuration and restart the deployment.
+          echo "Stopping existing containers..."
+          docker compose -f compose.yaml -f compose.prod.yaml \
+            down --remove-orphans
+
+          if ss -tuln | grep -q ":${HOST_PORT} " ; then
+            HOST_PORT=$(find_available_port)
+            write_app_env .env.next
+          fi
+          echo "Using port: $HOST_PORT"
+          mv .env.next .env
+
+          echo "Starting candidate image..."
           docker compose -f compose.yaml -f compose.prod.yaml up -d
 
-          # 10. Final cleanup of unused images
-          echo "Final cleanup..."
-          docker image prune -af 2>/dev/null || true
-
-          # 11. Health check with retries
+          # 8. Health check with retries
           echo "Waiting for health check..."
           MAX_RETRIES=12
           RETRY_COUNT=0
@@ -263,13 +312,16 @@ jobs:
             exit 1
           fi
 
-          # 12. Show status
+          # 9. Reclaim space only after the candidate is healthy.
+          echo "Cleaning up old Docker resources..."
+          docker image prune -af 2>/dev/null || true
+          docker builder prune -af 2>/dev/null || true
+          docker system prune -af --volumes 2>/dev/null || true
+
+          # 10. Show status
           echo "=== Deployment Complete ==="
           docker compose -f compose.yaml -f compose.prod.yaml ps
           df -h /
-
-          # 13. Cleanup temp env file
-          rm -f /tmp/deploy.env
           DEPLOY_SCRIPT
 
       - name: Cleanup SSH

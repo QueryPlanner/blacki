@@ -6,9 +6,13 @@ import json
 import logging
 import os
 import sys
+import traceback
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
+from typing import ClassVar
 from unittest.mock import patch
 
 import grpc
@@ -28,6 +32,7 @@ from blacki.utils.observability import (
     get_log_dir,
     setup_logging,
     setup_tracing,
+    validate_observability_environment,
 )
 
 OTLP_ENVIRONMENT_KEYS = (
@@ -71,6 +76,7 @@ class RecordingCollector(trace_service_pb2_grpc.TraceServiceServicer):
 
     def __init__(self) -> None:
         self.requests: list[trace_service_pb2.ExportTraceServiceRequest] = []
+        self.authorizations: list[str | bytes | None] = []
 
     def Export(  # noqa: N802
         self,
@@ -78,7 +84,42 @@ class RecordingCollector(trace_service_pb2_grpc.TraceServiceServicer):
         context: grpc.ServicerContext,
     ) -> trace_service_pb2.ExportTraceServiceResponse:
         self.requests.append(request)
+        metadata = dict(context.invocation_metadata())
+        self.authorizations.append(metadata.get("authorization"))
         return trace_service_pb2.ExportTraceServiceResponse()
+
+
+class RecordingHttpHandler(BaseHTTPRequestHandler):
+    """Minimal local HTTP/protobuf collector that records export requests."""
+
+    requests: ClassVar[
+        list[
+            tuple[
+                str, str | None, str | None, trace_service_pb2.ExportTraceServiceRequest
+            ]
+        ]
+    ] = []
+
+    def do_POST(self) -> None:  # noqa: N802
+        """Decode and record one OTLP HTTP/protobuf export request."""
+        content_length = int(self.headers["Content-Length"])
+        request = trace_service_pb2.ExportTraceServiceRequest.FromString(
+            self.rfile.read(content_length)
+        )
+        self.requests.append(
+            (
+                self.path,
+                self.headers.get("Content-Type"),
+                self.headers.get("Authorization"),
+                request,
+            )
+        )
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, _format: str, *args: object) -> None:
+        """Keep the fake collector silent during tests."""
+        _ = args
 
 
 def _span_names(collector: RecordingCollector) -> list[str]:
@@ -91,13 +132,29 @@ def _span_names(collector: RecordingCollector) -> list[str]:
     ]
 
 
+def _request_span_names(
+    requests: list[trace_service_pb2.ExportTraceServiceRequest],
+) -> list[str]:
+    """Return every span name recorded by HTTP or gRPC requests."""
+    return [
+        span.name
+        for request in requests
+        for resource_spans in request.resource_spans
+        for scope_spans in resource_spans.scope_spans
+        for span in scope_spans.spans
+    ]
+
+
 def test_local_only_provider_writes_span_without_otlp(
     tmp_path: Path,
 ) -> None:
     """Default mode writes local JSON and never constructs a network exporter."""
     log_path = tmp_path / "traces.jsonl"
 
-    with patch("blacki.utils.observability.OTLPSpanExporter") as mock_otlp_exporter:
+    with (
+        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+    ):
         provider, mode = _create_tracer_provider(log_path)
         tracer = provider.get_tracer("test.local")
         with tracer.start_as_current_span("agent.local"):
@@ -106,7 +163,8 @@ def test_local_only_provider_writes_span_without_otlp(
         provider.shutdown()
 
     assert mode == "local"
-    mock_otlp_exporter.assert_not_called()
+    mock_grpc_exporter.assert_not_called()
+    mock_http_exporter.assert_not_called()
     written = [json.loads(line) for line in log_path.read_text().splitlines()]
     assert [span["name"] for span in written] == ["agent.local"]
 
@@ -126,6 +184,10 @@ def test_otlp_export_reaches_local_grpc_collector(
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
         f"http://127.0.0.1:{port}",
     )
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+        "authorization=Bearer%20grpc-token",
+    )
     provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
     try:
         tracer = provider.get_tracer("blacki.agent")
@@ -138,6 +200,49 @@ def test_otlp_export_reaches_local_grpc_collector(
 
     assert mode == "local+otlp-grpc"
     assert "agent.turn" in _span_names(collector)
+    assert collector.authorizations == ["Bearer grpc-token"]
+
+
+def test_otlp_export_reaches_local_http_collector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A representative span reaches a real OTLP HTTP/protobuf endpoint."""
+    RecordingHttpHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHttpHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = server.server_address[1]
+
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        f"http://127.0.0.1:{port}/custom/v1/traces",
+    )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "authorization=Bearer%20test-token",
+    )
+    provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
+    try:
+        tracer = provider.get_tracer("blacki.agent")
+        with tracer.start_as_current_span("agent.http-turn"):
+            pass
+        assert provider.force_flush(timeout_millis=5_000)
+    finally:
+        provider.shutdown()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert mode == "local+otlp-http-protobuf"
+    assert len(RecordingHttpHandler.requests) == 1
+    path, content_type, authorization, request = RecordingHttpHandler.requests[0]
+    assert path == "/custom/v1/traces"
+    assert content_type == "application/x-protobuf"
+    assert authorization == "Bearer test-token"
+    assert "agent.http-turn" in _request_span_names([request])
 
 
 def test_trace_specific_otlp_values_take_precedence(
@@ -158,8 +263,9 @@ def test_trace_specific_otlp_values_take_precedence(
 
     assert config is not None
     assert config.endpoint == "https://traces.example:4317"
+    assert config.endpoint_is_trace_specific
     assert config.protocol == "grpc"
-    assert config.headers == "trace=value"
+    assert config.headers == {"trace": "value"}
 
 
 def test_otlp_protocol_defaults_to_grpc(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -175,29 +281,132 @@ def test_otlp_protocol_defaults_to_grpc(monkeypatch: pytest.MonkeyPatch) -> None
     assert config.protocol == "grpc"
 
 
+def test_http_global_endpoint_appends_trace_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A global HTTP endpoint is a base URL and receives the signal path."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "https://collector.example/otlp/",
+    )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+
+    config = _load_otlp_trace_config()
+
+    assert config is not None
+    assert config.endpoint == "https://collector.example/otlp/v1/traces"
+    assert not config.endpoint_is_trace_specific
+    assert config.protocol == "http/protobuf"
+
+
+def test_http_trace_endpoint_is_used_exactly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trace-specific HTTP endpoint already includes its complete path."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+        "https://collector.example/custom/traces",
+    )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+
+    config = _load_otlp_trace_config()
+
+    assert config is not None
+    assert config.endpoint == "https://collector.example/custom/traces"
+    assert config.endpoint_is_trace_specific
+
+
+def test_otlp_headers_are_parsed_for_both_transports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Environment headers become the mapping required by the HTTP exporter."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "https://collector.example:4318",
+    )
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_HEADERS",
+        "authorization=Bearer%20token,x-api-key=value%3Dwith-equals",
+    )
+
+    config = _load_otlp_trace_config()
+
+    assert config is not None
+    assert config.headers == {
+        "authorization": "Bearer token",
+        "x-api-key": "value=with-equals",
+    }
+
+
+def test_observability_preflight_constructs_and_closes_selected_exporter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deployment validation proves the selected exporter can be constructed."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "https://collector.example:4318",
+    )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+
+    with (
+        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+    ):
+        validate_observability_environment()
+
+    mock_grpc_exporter.assert_not_called()
+    mock_http_exporter.assert_called_once_with(
+        endpoint="https://collector.example:4318/v1/traces",
+        headers=None,
+    )
+    mock_http_exporter.return_value.shutdown.assert_called_once_with()
+
+
+def test_observability_preflight_local_mode_constructs_no_exporter() -> None:
+    """Local-only preflight has no network-exporter lifecycle."""
+    with (
+        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+    ):
+        validate_observability_environment()
+
+    mock_grpc_exporter.assert_not_called()
+    mock_http_exporter.assert_not_called()
+
+
 @pytest.mark.parametrize(
-    "endpoint",
+    ("protocol", "endpoint"),
     [
-        "not-a-url",
-        "ftp://collector.example:4317",
-        "https://user:password@collector.example:4317",
-        "https://collector.example:4317/path?token=endpoint-canary",
-        "https://collector.example:invalid-port",
+        ("grpc", "not-a-url"),
+        ("grpc", "ftp://collector.example:4317"),
+        ("grpc", "https://user:password@collector.example:4317"),
+        ("grpc", "https://collector.example:4317/path"),
+        ("http/protobuf", "https://collector.example/path;token=endpoint-canary"),
+        (
+            "http/protobuf",
+            "https://collector.example/path?token=endpoint-canary",
+        ),
+        ("http/protobuf", "https://collector.example:invalid-port"),
     ],
 )
 def test_invalid_otlp_endpoint_is_rejected_without_echoing_value(
+    protocol: str,
     endpoint: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Malformed and credential-bearing endpoints fail with secret-free text."""
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
 
     with pytest.raises(ConfigurationError) as error:
         _load_otlp_trace_config()
 
-    assert endpoint not in str(error.value)
-    assert "password" not in str(error.value)
-    assert "endpoint-canary" not in str(error.value)
+    formatted_error = "".join(
+        traceback.format_exception(error.type, error.value, error.tb)
+    )
+    assert endpoint not in formatted_error
+    assert "password" not in formatted_error
+    assert "endpoint-canary" not in formatted_error
 
 
 @pytest.mark.parametrize(
@@ -222,21 +431,62 @@ def test_otlp_options_without_endpoint_fail_startup(
     assert "require" in str(error.value)
 
 
-def test_unsupported_otlp_protocol_fails_startup(
+@pytest.mark.parametrize(
+    "header_canary",
+    [
+        "authorization header-credential-canary",
+        "invalid header=header-credential-canary",
+        "authorization=Bearer%20header-credential-canary%0D%0AX-Injected%3Ayes",
+    ],
+)
+def test_malformed_otlp_headers_fail_without_echoing_value(
+    header_canary: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The installed exporter cannot claim HTTP/protobuf support."""
+    """Malformed headers fail startup without exposing credential material."""
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "https://collector.example:4317",
     )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", header_canary)
 
-    with pytest.raises(ConfigurationError, match="supports grpc"):
+    with pytest.raises(ConfigurationError, match="Invalid OTLP trace headers") as error:
+        _load_otlp_trace_config()
+
+    formatted_error = "".join(
+        traceback.format_exception(error.type, error.value, error.tb)
+    )
+    assert header_canary not in formatted_error
+    assert "header-credential-canary" not in formatted_error
+
+
+@pytest.mark.parametrize("protocol", ["http/json", "json", "grpc/protobuf"])
+def test_unsupported_otlp_protocol_fails_startup(
+    protocol: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the two installed OTLP transports may be selected."""
+    monkeypatch.setenv(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "https://collector.example:4317",
+    )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
+
+    with pytest.raises(ConfigurationError, match="grpc and http/protobuf"):
         _load_otlp_trace_config()
 
 
+@pytest.mark.parametrize(
+    ("protocol", "endpoint_suffix", "expected_mode"),
+    [
+        ("grpc", ":4317", "local+otlp-grpc"),
+        ("http/protobuf", ":4318/v1/traces", "local+otlp-http-protobuf"),
+    ],
+)
 def test_setup_tracing_logs_only_selected_mode(
+    protocol: str,
+    endpoint_suffix: str,
+    expected_mode: str,
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -246,8 +496,9 @@ def test_setup_tracing_logs_only_selected_mode(
     header_canary = "header-credential-canary"
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        f"https://{endpoint_canary}:4317",
+        f"https://{endpoint_canary}{endpoint_suffix}",
     )
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", protocol)
     monkeypatch.setenv(
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
         f"authorization={header_canary}",
@@ -268,7 +519,7 @@ def test_setup_tracing_logs_only_selected_mode(
         if "Trace exporter mode configured" in record.message
     ]
     assert len(mode_records) == 1
-    assert "local+otlp-grpc" in mode_records[0].message
+    assert expected_mode in mode_records[0].message
     assert endpoint_canary not in caplog.text
     assert header_canary not in caplog.text
 
