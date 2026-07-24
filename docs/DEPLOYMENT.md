@@ -70,7 +70,6 @@ Google AI Studio alternative and optional integrations.
 The safe deployment defaults are:
 
 ```dotenv
-BIND_ADDRESS=127.0.0.1
 HOST_PORT=8080
 SERVE_WEB_INTERFACE=false
 RELOAD_AGENTS=false
@@ -80,7 +79,7 @@ RESTART_POLICY=unless-stopped
 ## 3. Validate before starting
 
 ```bash
-docker compose config --quiet
+docker compose -f compose.yaml -f compose.prod.yaml config --quiet
 ```
 
 This catches missing required Compose values and invalid YAML without starting
@@ -89,19 +88,19 @@ the service. It does not validate model or Telegram credentials.
 ## 4. Build and start
 
 ```bash
-docker compose up --build -d
-docker compose ps
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml ps
 ```
 
 The first build installs the locked Python dependencies and can take several
 minutes. `docker compose ps` should eventually report the `agent` service as
-healthy. The liveness probe opens a TCP connection inside the container and
-does not initialize optional memory providers.
+healthy. The Compose healthcheck calls `/ready`, which returns success only
+after the required SQLite resource is initialized and answering queries.
 
 If startup fails:
 
 ```bash
-docker compose logs --tail=200 agent
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 ```
 
 ## 5. Verify the deployment
@@ -109,31 +108,33 @@ docker compose logs --tail=200 agent
 Inspect the application health details from the VPS:
 
 ```bash
-curl --fail http://127.0.0.1:8080/health
+curl --fail http://127.0.0.1:8080/ready
 ```
 
-The endpoint can report `degraded` when optional Mem0 memory is not configured.
-That does not prevent the container TCP liveness check or Telegram from
-running. Confirm the database check is healthy, then send `/start` to the bot.
+`/live` is a process-only liveness endpoint. `/ready` and its compatibility
+alias `/health` treat SQLite as critical and return HTTP 503 during startup or
+when the database is unavailable. Optional Mem0 memory is deliberately not a
+readiness dependency.
 
 ## Secure browser access
 
 The ADK web interface is a development interface and is disabled in the VPS
 sample. To inspect it temporarily:
 
-1. Set `SERVE_WEB_INTERFACE=true` in `.env`.
-2. Recreate the service with `docker compose up -d`.
-3. From your computer, open an SSH tunnel:
+1. Start the development overlay with
+   `docker compose -f compose.yaml -f compose.dev.yaml up -d`.
+2. From your computer, open an SSH tunnel:
 
    ```bash
    ssh -L 8080:127.0.0.1:8080 your-user@your-vps
    ```
 
-4. Open `http://127.0.0.1:8080` locally.
+3. Open `http://127.0.0.1:8080` locally.
+4. Return to the production overlay when finished.
 
-Do not set `BIND_ADDRESS=0.0.0.0` just to expose the ADK interface directly to
-the internet. An authenticated reverse proxy is a separate deployment
-decision and is outside this guide.
+The supported overlays cannot be changed to a public bind through `.env`.
+An authenticated reverse proxy is a separate deployment decision and is
+outside this guide.
 
 ## Use a prebuilt image only when verified
 
@@ -147,8 +148,8 @@ IMAGE=ghcr.io/your-owner/blacki:your-tag
 Authenticate to GHCR if the package is private, then use:
 
 ```bash
-docker compose pull
-docker compose up --no-build -d
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up --no-build -d
 ```
 
 `--no-build` makes the prebuilt-image path explicit. Do not assume that the
@@ -156,18 +157,9 @@ QueryPlanner package is anonymously pullable; that has not been verified.
 
 ## Important change for existing installations
 
-Older Compose defaults published port 8080 on all host interfaces, enabled the
-web UI and agent reload, and used `restart: always`. The new defaults are
-private and production-shaped.
-
-To retain an intentional old setting, add the corresponding override:
-
-```dotenv
-BIND_ADDRESS=0.0.0.0
-SERVE_WEB_INTERFACE=true
-RELOAD_AGENTS=true
-RESTART_POLICY=always
-```
-
-Review the security impact before exposing a host port. After the first
-successful start, continue with [Day-two operations](operations.md).
+Older Compose defaults could publish port 8080 on all host interfaces and
+enable the web UI and agent reload. The base file now publishes no host port;
+both supported overlays force loopback. Production also forces the UI and
+reload off, while the development overlay enables both without public
+exposure. After the first successful start, continue with
+[Day-two operations](operations.md).

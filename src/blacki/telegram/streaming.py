@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from blacki.adk_runtime import StreamChunk
 
 from .api import TelegramApiClient, TelegramApiError
-from .formatting import format_for_telegram
+from .formatting import format_for_telegram, get_open_markdown_entities
 from .types import ParseMode
 
 if TYPE_CHECKING:
@@ -324,61 +324,7 @@ def _is_message_not_modified(error: TelegramApiError) -> bool:
     return MESSAGE_NOT_MODIFIED_ERROR in error_message
 
 
-def _get_open_entities(text: str) -> list[str]:
-    open_entities: list[str] = []
-    i = 0
-    while i < len(text):
-        if text[i] == "\\":
-            i += 2
-            continue
-
-        if text[i : i + 3] == "```":
-            if "`" in open_entities:
-                i += 3
-                continue
-            if open_entities and open_entities[-1] == "```":
-                open_entities.pop()
-            else:
-                open_entities.append("```")
-            i += 3
-            continue
-
-        if text[i] == "`":
-            if "```" in open_entities:
-                i += 1
-                continue
-            if open_entities and open_entities[-1] == "`":
-                open_entities.pop()
-            else:
-                open_entities.append("`")
-            i += 1
-            continue
-
-        if "```" in open_entities or "`" in open_entities:
-            i += 1
-            continue
-
-        if text[i : i + 2] in ("__", "||"):
-            marker = text[i : i + 2]
-            if open_entities and open_entities[-1] == marker:
-                open_entities.pop()
-            else:
-                open_entities.append(marker)
-            i += 2
-            continue
-
-        if text[i] in ("*", "_", "~"):
-            marker = text[i]
-            if open_entities and open_entities[-1] == marker:
-                open_entities.pop()
-            else:
-                open_entities.append(marker)
-            i += 1
-            continue
-
-        i += 1
-
-    return open_entities
+_get_open_entities = get_open_markdown_entities
 
 
 def split_long_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -440,6 +386,19 @@ def _find_chunk_boundary(text: str, limit: int) -> int:
     for separator in ("\n\n", "\n", " "):
         split_index = text.rfind(separator, 0, limit + 1)
         if split_index > 0:
-            return split_index
+            return _avoid_escape_pair_split(text, split_index)
 
-    return limit
+    return _avoid_escape_pair_split(text, limit)
+
+
+def _avoid_escape_pair_split(text: str, split_index: int) -> int:
+    """Keep a Markdown escape backslash with the character that follows it."""
+    backslashes = 0
+    position = split_index - 1
+    while position >= 0 and text[position] == "\\":
+        backslashes += 1
+        position -= 1
+
+    if backslashes % 2 == 1 and split_index > 1:
+        return split_index - 1
+    return split_index

@@ -16,15 +16,8 @@ cp .env.example .env
 ```
 
 Set a unique `AGENT_NAME`, activate exactly one model provider, and replace its
-key. For local browser development, opt in to:
-
-```dotenv
-SERVE_WEB_INTERFACE=true
-RELOAD_AGENTS=true
-```
-
-The full sample keeps these settings false because it is also the basis for VPS
-deployments.
+key. The development Compose overlay enables the ADK web interface and agent
+reload while keeping the published port on loopback.
 
 ## Install and run with Python
 
@@ -38,14 +31,14 @@ The default local bind address is `127.0.0.1:8080`.
 ## Run with Docker Compose
 
 ```bash
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
 Compose does not currently configure file-watch synchronization. Rebuild the
 image after source changes:
 
 ```bash
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
 Use `Ctrl+C` in attached mode, or run `docker compose down` from another
@@ -94,7 +87,10 @@ isolation, documentation navigation, and owner-only deployment gating:
 
 ```bash
 uv run pytest tests/test_deployment_contract.py
-ENV_FILE=.env.minimal docker compose --env-file .env.minimal config --quiet
+ENV_FILE=.env.minimal docker compose --env-file .env.minimal \
+  -f compose.yaml -f compose.prod.yaml config --quiet
+ENV_FILE=.env.minimal docker compose --env-file .env.minimal \
+  -f compose.yaml -f compose.dev.yaml config --quiet
 bash -n setup.sh entrypoint.sh
 docker build --tag blacki:contract-test .
 ```

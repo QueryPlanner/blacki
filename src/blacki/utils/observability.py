@@ -10,10 +10,13 @@ import os
 import sys
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import (
     SERVICE_INSTANCE_ID,
     SERVICE_NAME,
@@ -26,6 +29,33 @@ from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     SpanExporter,
     SpanExportResult,
+)
+
+from .exceptions import ConfigurationError
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OTLPTraceConfig:
+    """Validated, trace-specific OTLP exporter settings."""
+
+    endpoint: str
+    protocol: str
+    headers: str | None
+
+
+_OTLP_ENDPOINT_KEYS = (
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+)
+_OTLP_PROTOCOL_KEYS = (
+    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+    "OTEL_EXPORTER_OTLP_PROTOCOL",
+)
+_OTLP_HEADER_KEYS = (
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_EXPORTER_OTLP_HEADERS",
 )
 
 
@@ -171,8 +201,91 @@ class JSONFileSpanExporter(SpanExporter):
         pass
 
 
-def setup_tracing() -> None:
-    """Set up OpenTelemetry tracing with local JSON file export."""
+def _first_environment_value(keys: Sequence[str]) -> str:
+    """Return the first non-empty environment value in precedence order."""
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _validate_otlp_endpoint(endpoint: str) -> None:
+    """Reject endpoints that are invalid or embed credential material."""
+    try:
+        parsed = urlparse(endpoint)
+        _ = parsed.port
+    except ValueError as e:
+        raise ConfigurationError(
+            "Invalid OTLP trace endpoint. Use an http(s) collector URL."
+        ) from e
+
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        raise ConfigurationError(
+            "Invalid OTLP trace endpoint. Use an http(s) collector URL "
+            "without credentials, paths, queries, or fragments."
+        )
+
+
+def _load_otlp_trace_config() -> OTLPTraceConfig | None:
+    """Load OTLP trace settings with trace-specific values taking precedence."""
+    endpoint = _first_environment_value(_OTLP_ENDPOINT_KEYS)
+    protocol = _first_environment_value(_OTLP_PROTOCOL_KEYS)
+    headers = _first_environment_value(_OTLP_HEADER_KEYS)
+
+    if not endpoint:
+        if protocol or headers:
+            raise ConfigurationError(
+                "OTLP trace protocol or headers require "
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or "
+                "OTEL_EXPORTER_OTLP_ENDPOINT."
+            )
+        return None
+
+    selected_protocol = protocol.casefold() if protocol else "grpc"
+    if selected_protocol != "grpc":
+        raise ConfigurationError(
+            "Unsupported OTLP trace protocol. This deployment supports grpc."
+        )
+
+    _validate_otlp_endpoint(endpoint)
+    return OTLPTraceConfig(
+        endpoint=endpoint,
+        protocol=selected_protocol,
+        headers=headers or None,
+    )
+
+
+def _create_tracer_provider(log_path: Path) -> tuple[TracerProvider, str]:
+    """Create a provider with local JSON and optional OTLP span processors."""
+    provider = TracerProvider(resource=Resource.create())
+
+    local_exporter = JSONFileSpanExporter(str(log_path))
+    provider.add_span_processor(BatchSpanProcessor(local_exporter))
+
+    otlp_config = _load_otlp_trace_config()
+    if otlp_config is None:
+        return provider, "local"
+
+    otlp_exporter = OTLPSpanExporter(
+        endpoint=otlp_config.endpoint,
+        headers=otlp_config.headers,
+    )
+    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
+    return provider, "local+otlp-grpc"
+
+
+def setup_tracing() -> TracerProvider | None:
+    """Set up local JSON tracing and opt-in remote gRPC OTLP export."""
     log_dir = get_log_dir()
     log_path = log_dir / "blacki-traces.log"
 
@@ -180,19 +293,9 @@ def setup_tracing() -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print(f"⚠️ Failed to create trace directory: {e}")
-        return
+        return None
 
-    # Resource automatically reads OTEL_RESOURCE_ATTRIBUTES from environment variables
-    resource = Resource.create()
-
-    # Set up tracer provider
-    provider = TracerProvider(resource=resource)
-
-    # Add our custom JSON exporter
-    exporter = JSONFileSpanExporter(str(log_path))
-    processor = BatchSpanProcessor(exporter)
-    provider.add_span_processor(processor)
-
-    # Register global tracer provider
+    provider, mode = _create_tracer_provider(log_path)
     trace.set_tracer_provider(provider)
-    print(f"✅ Local trace export configured to: {log_path}")
+    logger.info("Trace exporter mode configured: %s", mode)
+    return provider

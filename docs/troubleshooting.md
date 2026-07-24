@@ -3,9 +3,9 @@
 Start with:
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 agent
-docker compose config --quiet
+docker compose -f compose.yaml -f compose.prod.yaml ps
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
+docker compose -f compose.yaml -f compose.prod.yaml config --quiet
 ```
 
 Do not post `.env` or unredacted logs publicly.
@@ -23,8 +23,10 @@ AGENT_NAME=my-blacki
 If you use a different file, pass it explicitly:
 
 ```bash
-ENV_FILE=.env.production docker compose --env-file .env.production config --quiet
-ENV_FILE=.env.production docker compose --env-file .env.production up -d
+ENV_FILE=.env.production docker compose --env-file .env.production \
+  -f compose.yaml -f compose.prod.yaml config --quiet
+ENV_FILE=.env.production docker compose --env-file .env.production \
+  -f compose.yaml -f compose.prod.yaml up -d
 ```
 
 ## Startup says no model API key is configured
@@ -55,35 +57,33 @@ trailing whitespace. Regenerate the token if its value is uncertain.
 
 ## The container is unhealthy
 
-The Compose probe checks whether port 8080 accepts a TCP connection inside the
-container. Inspect the startup exception:
+The Compose probe calls `/ready` inside the container. Inspect the startup
+exception:
 
 ```bash
-docker compose logs --tail=200 agent
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 ```
 
 Common causes are missing configuration, an invalid Telegram token, a database
 permission problem, or an exception while an enabled integration starts.
 
-## /health reports degraded
+## /ready returns HTTP 503
 
-The application endpoint reports optional memory state as well as SQLite.
-`memory_service: degraded` or `unavailable` is expected when Mem0 is not fully
-configured. `database: unhealthy` requires investigation.
-
-The endpoint returns HTTP 200 for a degraded payload. Read the JSON body; do
-not use only the status code as a readiness decision.
+`status: starting` means application startup has not finished. `status:
+degraded` with `database: unhealthy` means SQLite is unavailable. Optional
+Mem0 configuration does not affect readiness. `/health` is an exact
+compatibility alias; `/live` can still return HTTP 200 while readiness is 503.
 
 ## The web interface is unreachable
 
 VPS defaults intentionally set:
 
 ```dotenv
-BIND_ADDRESS=127.0.0.1
 SERVE_WEB_INTERFACE=false
 ```
 
-Enable the interface and use an SSH tunnel as described in
+The supported overlays bind only to loopback. Enable the interface with the
+development overlay and use an SSH tunnel as described in
 [First VPS deployment](DEPLOYMENT.md#secure-browser-access). A loopback bind is
 not reachable directly from another computer.
 
@@ -105,7 +105,7 @@ and `/app/logs` before dropping to the non-root `app` user. Rebuild the current
 image:
 
 ```bash
-docker compose up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
 ```
 
 Then inspect the host directory ownership. Avoid making the state directories
@@ -116,7 +116,7 @@ world-writable.
 Confirm all three bind mounts are present in the resolved configuration:
 
 ```bash
-docker compose config
+docker compose -f compose.yaml -f compose.prod.yaml config
 ```
 
 ADK HTTP and web sessions are intentionally in memory and do not persist.

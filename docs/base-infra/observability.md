@@ -1,8 +1,7 @@
 # Observability
 
-Blacki currently provides local structured logs and local OpenTelemetry span
-files. It does not configure a remote OTLP exporter from environment variables
-alone.
+Blacki always provides local structured logs and local OpenTelemetry span files.
+It can additionally export spans to a remote collector through gRPC OTLP.
 
 ## Outputs
 
@@ -17,7 +16,7 @@ Compose maps `/app/logs` to `./logs` on the host. Human-readable application
 logs also go to stdout and are available through:
 
 ```bash
-docker compose logs --follow agent
+docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 ```
 
 ## Instrumentation
@@ -27,7 +26,8 @@ At startup Blacki:
 1. sets `OTEL_RESOURCE_ATTRIBUTES`;
 2. instruments Google ADK with `GoogleADKInstrumentor`;
 3. configures stdout and JSON file logging; and
-4. registers a `TracerProvider` with `JSONFileSpanExporter`.
+4. registers a `TracerProvider` with `JSONFileSpanExporter`; and
+5. adds a gRPC OTLP exporter when a validated trace endpoint is configured.
 
 The resource contains:
 
@@ -45,16 +45,27 @@ Capturing prompts and responses can expose personal data, credentials, and
 tool results. Enable it only for a deliberate debugging session with an
 appropriate retention policy.
 
-## Remote export is not configured
+## Remote gRPC OTLP export
 
-Although OTLP exporter packages are installed, `setup_tracing()` currently
-registers only the local `JSONFileSpanExporter`. Setting
-`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, or related
-variables does not add a network span processor.
+Local-only mode is the default and never creates a network exporter. To add
+remote span export, set either:
 
-Remote OTLP support requires an implementation change with tests. Do not assume
-that traces reach Axiom, Honeycomb, Langfuse, Jaeger, or Google Cloud because an
-environment variable is present.
+```dotenv
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://collector.example.com:4317
+OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=authorization=replace-me
+```
+
+or the global `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_PROTOCOL`, and
+`OTEL_EXPORTER_OTLP_HEADERS` fallbacks. Trace-specific values take precedence.
+The protocol defaults to `grpc` when omitted. HTTP/protobuf is not installed or
+accepted.
+
+The endpoint must use `http` or `https`, identify a host, and contain no
+embedded username, password, path, query, or fragment. Protocol or header
+settings without an endpoint fail startup with a secret-free configuration
+error. The application logs only `local` or `local+otlp-grpc` once; it never
+logs the endpoint or headers.
 
 ## Retention
 

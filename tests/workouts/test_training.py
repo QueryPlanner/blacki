@@ -663,31 +663,10 @@ class TestTrainingEdgeCasesAndCoverage:
         """Prove transactions roll back correctly if an error is thrown in create_training_program."""
         orig_execute = storage._conn.execute
 
-        class MockAiosqliteHelper:
-            def __init__(self, ctx, force_fail=False):
-                self.ctx = ctx
-                self.force_fail = force_fail
-
-            def __await__(self):
-                return self._await_impl().__await__()
-
-            async def _await_impl(self):
-                if self.force_fail:
-                    raise Exception("mock commit fail")
-                return await self.ctx
-
-            async def __aenter__(self):
-                if self.force_fail:
-                    raise Exception("mock commit fail")
-                return await self.ctx.__aenter__()
-
-            async def __aexit__(self, exc_type, exc_val, exc_tb):
-                await self.ctx.__aexit__(exc_type, exc_val, exc_tb)
-
         def mock_execute(query, *args, **kwargs):
-            force_fail = "INSERT INTO training_programs" in query
-            ctx = orig_execute(query, *args, **kwargs)
-            return MockAiosqliteHelper(ctx, force_fail=force_fail)
+            if "INSERT INTO training_programs" in query:
+                raise Exception("mock commit fail")
+            return orig_execute(query, *args, **kwargs)
 
         with patch.object(storage._conn, "execute", side_effect=mock_execute):
             program = TrainingProgram(

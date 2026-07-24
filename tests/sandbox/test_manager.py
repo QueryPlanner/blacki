@@ -79,7 +79,9 @@ class TestSandboxManager:
         assert result["error"] is None
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_reconnect_fallback(self) -> None:
+    async def test_get_or_create_sandbox_reconnect_fallback(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Test fallback when reconnect fails."""
         config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
@@ -95,7 +97,7 @@ class TestSandboxManager:
             patch(
                 "blacki.sandbox.manager.Sandbox.connect",
                 new_callable=AsyncMock,
-                side_effect=SandboxException("Connection failed"),
+                side_effect=SandboxException("reconnect-credential-canary"),
             ),
             patch(
                 "blacki.sandbox.manager.Sandbox.create",
@@ -107,9 +109,12 @@ class TestSandboxManager:
 
         assert result["sandbox"] == mock_sandbox
         assert tool_context.state["__sandbox_id__"] == "new-sandbox-id"
+        assert "reconnect-credential-canary" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_timeout_error(self) -> None:
+    async def test_get_or_create_sandbox_timeout_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Test handling SandboxReadyTimeoutException."""
         config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
@@ -121,15 +126,19 @@ class TestSandboxManager:
         with patch(
             "blacki.sandbox.manager.Sandbox.create",
             new_callable=AsyncMock,
-            side_effect=SandboxReadyTimeoutException("Timeout"),
+            side_effect=SandboxReadyTimeoutException("timeout-credential-canary"),
         ):
             result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "timed out" in result["error"].lower()
+        assert "timeout-credential-canary" not in result["error"]
+        assert "timeout-credential-canary" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_generic_error(self) -> None:
+    async def test_get_or_create_sandbox_generic_error(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Test handling generic SandboxException."""
         config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
@@ -141,24 +150,19 @@ class TestSandboxManager:
         with patch(
             "blacki.sandbox.manager.Sandbox.create",
             new_callable=AsyncMock,
-            side_effect=SandboxException("Generic error"),
+            side_effect=SandboxException("sdk-credential-canary"),
         ):
             result = await manager.get_or_create_sandbox(tool_context.state)
 
         assert result["sandbox"] is None
         assert "Failed to create sandbox" in result["error"]
+        assert "sdk-credential-canary" not in result["error"]
+        assert "sdk-credential-canary" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_with_gemini_env(self) -> None:
-        """Test sandbox creation with Gemini environment variables and Github Token."""
-        config = SandboxConfig(
-            enabled=True,
-            domain="localhost:9090",
-            gemini_api_key="test_api_key",
-            gemini_base_url="https://test.api",
-            gemini_model="test-model",
-            github_token="test_github_token",
-        )
+    async def test_get_or_create_sandbox_never_injects_credentials(self) -> None:
+        """The sandbox creation request must always omit process credentials."""
+        config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
         tool_context = MagicMock()
         tool_context.state = {}
@@ -176,51 +180,30 @@ class TestSandboxManager:
         assert result["sandbox"] == mock_sandbox
         assert result["error"] is None
 
-        # Verify Sandbox.create was called with the right env
         mock_create.assert_called_once()
-        kwargs = mock_create.call_args.kwargs
-        assert "env" in kwargs
-        env = kwargs["env"]
-        assert env["GEMINI_API_KEY"] == "test_api_key"
-        assert env["GEMINI_BASE_URL"] == "https://test.api"
-        assert env["GEMINI_MODEL"] == "test-model"
-        assert env["GITHUB_TOKEN"] == "test_github_token"  # noqa: S105
+        assert mock_create.call_args.kwargs["env"] is None
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_with_partial_gemini_env(self) -> None:
-        """Test sandbox creation with partial Gemini environment variables."""
-        config = SandboxConfig(
-            enabled=True,
-            domain="localhost:9090",
-            gemini_api_key="test_api_key",
-            gemini_model=None,
-            # gemini_base_url is None
-        )
+    async def test_sdk_error_details_are_redacted(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Tool responses and logs must not echo SDK exception details."""
+        config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
         tool_context = MagicMock()
         tool_context.state = {}
-
-        mock_sandbox = MagicMock()
-        mock_sandbox.id = "test-sandbox-id"
+        canary = "credential-canary-value"
 
         with patch(
             "blacki.sandbox.manager.Sandbox.create",
             new_callable=AsyncMock,
-            return_value=mock_sandbox,
-        ) as mock_create:
+            side_effect=RuntimeError(canary),
+        ):
             result = await manager.get_or_create_sandbox(tool_context.state)
 
-        assert result["sandbox"] == mock_sandbox
-        assert result["error"] is None
-
-        # Verify Sandbox.create was called with the right env
-        mock_create.assert_called_once()
-        kwargs = mock_create.call_args.kwargs
-        assert "env" in kwargs
-        env = kwargs["env"]
-        assert env["GEMINI_API_KEY"] == "test_api_key"
-        assert "GEMINI_BASE_URL" not in env
-        assert "GEMINI_MODEL" not in env
+        assert result["sandbox"] is None
+        assert canary not in result["error"]
+        assert canary not in caplog.text
 
     @pytest.mark.asyncio
     async def test_close(self) -> None:
@@ -231,7 +214,7 @@ class TestSandboxManager:
         await manager.close()
 
     @pytest.mark.asyncio
-    async def test_close_with_exception(self) -> None:
+    async def test_close_with_exception(self, caplog: pytest.LogCaptureFixture) -> None:
         """Test closing manager handles exceptions gracefully."""
         from unittest.mock import AsyncMock
 
@@ -239,12 +222,13 @@ class TestSandboxManager:
         manager = SandboxManager(config)
 
         original_method = manager._connection_config.close_transport_if_owned
-        error_mock = AsyncMock(side_effect=RuntimeError("Close failed"))
+        error_mock = AsyncMock(side_effect=RuntimeError("close-credential-canary"))
         object.__setattr__(
             manager._connection_config, "close_transport_if_owned", error_mock
         )
 
         await manager.close()
+        assert "close-credential-canary" not in caplog.text
 
         object.__setattr__(
             manager._connection_config, "close_transport_if_owned", original_method

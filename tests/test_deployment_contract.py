@@ -1,5 +1,8 @@
 """Contract tests for the documented Docker Compose deployment path."""
 
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +11,7 @@ import yaml
 from blacki.utils.config import ServerEnv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DOCKER_EXECUTABLE = shutil.which("docker")
 
 
 def _read(relative_path: str) -> str:
@@ -71,7 +75,7 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert "GOOGLE_API_KEY" not in values
     assert values["TELEGRAM_ENABLED"] == "true"
     assert values["TELEGRAM_BOT_TOKEN"] == "replace-me"  # noqa: S105
-    assert values["BIND_ADDRESS"] == "127.0.0.1"
+    assert "BIND_ADDRESS" not in values
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
 
@@ -92,7 +96,7 @@ def test_compose_defaults_are_private_persistent_and_live() -> None:
     service = _load_yaml("compose.yaml")["services"]["agent"]
 
     assert service["image"] == "${IMAGE:-blacki:local}"
-    assert service["ports"] == ["${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8080}:8080"]
+    assert "ports" not in service
     assert service["environment"]["AGENT_NAME"].startswith("${AGENT_NAME:?")
     assert service["environment"]["SERVE_WEB_INTERFACE"] == (
         "${SERVE_WEB_INTERFACE:-false}"
@@ -108,8 +112,8 @@ def test_compose_defaults_are_private_persistent_and_live() -> None:
     }
 
     health_command = " ".join(service["healthcheck"]["test"])
-    assert "socket.create_connection" in health_command
-    assert "/health" not in health_command
+    assert "urllib.request.urlopen" in health_command
+    assert "/ready" in health_command
 
 
 def test_runtime_prepares_every_persistent_mount() -> None:
@@ -156,9 +160,9 @@ def test_readme_exposes_the_complete_first_run() -> None:
 
     for command in (
         "cp .env.minimal .env",
-        "docker compose config --quiet",
-        "docker compose up --build -d",
-        "docker compose ps",
+        "docker compose -f compose.yaml -f compose.prod.yaml config --quiet",
+        "docker compose -f compose.yaml -f compose.prod.yaml up --build -d",
+        "docker compose -f compose.yaml -f compose.prod.yaml ps",
     ):
         assert command in readme
 
@@ -175,6 +179,8 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         '".env.example"',
         '"Dockerfile"',
         '"compose.yaml"',
+        '"compose.dev.yaml"',
+        '"compose.prod.yaml"',
         '"docs/**"',
         '"setup.sh"',
     ):
@@ -183,10 +189,86 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
     for command in (
         "mkdocs build --strict",
         "pytest tests/test_deployment_contract.py",
-        "docker compose --env-file .env.minimal config --quiet",
+        "-f compose.yaml -f compose.prod.yaml config --quiet",
+        "-f compose.yaml -f compose.dev.yaml config --quiet",
         "docker build --tag blacki:contract-test .",
     ):
         assert command in workflow
+
+
+def test_production_overlay_defeats_hostile_environment_overrides() -> None:
+    """Rendered production Compose must stay private and disable dev features."""
+    assert DOCKER_EXECUTABLE is not None
+    environment = {
+        **os.environ,
+        "BIND_ADDRESS": "0.0.0.0",  # noqa: S104 - hostile input under test
+        "ENV_FILE": ".env.minimal",
+        "RELOAD_AGENTS": "true",
+        "SERVE_WEB_INTERFACE": "true",
+    }
+    result = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [
+            DOCKER_EXECUTABLE,
+            "compose",
+            "--env-file",
+            ".env.minimal",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.prod.yaml",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    service = yaml.safe_load(result.stdout)["services"]["agent"]
+
+    assert service["environment"]["SERVE_WEB_INTERFACE"] == "false"
+    assert service["environment"]["RELOAD_AGENTS"] == "false"
+    assert service["ports"] == [
+        {
+            "mode": "ingress",
+            "host_ip": "127.0.0.1",
+            "target": 8080,
+            "published": "8080",
+            "protocol": "tcp",
+        }
+    ]
+
+
+def test_development_overlay_is_loopback_only() -> None:
+    """Local development enables the UI without exposing it on every interface."""
+    assert DOCKER_EXECUTABLE is not None
+    result = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [
+            DOCKER_EXECUTABLE,
+            "compose",
+            "--env-file",
+            ".env.minimal",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.dev.yaml",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "BIND_ADDRESS": "0.0.0.0",  # noqa: S104 - hostile input under test
+            "ENV_FILE": ".env.minimal",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    service = yaml.safe_load(result.stdout)["services"]["agent"]
+
+    assert service["environment"]["SERVE_WEB_INTERFACE"] == "true"
+    assert service["environment"]["RELOAD_AGENTS"] == "true"
+    assert service["ports"][0]["host_ip"] == "127.0.0.1"
 
 
 def test_owner_deployment_cannot_run_from_a_fork() -> None:
@@ -204,3 +286,6 @@ def test_legacy_host_service_and_setup_are_not_presented_as_golden_paths() -> No
     assert service.startswith("# Legacy example only.")
     assert "Do not run setup.sh unattended" in deployment_guide
     assert "not the supported first-deployment path" in deployment_guide
+    assert "docker compose -f compose.yaml -f compose.prod.yaml up -d" in _read(
+        "setup.sh"
+    )

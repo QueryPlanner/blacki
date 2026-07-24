@@ -36,8 +36,8 @@ At least one model provider must also be configured. See
 Docker Compose:
 
 ```bash
-docker compose up --build -d
-docker compose logs --tail=100 agent
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100 agent
 ```
 
 Local Python:
@@ -79,8 +79,8 @@ turns. It is opt-in because it adds chat traffic and may expose tool names.
 If the bot does not respond:
 
 ```bash
-docker compose ps
-docker compose logs --tail=200 agent
+docker compose -f compose.yaml -f compose.prod.yaml ps
+docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 ```
 
 Check that:

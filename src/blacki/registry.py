@@ -208,7 +208,7 @@ def _build_skill_tools(skills_dir: Path) -> list[Any]:
         from blacki.skills import load_skill_from_dir
         from blacki.skills.mcp_skill_toolset import McpSkillToolset
 
-        skills_to_load = ["explore_repo", "gemini_cli", "agent_browser"]
+        skills_to_load = ["explore_repo", "agent_browser"]
         loaded_skills: list[tuple[Skill, McpToolset | None]] = []
         for skill_name in skills_to_load:
             skill = load_skill_from_dir(skills_dir / skill_name)

@@ -8,13 +8,14 @@ source build and an explicitly configured prebuilt image.
 Before every first start or configuration change:
 
 ```bash
-docker compose config --quiet
+docker compose -f compose.yaml -f compose.prod.yaml config --quiet
 ```
 
 To validate a different environment file:
 
 ```bash
-ENV_FILE=.env.production docker compose --env-file .env.production config --quiet
+ENV_FILE=.env.production docker compose --env-file .env.production \
+  -f compose.yaml -f compose.prod.yaml config --quiet
 ```
 
 Compose interpolation and container environment injection are separate. Pass
@@ -25,7 +26,7 @@ the same file through `--env-file` and `ENV_FILE` when its name is not `.env`.
 The default image name is `blacki:local`, and the service includes `build: .`.
 
 ```bash
-docker compose up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
 ```
 
 Use this path unless a registry image and its access policy have been verified.
@@ -41,8 +42,8 @@ IMAGE=ghcr.io/your-owner/blacki:your-tag
 Then:
 
 ```bash
-docker compose pull
-docker compose up --no-build -d
+docker compose -f compose.yaml -f compose.prod.yaml pull
+docker compose -f compose.yaml -f compose.prod.yaml up --no-build -d
 ```
 
 The `--no-build` flag prevents an accidental local rebuild under the registry
@@ -54,15 +55,18 @@ The mapping is:
 
 ```yaml
 ports:
-  - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8080}:8080"
+  - "127.0.0.1:${HOST_PORT:-8080}:8080"
 ```
 
 The process listens on `0.0.0.0:8080` inside the container, while the VPS
-publishes it only on loopback by default. Telegram long polling needs no inbound
-port.
+publishes it only on loopback. Telegram long polling needs no inbound port.
 
-For temporary browser access, enable the web interface and use an SSH tunnel.
-Treat `BIND_ADDRESS=0.0.0.0` as an explicit public-network decision.
+The base file publishes no host port. `compose.prod.yaml` adds the loopback
+mapping and forces the web interface and reload off even if hostile shell or
+`.env` values request them.
+For local browser development, use `compose.dev.yaml`; it enables the
+development features but also forces loopback. Use an SSH tunnel for temporary
+remote access. Neither overlay provides authentication for public exposure.
 
 ## Persistent mounts
 
@@ -75,39 +79,40 @@ Treat `BIND_ADDRESS=0.0.0.0` as an explicit public-network decision.
 The entrypoint starts as root only long enough to create and assign these bind
 mounts, then executes the server as the non-root `app` user.
 
-## Liveness
+## Health probes
 
-The healthcheck uses Python's standard `socket` module to connect to
-`127.0.0.1:8080` inside the container. It proves the server is accepting TCP
-connections without calling the richer `/health` endpoint or initializing
-optional Mem0 configuration.
+The healthcheck uses Python's standard HTTP client to call `/ready` inside the
+container. Readiness returns HTTP 503 until SQLite is initialized and whenever
+its side-effect-free `SELECT 1` check fails. `/live` checks only that the
+application event loop is serving requests. Optional Mem0 is not
+readiness-critical.
 
 ```bash
-docker compose ps
+docker compose -f compose.yaml -f compose.prod.yaml ps
 ```
 
-Use `/health` manually when you need database and memory details.
+`/health` remains a compatibility alias for `/ready`.
 
 ## Lifecycle
 
 ```bash
 # Attached source build
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 
 # Detached source build
-docker compose up --build -d
+docker compose -f compose.yaml -f compose.prod.yaml up --build -d
 
 # Status
-docker compose ps
+docker compose -f compose.yaml -f compose.prod.yaml ps
 
 # Logs
-docker compose logs --follow agent
+docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 
 # Restart
-docker compose restart agent
+docker compose -f compose.yaml -f compose.prod.yaml restart agent
 
 # Stop and remove the container and network
-docker compose down
+docker compose -f compose.yaml -f compose.prod.yaml down
 ```
 
 `docker compose down` does not delete the bind-mounted host directories.
@@ -117,7 +122,7 @@ docker compose down
 Compose Watch is not configured. Rebuild after source or dependency changes:
 
 ```bash
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
 For faster Python iteration, use the

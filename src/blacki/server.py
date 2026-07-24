@@ -10,10 +10,10 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
@@ -154,22 +154,22 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     sqlite_path = env.sqlite_path or DEFAULT_SQLITE_PATH
     _container = await init_container(sqlite_path)
-    await _container.initialize_all_storages()
-
-    logger.info("Validating configuration...")
     try:
-        warnings = validation.validate_configuration(
-            env.telegram_enabled, env.telegram_bot_token
-        )
-        for warning in warnings:
-            logger.warning(warning)
-        logger.info("Configuration validated successfully")
-    except ConfigurationError:
-        logger.exception("Configuration validation failed")
-        raise
+        await _container.initialize_all_storages()
 
-    await _start_telegram_bot()
-    try:
+        logger.info("Validating configuration...")
+        try:
+            warnings = validation.validate_configuration(
+                env.telegram_enabled, env.telegram_bot_token
+            )
+            for warning in warnings:
+                logger.warning(warning)
+            logger.info("Configuration validated successfully")
+        except ConfigurationError:
+            logger.exception("Configuration validation failed")
+            raise
+
+        await _start_telegram_bot()
         yield
     finally:
         await _stop_reminder_scheduler()
@@ -195,39 +195,55 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app.router.lifespan_context = lifespan
 
 
+@app.get("/live")
+async def live() -> dict[str, str]:
+    """Report only that the application process and event loop are alive."""
+    return {"status": "alive"}
+
+
+async def _readiness_response() -> JSONResponse:
+    """Check already-initialized dependencies required to serve tool requests."""
+    if _container is None:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "starting",
+                "checks": {"database": "starting"},
+            },
+        )
+
+    try:
+        async with _container.conn.execute("SELECT 1") as cursor:
+            await cursor.fetchone()
+    except Exception:
+        logger.exception("Readiness database check failed")
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "degraded",
+                "checks": {"database": "unhealthy"},
+            },
+        )
+
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "ready",
+            "checks": {"database": "healthy"},
+        },
+    )
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    """Report whether critical startup resources are initialized and healthy."""
+    return await _readiness_response()
+
+
 @app.get("/health")
-async def health() -> dict[str, Any]:
-    """Health check endpoint for container orchestration.
-
-    Returns:
-        dict with status key indicating service health.
-    """
-    from blacki.memory.config import get_memory_client, get_memory_client_error
-
-    checks: dict[str, str] = {}
-
-    if _container is not None:
-        try:
-            async with _container.conn.execute("SELECT 1") as cursor:
-                await cursor.fetchone()
-            checks["database"] = "healthy"
-        except Exception:
-            checks["database"] = "unhealthy"
-
-    client = get_memory_client()
-    error = get_memory_client_error()
-
-    if client:
-        checks["memory_service"] = "healthy"
-    elif error:
-        checks["memory_service"] = "degraded"
-    else:
-        checks["memory_service"] = "unavailable"
-
-    all_ok = all(v == "healthy" for v in checks.values())
-    status = "ok" if all_ok else "degraded"
-
-    return {"status": status, "checks": checks}
+async def health() -> JSONResponse:
+    """Compatibility alias with exactly the same semantics as readiness."""
+    return await _readiness_response()
 
 
 def main() -> None:
@@ -262,5 +278,5 @@ def main() -> None:
     return
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover - exercised through main()
     main()

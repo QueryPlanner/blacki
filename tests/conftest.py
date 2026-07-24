@@ -1,11 +1,55 @@
 """Shared pytest fixtures for all tests."""
 
+import asyncio
+import warnings
 from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+_PYTEST_BOOTSTRAP_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
+_PYTEST_PREVIOUS_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_sessionstart() -> None:
+    """Install an owned bootstrap loop before pytest-asyncio starts."""
+    global _PYTEST_BOOTSTRAP_EVENT_LOOP, _PYTEST_PREVIOUS_EVENT_LOOP
+
+    with warnings.catch_warnings(record=True) as caught_warnings:
+        warnings.simplefilter("always", DeprecationWarning)
+        try:
+            previous_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            previous_loop = None
+
+    if caught_warnings and previous_loop is not None:
+        previous_loop.close()
+        previous_loop = None
+
+    bootstrap_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(bootstrap_loop)
+    _PYTEST_PREVIOUS_EVENT_LOOP = previous_loop
+    _PYTEST_BOOTSTRAP_EVENT_LOOP = bootstrap_loop
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish() -> None:
+    """Close the owned bootstrap loop and restore any previous loop."""
+    global _PYTEST_BOOTSTRAP_EVENT_LOOP, _PYTEST_PREVIOUS_EVENT_LOOP
+
+    bootstrap_loop = _PYTEST_BOOTSTRAP_EVENT_LOOP
+    previous_loop = _PYTEST_PREVIOUS_EVENT_LOOP
+    _PYTEST_BOOTSTRAP_EVENT_LOOP = None
+    _PYTEST_PREVIOUS_EVENT_LOOP = None
+
+    if bootstrap_loop is not None and not bootstrap_loop.is_closed():
+        bootstrap_loop.close()
+    if previous_loop is not None and previous_loop.is_closed():
+        previous_loop = None
+    asyncio.set_event_loop(previous_loop)
 
 
 class MockState:

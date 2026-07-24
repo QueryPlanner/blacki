@@ -24,15 +24,14 @@ These values are consumed by Compose rather than `ServerEnv`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `BIND_ADDRESS` | `127.0.0.1` | Host interface for the published HTTP port |
 | `HOST_PORT` | `8080` | Host-side port |
 | `RESTART_POLICY` | `unless-stopped` | Compose restart policy |
 | `IMAGE` | `blacki:local` | Image name or verified registry reference |
 | `ENV_FILE` | `.env` | File injected into the container |
 
 `HOST` and `PORT` are different: they control the process inside the container.
-Compose sets them to `0.0.0.0` and `8080`; use `BIND_ADDRESS` and `HOST_PORT` to
-control exposure on the VPS.
+Compose sets them to `0.0.0.0` and `8080`; the supported overlays publish only
+to host loopback and `HOST_PORT` selects that loopback port.
 
 ## Server
 
@@ -141,10 +140,16 @@ the Blacki golden path.
 | --- | --- | --- |
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Allow instrumentors to capture message content |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred gRPC trace collector URL |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback |
+| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol; only `grpc` is supported |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Global protocol fallback |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | unset | Preferred trace authentication headers |
+| `OTEL_EXPORTER_OTLP_HEADERS` | unset | Global authentication-header fallback |
 
-Blacki currently exports spans to local JSON files only. Setting
-`OTEL_EXPORTER_OTLP_*` variables by itself does not install a remote exporter.
-See [Observability](observability.md).
+Blacki always exports spans to local JSON. A validated trace-specific or global
+endpoint adds gRPC OTLP export; trace-specific values take precedence. See
+[Observability](observability.md).
 
 ## Precedence
 

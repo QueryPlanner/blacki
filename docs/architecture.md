@@ -13,7 +13,7 @@ python -m blacki.server
 
 `src/blacki/server.py` creates a FastAPI application with Google ADK's
 `get_fast_api_app`, initializes SQLite-backed storage, optionally starts
-Telegram long polling, and exposes `/health`.
+Telegram long polling, and exposes `/live`, `/ready`, and `/health`.
 
 `src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or a
 LiteLLM/OpenRouter model from the environment, registers tools, and assembles
@@ -66,19 +66,40 @@ Optional tools follow the project's cloud-first principle:
 Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
 
+### Sandbox credential threat model
+
+Sandbox commands may process untrusted uploaded files, fetched web content, and
+nested-agent instructions. Any of those inputs can attempt prompt injection or
+run shell commands that inspect the process environment. Blacki therefore treats
+every general-purpose sandbox as untrusted:
+
+- model, repository, search, OpenRouter, Google, Telegram, and application
+  credentials are never copied into the sandbox environment;
+- `SANDBOX_API_KEY` authenticates the host-side OpenSandbox connection only;
+- sandbox SDK exception details are not returned to tools or written to logs,
+  because provider errors can echo credential material; and
+- the Gemini CLI sandbox skill is not registered while no least-privilege
+  credential broker exists.
+
+An authenticated capability must be implemented as a separately authorized,
+short-lived broker operation. Adding a standing environment variable is not an
+acceptable opt-in path.
+
 ## Health semantics
 
-Docker Compose uses a side-effect-free TCP liveness probe. The `/health`
-endpoint performs richer application checks and may initialize optional memory
-configuration. It returns HTTP 200 with a `degraded` payload when optional
-memory is unavailable, so operators should inspect the JSON body rather than
-treat the status code as readiness.
+`/live` is side-effect-free and process-only. `/ready` checks the already
+initialized SQLite connection and returns HTTP 503 during startup or database
+failure. `/health` delegates to the same implementation for compatibility.
+Optional Mem0 memory is not readiness-critical and probes never lazily
+initialize it.
 
 ## Security boundary
 
 The default deployment is not a public web application:
 
 - the host port binds to loopback;
+- the production Compose overlay defeats public-bind and development-feature
+  overrides;
 - Telegram needs outbound HTTPS only;
 - secrets live in an ignored `.env` file; and
 - `.dockerignore` excludes secrets and runtime state from image builds.

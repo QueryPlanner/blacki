@@ -15,6 +15,8 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+INACCESSIBLE_MEMORY_ERROR = "Memory not found or inaccessible."
+
 
 def _memory_service_unavailable_response(
     extra_fields: dict[str, Any] | None = None,
@@ -29,10 +31,55 @@ def _memory_service_unavailable_response(
     return response
 
 
+def _context_user_id(tool_context: ToolContext) -> str | None:
+    """Return the authenticated ADK user ID, rejecting missing identities."""
+    user_id = tool_context.user_id
+    if not isinstance(user_id, str) or not user_id.strip():
+        return None
+    return user_id
+
+
+def _missing_user_response(
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build the common response for an unauthenticated tool invocation."""
+    response: dict[str, Any] = {
+        "status": "error",
+        "error": "Missing user_id in tool_context.",
+    }
+    if extra_fields:
+        response.update(extra_fields)
+    return response
+
+
+def _inaccessible_memory_response() -> dict[str, str]:
+    """Return a non-enumerating response for missing or foreign memory IDs."""
+    return {
+        "status": "error",
+        "error": INACCESSIBLE_MEMORY_ERROR,
+    }
+
+
+def _get_owned_memory(
+    client: Any,
+    memory_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Fetch a memory and fail closed unless its stored owner matches exactly."""
+    try:
+        result = client.get(memory_id=memory_id)
+    except Exception:
+        logger.exception("Failed to verify memory ownership")
+        return None
+
+    if not isinstance(result, dict) or result.get("user_id") != user_id:
+        return None
+    return result
+
+
 async def save_memory(
     text: str,
     tool_context: ToolContext,
-    user_id: str | None = None,
 ) -> dict[str, Any]:
     """Save a memory for a user.
 
@@ -42,12 +89,13 @@ async def save_memory(
     Args:
         text: The memory text to save.
         tool_context: ADK tool context.
-        user_id: Unique identifier for the user. Defaults to MEM0_USER_ID env var.
 
     Returns:
         Dictionary with status and result message.
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response()
 
     client = get_memory_client()
     if client is None:
@@ -58,8 +106,6 @@ async def save_memory(
             "status": "error",
             "error": "Memory text must be a non-empty string.",
         }
-
-    user_id = user_id or tool_context.user_id
 
     try:
         result = client.add(text, user_id=user_id)
@@ -79,7 +125,6 @@ async def save_memory(
 async def search_memory(
     query: str,
     tool_context: ToolContext,
-    user_id: str | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Search memories semantically for a user.
@@ -90,14 +135,15 @@ async def search_memory(
     Args:
         query: The search query string.
         tool_context: ADK tool context.
-        user_id: Unique identifier for the user. Defaults to MEM0_USER_ID.
         limit: Maximum number of results to return. Defaults to MEM0_SEARCH_LIMIT.
 
     Returns:
         Dictionary with status and list of matching memories
         (each with id, memory, score).
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response({"results": []})
 
     client = get_memory_client()
     if client is None:
@@ -110,7 +156,6 @@ async def search_memory(
             "results": [],
         }
 
-    user_id = user_id or tool_context.user_id
     limit = limit or get_search_limit()
 
     try:
@@ -150,7 +195,6 @@ async def search_memory(
 
 async def get_all_memories(
     tool_context: ToolContext,
-    user_id: str | None = None,
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
@@ -165,20 +209,19 @@ async def get_all_memories(
 
     Args:
         tool_context: ADK tool context.
-        user_id: Unique identifier for the user. Defaults to MEM0_USER_ID env var.
         page: Page number for pagination (default 1).
         page_size: Number of results per page (default 50).
 
     Returns:
         Dictionary with status and list of memories (each with id, memory, created_at).
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response({"results": []})
 
     client = get_memory_client()
     if client is None:
         return _memory_service_unavailable_response({"results": []})
-
-    user_id = user_id or tool_context.user_id
 
     if page > 3:
         logger.warning(
@@ -249,7 +292,9 @@ async def get_memory(
     Returns:
         Dictionary with status and memory details (id, memory, metadata, etc.).
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response()
 
     client = get_memory_client()
     if client is None:
@@ -262,13 +307,9 @@ async def get_memory(
         }
 
     try:
-        result = client.get(memory_id=memory_id)
-
-        if not result:
-            return {
-                "status": "error",
-                "error": f"Memory not found: {memory_id}",
-            }
+        result = _get_owned_memory(client, memory_id, user_id)
+        if result is None:
+            return _inaccessible_memory_response()
 
         return {
             "status": "success",
@@ -281,7 +322,7 @@ async def get_memory(
             },
         }
     except Exception as e:
-        logger.exception("Failed to get memory %s", memory_id)
+        logger.exception("Failed to format an owned memory")
         return {
             "status": "error",
             "error": f"Failed to get memory: {e}",
@@ -306,7 +347,9 @@ async def update_memory(
     Returns:
         Dictionary with status and result message.
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response()
 
     client = get_memory_client()
     if client is None:
@@ -325,6 +368,9 @@ async def update_memory(
         }
 
     try:
+        if _get_owned_memory(client, memory_id, user_id) is None:
+            return _inaccessible_memory_response()
+
         client.update(memory_id, data=text)
 
         logger.info("Updated memory %s", memory_id)
@@ -356,7 +402,9 @@ async def delete_memory(
     Returns:
         Dictionary with status and result message.
     """
-    _ = tool_context
+    user_id = _context_user_id(tool_context)
+    if user_id is None:
+        return _missing_user_response()
 
     client = get_memory_client()
     if client is None:
@@ -369,6 +417,9 @@ async def delete_memory(
         }
 
     try:
+        if _get_owned_memory(client, memory_id, user_id) is None:
+            return _inaccessible_memory_response()
+
         client.delete(memory_id=memory_id)
         logger.info("Deleted memory %s", memory_id)
         return {
