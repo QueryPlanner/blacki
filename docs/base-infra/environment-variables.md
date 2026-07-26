@@ -123,14 +123,18 @@ If Qdrant Cloud values are present, the provider stores the vectors remotely.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TASK_WORKER_ENABLED` | `false` | Register a same-privilege ADK task worker |
+| `TASK_WORKER_ENABLED` | `true` | Register a same-privilege ADK task worker |
 
-When enabled, the root agent can delegate one complex task at a time to a
-registered ADK task-mode child. The worker receives an independently built copy
-of the root agent's user-facing toolset. It shares the same ADK session state,
-so sandbox tools reconnect to the same sandbox ID. This is not a security
-boundary or a background worker pool: the worker has the root agent's
-privileges, runs within the request, and cannot delegate recursively.
+By default, the root agent can delegate one complex task at a time to a
+registered ADK task-mode child. Set `TASK_WORKER_ENABLED=false` to opt out. The
+worker receives an independently built copy of the root agent's user-facing
+toolset and shares the same ADK session state, so sandbox tools reconnect to the
+same sandbox ID.
+
+This is not a security boundary or a background worker pool: the worker has the
+root agent's privileges, runs within the request, and cannot delegate
+recursively. Delegation can add another model and tool turn, increasing latency
+and model usage.
 
 ## OpenSandbox
 
