@@ -387,6 +387,36 @@ async def test_notify_sends_to_telegram_with_chat_and_thread(
 
 
 @pytest.mark.asyncio
+async def test_route_notification_redacts_exact_locations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tool notices identify route use without repeating private endpoints."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+    context = MockToolContext(
+        state=MockState({"telegram_chat_id": "4242"}),
+    )
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("get_route_estimate")),
+            {
+                "origin": "home-address-canary",
+                "destination": "office-address-canary",
+            },
+            cast(ToolContext, context),
+        )
+
+    text = mock_client.send_message.await_args.kwargs["text"]
+    assert "route details redacted" in text
+    assert "canary" not in text
+
+
+@pytest.mark.asyncio
 async def test_notify_sends_for_each_tool_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

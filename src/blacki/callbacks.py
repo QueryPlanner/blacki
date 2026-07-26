@@ -23,6 +23,12 @@ from .telegram import TelegramConfig
 from .telegram.api import TelegramApiClient, TelegramApiError
 from .telegram.formatting import escape_markdown, format_for_telegram
 from .telegram.types import ParseMode
+from .utils.privacy import (
+    REDACTED_ROUTE_DETAILS,
+    ROUTE_TOOL_NAMES,
+    redact_route_tool_payload,
+    route_data_redaction_enabled,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -241,7 +247,7 @@ async def notify_telegram_before_tool(
         return None
 
     escaped_name = escape_markdown(tool.name)
-    args_text = _format_tool_args(args)
+    args_text = _format_tool_args(redact_route_tool_payload(tool.name, args))
     text = f"🔧 Using tool: *{escaped_name}*{args_text}"
 
     try:
@@ -391,7 +397,9 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        if route_data_redaction_enabled():
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -410,7 +418,9 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        if route_data_redaction_enabled():
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -435,15 +445,21 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        redact_content = route_data_redaction_enabled()
+        if redact_content:
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
         self.logger.debug(f"LLM request contains {len(llm_request.contents)} messages:")
-        for i, content in enumerate(llm_request.contents, start=1):
-            self.logger.debug(
-                f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
-            )
+        if redact_content:
+            self.logger.debug(f"LLM request content: {REDACTED_ROUTE_DETAILS}")
+        else:
+            for i, content in enumerate(llm_request.contents, start=1):
+                self.logger.debug(
+                    f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
+                )
 
         return None
 
@@ -465,11 +481,16 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        redact_content = route_data_redaction_enabled()
+        if redact_content:
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
-        if llm_content := llm_response.content:
+        if redact_content and llm_response.content is not None:
+            self.logger.debug(f"LLM response: {REDACTED_ROUTE_DETAILS}")
+        elif llm_content := llm_response.content:
             response_data = llm_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"LLM response: {response_data}")
 
@@ -496,14 +517,17 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
-        if content := tool_context.user_content:
+        redact_content = route_data_redaction_enabled() or tool.name in ROUTE_TOOL_NAMES
+        if redact_content:
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif content := tool_context.user_content:
             self.logger.debug(
                 f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
             )
 
         actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
         self.logger.debug(f"EventActions: {actions_data}")
-        self.logger.debug(f"args: {args}")
+        self.logger.debug(f"args: {redact_route_tool_payload(tool.name, args)}")
 
         return None
 
@@ -530,14 +554,19 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
-        if content := tool_context.user_content:
+        redact_content = route_data_redaction_enabled() or tool.name in ROUTE_TOOL_NAMES
+        if redact_content:
+            self.logger.debug(f"User Content: {REDACTED_ROUTE_DETAILS}")
+        elif content := tool_context.user_content:
             self.logger.debug(
                 f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
             )
 
         actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
         self.logger.debug(f"EventActions: {actions_data}")
-        self.logger.debug(f"args: {args}")
-        self.logger.debug(f"Tool response: {tool_response}")
+        self.logger.debug(f"args: {redact_route_tool_payload(tool.name, args)}")
+        self.logger.debug(
+            f"Tool response: {redact_route_tool_payload(tool.name, tool_response)}"
+        )
 
         return None

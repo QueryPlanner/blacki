@@ -15,6 +15,7 @@ class TestToolConfig:
 
         assert config.exa_api_key is None
         assert config.brave_search_api_key is None
+        assert config.google_maps_routes_api_key is None
         assert config.sqlite_path is None
         assert config.sandbox_enabled is False
         assert config.skills_dir is None
@@ -26,6 +27,7 @@ class TestToolConfig:
         config = ToolConfig(
             exa_api_key="exa-key",
             brave_search_api_key="test-key",
+            google_maps_routes_api_key="routes-key",
             sqlite_path="/tmp/blacki.db",
             sandbox_enabled=True,
             skills_dir=skills_path,
@@ -34,6 +36,7 @@ class TestToolConfig:
 
         assert config.exa_api_key == "exa-key"
         assert config.brave_search_api_key == "test-key"
+        assert config.google_maps_routes_api_key == "routes-key"
         assert config.sqlite_path == "/tmp/blacki.db"
         assert config.sandbox_enabled is True
         assert config.skills_dir == skills_path
@@ -68,6 +71,16 @@ class TestBuildTools:
         tools = build_tools(config)
 
         assert [tool.__name__ for tool in tools[:2]] == ["exa_search", "brave_search"]
+        assert len(tools) == 10
+
+    def test_google_routes_tools_added_when_key_provided(self) -> None:
+        """Should add both read-only Routes tools when configured."""
+        config = ToolConfig(google_maps_routes_api_key="routes-key")
+
+        tools = build_tools(config)
+
+        tool_names = {tool.__name__ for tool in tools}
+        assert {"get_route_estimate", "compare_route_scenarios"} <= tool_names
         assert len(tools) == 10
 
     def test_database_tools_added(self) -> None:
@@ -139,6 +152,7 @@ class TestBuildToolConfigFromEnv:
 
             assert config.exa_api_key is None
             assert config.brave_search_api_key is None
+            assert config.google_maps_routes_api_key is None
             assert config.sqlite_path is not None
             assert config.sqlite_path.endswith(".adk/tools.db")
             assert config.sandbox_enabled is False
@@ -182,6 +196,26 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
             assert config.brave_search_api_key is None
+
+    def test_google_routes_api_key_is_stripped(self) -> None:
+        """Should normalize the optional Google Maps Routes API key."""
+        with patch.dict(
+            "os.environ",
+            {"GOOGLE_MAPS_ROUTES_API_KEY": "  routes-key  "},
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+            assert config.google_maps_routes_api_key == "routes-key"
+
+        with patch.dict(
+            "os.environ",
+            {"GOOGLE_MAPS_ROUTES_API_KEY": "   "},
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+            assert config.google_maps_routes_api_key is None
 
     def test_sqlite_path_from_env(self) -> None:
         """Should read SQLITE_PATH from env."""
@@ -260,6 +294,30 @@ class TestBuildExaSearchTools:
 
         assert len(tools) == 1
         assert tools[0].__name__ == "exa_search"
+
+
+class TestBuildGoogleRoutesTools:
+    """Tests for _build_google_routes_tools."""
+
+    def test_returns_routes_tools_when_available(self) -> None:
+        """Should return both read-only Routes tools."""
+        from blacki.registry import _build_google_routes_tools
+
+        tools = _build_google_routes_tools()
+
+        assert [tool.__name__ for tool in tools] == [
+            "get_route_estimate",
+            "compare_route_scenarios",
+        ]
+
+    def test_returns_empty_on_import_error(self) -> None:
+        """Should omit Routes tools if the module cannot be imported."""
+        from blacki.registry import _build_google_routes_tools
+
+        with patch.dict("sys.modules", {"blacki.routes": None}):
+            tools = _build_google_routes_tools()
+
+        assert tools == []
 
 
 class TestBuildReminderTools:

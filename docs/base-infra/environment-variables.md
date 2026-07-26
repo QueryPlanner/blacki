@@ -92,6 +92,7 @@ The token is required and format-validated when Telegram is enabled.
 | --- | --- | --- |
 | `EXA_API_KEY` | unset | Primary Exa search integration |
 | `BRAVE_SEARCH_API_KEY` | unset | Brave search fallback |
+| `GOOGLE_MAPS_ROUTES_API_KEY` | unset | Distance, ETA, and traffic estimates |
 | `BROWSER_USE_API_KEY` | unset | Browser Use Cloud automation |
 
 These integrations are optional. Their absence should not replace the required

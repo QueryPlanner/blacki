@@ -59,6 +59,8 @@ Optional tools follow the project's cloud-first principle:
 
 - models use OpenRouter or Google;
 - search can use Exa with Brave as a fallback;
+- distance, ETA, alternatives, and point-in-time traffic can use Google Maps
+  Routes;
 - browser automation can use Browser Use Cloud;
 - vector memory can use Qdrant Cloud; and
 - code execution can use an OpenSandbox server.

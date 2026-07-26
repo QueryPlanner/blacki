@@ -57,6 +57,7 @@ nav:
       - Observability: base-infra/observability.md
   - Understand:
       - Architecture: architecture.md
+      - Google Maps Routes: google-maps-routes.md
       - Docker Compose: base-infra/docker-compose-workflow.md
       - Docker image: base-infra/dockerfile-strategy.md
   - Reference:

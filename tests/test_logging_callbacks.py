@@ -324,6 +324,62 @@ class TestToolCallbacks:
         assert "User Content:" not in caplog.text
         assert "Tool response: {'status': 'success'}" in caplog.text
 
+    def test_route_tool_logs_redact_locations_and_place_ids(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Route callback logs contain status metadata but no exact locations."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+        tool = MockBaseTool(name="get_route_estimate")
+        context = MockToolContext(
+            user_content=MockContent({"text": "home-address-canary"})
+        )
+        args = {
+            "origin": "home-address-canary",
+            "destination": "office-address-canary",
+        }
+        response = {
+            "status": "success",
+            "resolved_waypoints": {
+                "origin": {"place_id": "place-id-canary"},
+            },
+            "attribution": "Google Maps",
+        }
+
+        callbacks.before_tool(tool, args, context)  # type: ignore[arg-type]
+        callbacks.after_tool(tool, args, context, response)  # type: ignore[arg-type]
+
+        assert "route details redacted" in caplog.text
+        assert "status" in caplog.text
+        assert "Google Maps" in caplog.text
+        assert "canary" not in caplog.text
+
+    def test_routes_enabled_redacts_agent_and_model_content(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A Routes-enabled process never logs message or model content."""
+        monkeypatch.setenv("GOOGLE_MAPS_ROUTES_API_KEY", "configured")
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+        context = MockLoggingCallbackContext(
+            user_content=MockContent({"text": "home-address-canary"})
+        )
+        request = MockLlmRequest(
+            contents=[MockContent({"text": "office-address-canary"})]
+        )
+        response = MockLlmResponse(content=MockContent({"text": "place-id-canary"}))
+
+        callbacks.before_agent(context)  # type: ignore[arg-type]
+        callbacks.after_agent(context)  # type: ignore[arg-type]
+        callbacks.before_model(context, request)  # type: ignore[arg-type]
+        callbacks.after_model(context, response)  # type: ignore[arg-type]
+
+        assert "route details redacted" in caplog.text
+        assert "canary" not in caplog.text
+
 
 class TestEdgeCases:
     """Tests for edge cases and special scenarios."""
