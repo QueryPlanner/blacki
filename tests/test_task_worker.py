@@ -1,4 +1,4 @@
-"""Tests for the opt-in ADK task worker."""
+"""Tests for the default-on ADK task worker."""
 
 from __future__ import annotations
 
@@ -48,21 +48,27 @@ def _task_worker_test_config() -> ToolConfig:
 def test_task_worker_feature_flag_accepts_explicit_true_values(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
-    """The worker should require a documented affirmative flag value."""
+    """Documented affirmative values should keep the worker enabled."""
     monkeypatch.setenv("TASK_WORKER_ENABLED", value)
 
     assert _task_worker_enabled() is True
 
 
-@pytest.mark.parametrize("value", [None, "", "0", "false", "no", "enabled"])
-def test_task_worker_feature_flag_defaults_to_disabled(
-    monkeypatch: pytest.MonkeyPatch, value: str | None
+def test_task_worker_feature_flag_defaults_to_enabled(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Missing and unrecognized values should preserve the single-agent setup."""
-    if value is None:
-        monkeypatch.delenv("TASK_WORKER_ENABLED", raising=False)
-    else:
-        monkeypatch.setenv("TASK_WORKER_ENABLED", value)
+    """A missing flag should register the worker by default."""
+    monkeypatch.delenv("TASK_WORKER_ENABLED", raising=False)
+
+    assert _task_worker_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "FALSE", " no ", "enabled"])
+def test_task_worker_feature_flag_accepts_explicit_opt_out(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """False and unrecognized values should preserve the single-agent setup."""
+    monkeypatch.setenv("TASK_WORKER_ENABLED", value)
 
     assert _task_worker_enabled() is False
 
@@ -70,7 +76,7 @@ def test_task_worker_feature_flag_defaults_to_disabled(
 def test_disabled_task_worker_is_not_registered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default agent should not expose a delegation tool."""
+    """An explicit opt-out should omit the delegation tool."""
     monkeypatch.setenv("TASK_WORKER_ENABLED", "false")
 
     with patch(
@@ -83,11 +89,11 @@ def test_disabled_task_worker_is_not_registered(
     assert TASK_WORKER_NAME not in {_tool_capability(tool) for tool in agent.tools}
 
 
-def test_enabled_task_worker_has_equivalent_isolated_toolsets(
+def test_default_task_worker_has_equivalent_isolated_toolsets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The worker should match capabilities without sharing mutable toolsets."""
-    monkeypatch.setenv("TASK_WORKER_ENABLED", "true")
+    """The default worker should match capabilities without sharing toolsets."""
+    monkeypatch.delenv("TASK_WORKER_ENABLED", raising=False)
 
     with patch(
         "blacki.agent.build_tool_config_from_env",

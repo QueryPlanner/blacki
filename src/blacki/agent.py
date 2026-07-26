@@ -152,9 +152,9 @@ def _build_model() -> str | LiteLlm:
 
 
 def _task_worker_enabled() -> bool:
-    """Return whether the same-privilege delegated task worker is enabled."""
+    """Return whether the default-on delegated task worker is enabled."""
     return (
-        os.getenv("TASK_WORKER_ENABLED", "false").strip().lower()
+        os.getenv("TASK_WORKER_ENABLED", "true").strip().lower()
         in TASK_WORKER_ENABLED_VALUES
     )
 
