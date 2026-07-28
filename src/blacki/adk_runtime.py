@@ -516,7 +516,7 @@ class AdkRuntime:
         if not matching_sessions:
             return None
 
-        return max(
+        latest_session = max(
             matching_sessions,
             key=lambda session: (
                 _extract_session_version(
@@ -526,6 +526,18 @@ class AdkRuntime:
                 session.last_update_time,
             ),
         )
+        hydrated_session = await self.session_service.get_session(
+            app_name=self.app_name,
+            user_id=locator.user_id,
+            session_id=latest_session.id,
+        )
+        if hydrated_session is None:
+            msg = (
+                "Latest ADK session disappeared while loading event history: "
+                f"{latest_session.id}"
+            )
+            raise RuntimeError(msg)
+        return hydrated_session
 
     async def _create_versioned_session(
         self,

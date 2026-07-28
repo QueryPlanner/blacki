@@ -621,6 +621,67 @@ def _session_with_events(events: list[Event]) -> Session:
     )
 
 
+@pytest.mark.asyncio
+async def test_database_confirmation_survives_runtime_restart(
+    tmp_path: Path,
+) -> None:
+    """Persisted confirmation events must be hydrated after a process restart."""
+    database_uri = f"sqlite+aiosqlite:///{tmp_path / 'sessions.db'}"
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+    first_runtime = AdkRuntime(DatabaseSessionService(database_uri))
+    session = await first_runtime.get_or_create_session(locator=locator)
+    await first_runtime.session_service.append_event(
+        session,
+        _confirmation_event(),
+    )
+    await first_runtime.close()
+
+    second_runtime = AdkRuntime(DatabaseSessionService(database_uri))
+    try:
+        reloaded = await second_runtime.get_or_create_session(locator=locator)
+        pending = _pending_confirmations(reloaded)
+        response = _confirmation_response(pending, "Approve")
+    finally:
+        await second_runtime.close()
+
+    assert len(pending) == 1
+    assert pending[0].interrupt_id == "confirm-1"
+    assert response is not None
+    assert response.parts is not None
+    function_response = response.parts[0].function_response
+    assert function_response is not None
+    assert function_response.id == "confirm-1"
+    assert function_response.response == {"confirmed": True}
+
+
+@pytest.mark.asyncio
+async def test_latest_session_disappearing_fails_without_creating_v1() -> None:
+    """A list/get race must fail instead of colliding with an existing v1."""
+
+    class VanishingSessionService(InMemorySessionService):
+        async def get_session(self, **kwargs: object) -> Session | None:
+            del kwargs
+            return None
+
+    service = VanishingSessionService()
+    runtime = AdkRuntime(service)
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+    await service.create_session(
+        app_name=runtime.app_name,
+        user_id=locator.user_id,
+        session_id="telegram-chat-123-v1",
+    )
+
+    with pytest.raises(RuntimeError, match="disappeared"):
+        await runtime.get_or_create_session(locator=locator)
+
+
 def test_pending_confirmation_ignores_answered_interrupts() -> None:
     request = _confirmation_event()
     response = Event(

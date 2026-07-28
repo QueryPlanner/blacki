@@ -107,6 +107,9 @@ jobs:
           TELEGRAM_ENABLED: ${{ secrets.TELEGRAM_ENABLED }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_TOOL_NOTIFICATIONS: ${{ secrets.TELEGRAM_TOOL_NOTIFICATIONS }}
+          ZEPTO_MCP_ENABLED: ${{ secrets.ZEPTO_MCP_ENABLED }}
+          ZEPTO_MCP_CONFIG_DIR: ${{ secrets.ZEPTO_MCP_CONFIG_DIR }}
+          ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS: ${{ secrets.ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
           BRAVE_SEARCH_API_KEY: ${{ secrets.BRAVE_SEARCH_API_KEY }}
           BROWSER_USE_API_KEY: ${{ secrets.BROWSER_USE_API_KEY }}
@@ -169,6 +172,9 @@ jobs:
             TELEGRAM_ENABLED \
             TELEGRAM_BOT_TOKEN \
             TELEGRAM_TOOL_NOTIFICATIONS \
+            ZEPTO_MCP_ENABLED \
+            ZEPTO_MCP_CONFIG_DIR \
+            ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS \
             EXA_API_KEY \
             BRAVE_SEARCH_API_KEY \
             BROWSER_USE_API_KEY \
