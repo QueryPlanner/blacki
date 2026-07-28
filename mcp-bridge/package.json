@@ -1,0 +1,10 @@
+{
+  "name": "blacki-mcp-bridge",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Locked runtime dependency for Blacki remote MCP servers",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "mcp-remote": "0.1.38"
+  }
+}

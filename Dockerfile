@@ -1,9 +1,21 @@
 # syntax=docker/dockerfile:1
 
 # ============================================================================
+# MCP Bridge Stage: Install the exact locked Zepto transport dependency
+# ============================================================================
+FROM node:22-bookworm-slim AS mcp-bridge
+
+WORKDIR /opt/blacki-mcp-bridge
+
+COPY mcp-bridge/package.json mcp-bridge/package-lock.json ./
+
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts
+
+# ============================================================================
 # Builder Stage: Install dependencies with optimal caching
 # ============================================================================
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim-bookworm AS builder
 
 # Install uv
 RUN pip install uv==0.9.26
@@ -34,7 +46,21 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ============================================================================
 # Runtime Stage: Minimal production image
 # ============================================================================
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim-bookworm AS runtime
+
+# Node is copied from the matching Debian base so the production runtime never
+# downloads npm packages. libatomic1 is the only extra shared library required
+# by the official Node binary on the slim image.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libatomic1 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=mcp-bridge /usr/local/bin/node /usr/local/bin/node
+COPY --from=mcp-bridge /opt/blacki-mcp-bridge /opt/blacki-mcp-bridge
+RUN ln -s /opt/blacki-mcp-bridge/node_modules/.bin/mcp-remote \
+        /usr/local/bin/mcp-remote && \
+    node --version && \
+    node -e "const p=require('/opt/blacki-mcp-bridge/node_modules/mcp-remote/package.json'); if(p.version!=='0.1.38') process.exit(1)"
 
 # Create non-root user for security (matching common host UID 1000)
 RUN groupadd -g 1000 app && \

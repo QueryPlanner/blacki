@@ -57,6 +57,7 @@ env/
 build/
 dist/
 site/
+node_modules/
 *.egg-info/
 google_adk_wo_gcp.egg-info/
 pip-wheel-metadata/

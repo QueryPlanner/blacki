@@ -12,13 +12,17 @@ from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.apps import App
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
-from google.adk.plugins.logging_plugin import LoggingPlugin
 
 from .callbacks import (
     LoggingCallbacks,
     notify_telegram_after_model,
     notify_telegram_before_tool,
     telegram_tool_notifications_enabled,
+)
+from .privacy import (
+    PrivacyAwareLoggingPlugin,
+    configure_zepto_privacy,
+    zepto_mcp_enabled,
 )
 from .prompt import (
     DomainPolicyPlugin,
@@ -159,11 +163,13 @@ def _task_worker_enabled() -> bool:
     )
 
 
-def create_agent() -> LlmAgent:
+def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
     """Create and configure the root agent.
 
     Uses factory-based tool registration and explicit configuration.
-    This function should be called after environment is configured.
+    User-scoped tools are excluded by default so the ADK HTTP surface cannot
+    expose transport-bound credentials. The Telegram runtime opts in
+    explicitly after it has authenticated updates through the bot API.
 
     Returns:
         Configured LlmAgent instance.
@@ -171,7 +177,10 @@ def create_agent() -> LlmAgent:
     from google.adk.tools.preload_memory_tool import PreloadMemoryTool
 
     tool_config = build_tool_config_from_env()
-    agent_tools = build_tools(tool_config)
+    agent_tools = build_tools(
+        tool_config,
+        include_user_scoped_tools=include_user_scoped_tools,
+    )
     agent_tools.append(PreloadMemoryTool())
 
     before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
@@ -187,14 +196,14 @@ def create_agent() -> LlmAgent:
 
     sub_agents: list[BaseAgent] = []
     if _task_worker_enabled():
-        worker_tools = build_tools(tool_config)
+        worker_tools = build_tools(tool_config, include_user_scoped_tools=False)
         worker_tools.append(PreloadMemoryTool())
         sub_agents.append(
             LlmAgent(
                 name=TASK_WORKER_NAME,
                 description=(
-                    "Complete one complex delegated task with the same tools, "
-                    "privileges, and session sandbox as Blacki"
+                    "Complete one complex delegated task with Blacki's "
+                    "non-private tools and shared session sandbox"
                 ),
                 mode="task",
                 before_agent_callback=logging_callbacks.before_agent,
@@ -242,18 +251,23 @@ def create_app(agent: LlmAgent | None = None) -> App:
         StoredPreferencesPlugin,
     )
 
+    plugins: list[BasePlugin] = [
+        TelegramModelOverridePlugin(name="telegram_model_override"),
+        GlobalInstructionPlugin(return_global_instruction),
+        DomainPolicyPlugin(name="domain_policy"),
+        DeclarativeDbPlugin(name="declarative_db"),
+        StoredPreferencesPlugin(name="stored_preferences"),
+        ResponsePolicyPlugin(name="response_policy"),
+    ]
+    if not zepto_mcp_enabled():
+        plugins.append(PrivacyAwareLoggingPlugin())
+    else:
+        logger.info("ADK content logging plugin disabled in secure Zepto mode")
+
     return App(
         name="blacki",
         root_agent=agent,
-        plugins=[
-            TelegramModelOverridePlugin(name="telegram_model_override"),
-            GlobalInstructionPlugin(return_global_instruction),
-            DomainPolicyPlugin(name="domain_policy"),
-            DeclarativeDbPlugin(name="declarative_db"),
-            StoredPreferencesPlugin(name="stored_preferences"),
-            ResponsePolicyPlugin(name="response_policy"),
-            LoggingPlugin(),
-        ],
+        plugins=plugins,
         events_compaction_config=None,
         context_cache_config=None,
         resumability_config=None,
@@ -261,8 +275,9 @@ def create_app(agent: LlmAgent | None = None) -> App:
 
 
 _find_and_load_dotenv()
+configure_zepto_privacy()
 
-root_agent = create_agent()
+root_agent = create_agent(include_user_scoped_tools=False)
 
 app = create_app(root_agent)
 

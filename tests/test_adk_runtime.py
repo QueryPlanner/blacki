@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from google.adk.events import Event
-from google.adk.sessions import InMemorySessionService
+from google.adk.sessions import InMemorySessionService, Session
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
@@ -17,7 +17,10 @@ from blacki.adk_runtime import (
     SessionLocator,
     StreamChunk,
     TurnResponse,
+    _confirmation_response,
     _extract_session_version,
+    _format_confirmation,
+    _pending_confirmations,
     build_session_db_kwargs,
     build_session_service_uri,
     create_adk_runtime,
@@ -265,8 +268,10 @@ async def test_close_awaits_async_close_method() -> None:
     session_service = ClosableSessionService()
     runtime = AdkRuntime(session_service)
 
-    await runtime.close()
+    with patch.object(runtime.runner, "close", new=AsyncMock()) as close_runner:
+        await runtime.close()
 
+    close_runner.assert_awaited_once()
     assert session_service.closed is True
 
 
@@ -274,7 +279,10 @@ async def test_close_returns_when_session_service_has_no_close() -> None:
     """Test that runtime close is a no-op without a close method."""
     runtime = AdkRuntime(InMemorySessionService())
 
-    await runtime.close()
+    with patch.object(runtime.runner, "close", new=AsyncMock()) as close_runner:
+        await runtime.close()
+
+    close_runner.assert_awaited_once()
 
 
 async def test_close_handles_sync_close_method() -> None:
@@ -291,8 +299,10 @@ async def test_close_handles_sync_close_method() -> None:
     session_service = SyncClosableSessionService()
     runtime = AdkRuntime(session_service)
 
-    await runtime.close()
+    with patch.object(runtime.runner, "close", new=AsyncMock()) as close_runner:
+        await runtime.close()
 
+    close_runner.assert_awaited_once()
     assert session_service.closed is True
 
 
@@ -346,6 +356,19 @@ def test_create_adk_runtime_uses_env_configuration(tmp_path: Path) -> None:
     runtime = create_adk_runtime(env)
 
     assert isinstance(runtime.session_service, DatabaseSessionService)
+
+
+def test_runtime_accepts_transport_specific_app() -> None:
+    """A Telegram runtime can use an app isolated from the HTTP runner."""
+    from blacki.agent import app as transport_app
+
+    runtime = AdkRuntime(
+        InMemorySessionService(),
+        agent_app=transport_app,
+    )
+
+    assert runtime.app is transport_app
+    assert runtime.runner.app is transport_app
 
 
 def test_create_adk_runtime_uses_mem0_when_client_available(
@@ -554,6 +577,285 @@ async def test_run_user_turn_with_thoughts_skips_function_calls() -> None:
         )
 
     assert response.content == "Final answer after fc"
+
+
+def _confirmation_event(
+    *,
+    interrupt_id: str = "confirm-1",
+    original_id: str = "tool-1",
+    tool_name: str = "zepto_update_cart",
+    tool_args: dict[str, object] | None = None,
+) -> Event:
+    original = types.FunctionCall(
+        id=original_id,
+        name=tool_name,
+        args=tool_args or {"sku": "milk", "quantity": 1},
+    )
+    confirmation = types.FunctionCall(
+        id=interrupt_id,
+        name="adk_request_confirmation",
+        args={
+            "originalFunctionCall": original.model_dump(
+                exclude_none=True,
+                by_alias=True,
+            ),
+            "toolConfirmation": {"confirmed": False},
+        },
+    )
+    return Event(
+        author="blacki",
+        content=types.Content(
+            role="model",
+            parts=[types.Part(function_call=confirmation)],
+        ),
+        long_running_tool_ids={interrupt_id},
+    )
+
+
+def _session_with_events(events: list[Event]) -> Session:
+    return Session(
+        id="session-v1",
+        app_name="blacki",
+        user_id="telegram-chat-123",
+        events=events,
+    )
+
+
+def test_pending_confirmation_ignores_answered_interrupts() -> None:
+    request = _confirmation_event()
+    response = Event(
+        author="user",
+        content=types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    function_response=types.FunctionResponse(
+                        id="confirm-1",
+                        name="adk_request_confirmation",
+                        response={"confirmed": False},
+                    )
+                )
+            ],
+        ),
+    )
+
+    assert len(_pending_confirmations(_session_with_events([request]))) == 1
+    assert _pending_confirmations(_session_with_events([request, response])) == []
+
+
+def test_pending_confirmation_ignores_malformed_calls() -> None:
+    malformed_calls = [
+        types.FunctionCall(id="other", name="other_tool", args={}),
+        types.FunctionCall(id="", name="adk_request_confirmation", args={}),
+        types.FunctionCall(
+            id="missing-original",
+            name="adk_request_confirmation",
+            args={"originalFunctionCall": "not-a-dict"},
+        ),
+        types.FunctionCall(
+            id="bad-name",
+            name="adk_request_confirmation",
+            args={"originalFunctionCall": {"name": 42, "args": {}}},
+        ),
+        types.FunctionCall(
+            id="bad-args",
+            name="adk_request_confirmation",
+            args={"originalFunctionCall": {"name": "zepto_tool", "args": "bad"}},
+        ),
+    ]
+    event = Event(
+        author="blacki",
+        content=types.Content(
+            role="model",
+            parts=[types.Part(function_call=call) for call in malformed_calls],
+        ),
+    )
+
+    assert _pending_confirmations(_session_with_events([event])) == []
+
+
+@pytest.mark.parametrize(
+    ("message", "confirmed"),
+    [
+        ("yes", True),
+        (" APPROVE ", True),
+        ("no", False),
+        ("cancel", False),
+    ],
+)
+def test_confirmation_response_accepts_only_unambiguous_answers(
+    message: str,
+    confirmed: bool,
+) -> None:
+    pending = _pending_confirmations(_session_with_events([_confirmation_event()]))
+
+    content = _confirmation_response(pending, message)
+
+    assert content is not None
+    assert content.parts is not None
+    function_response = content.parts[0].function_response
+    assert function_response is not None
+    assert function_response.id == "confirm-1"
+    assert function_response.response == {"confirmed": confirmed}
+    assert _confirmation_response(pending, "maybe") is None
+    assert _confirmation_response([], "yes") is None
+
+
+def test_confirmation_prompt_shows_exact_first_call_and_multiple_warning() -> None:
+    pending = _pending_confirmations(
+        _session_with_events(
+            [
+                _confirmation_event(),
+                _confirmation_event(
+                    interrupt_id="confirm-2",
+                    original_id="tool-2",
+                    tool_name="zepto_place_order",
+                    tool_args={"total": 999},
+                ),
+            ]
+        )
+    )
+
+    prompt = _format_confirmation(pending[0], pending_count=len(pending))
+
+    assert "zepto_update_cart" in prompt
+    assert '"quantity": 1' in prompt
+    assert "2 pending calls" in prompt
+    assert "zepto_place_order" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_surfaces_confirmation_instead_of_empty_response() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield _confirmation_event()
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator,
+            message_text="Add milk",
+        )
+
+    assert "zepto_update_cart" in response.content
+    assert "Reply exactly `yes` or `no`" in response.content
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_ignores_malformed_confirmation_event() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+    malformed = types.FunctionCall(
+        id="confirm-bad",
+        name="adk_request_confirmation",
+        args={"originalFunctionCall": "bad"},
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="blacki",
+            content=types.Content(
+                role="model",
+                parts=[types.Part(function_call=malformed)],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator,
+            message_text="Hello",
+        )
+
+    assert response.content == ""
+
+
+@pytest.mark.asyncio
+async def test_pending_confirmation_reprompts_or_resumes_same_call() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+    session = _session_with_events([_confirmation_event()])
+
+    with (
+        patch.object(
+            runtime,
+            "get_or_create_session",
+            new=AsyncMock(return_value=session),
+        ),
+        patch.object(runtime.runner, "run_async", new=MagicMock()) as run_async,
+    ):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator,
+            message_text="maybe",
+        )
+
+    assert "zepto_update_cart" in response.content
+    run_async.assert_not_called()
+
+    async def resumed_run(**kwargs: object) -> AsyncIterator[Event]:
+        new_message = kwargs["new_message"]
+        assert isinstance(new_message, types.Content)
+        assert new_message.parts is not None
+        function_response = new_message.parts[0].function_response
+        assert function_response is not None
+        assert function_response.id == "confirm-1"
+        assert function_response.response == {"confirmed": True}
+        yield Event(
+            author="blacki",
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="Cart updated")],
+            ),
+        )
+
+    with (
+        patch.object(
+            runtime,
+            "get_or_create_session",
+            new=AsyncMock(return_value=session),
+        ),
+        patch.object(runtime.runner, "run_async", resumed_run),
+    ):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator,
+            message_text="yes",
+        )
+
+    assert response.content == "Cart updated"
+
+
+@pytest.mark.asyncio
+async def test_close_still_closes_session_when_runner_close_fails() -> None:
+    class ClosableSessionService(InMemorySessionService):
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    service = ClosableSessionService()
+    runtime = AdkRuntime(service)
+    with (
+        patch.object(
+            runtime.runner,
+            "close",
+            new=AsyncMock(side_effect=RuntimeError("runner close failed")),
+        ),
+        pytest.raises(RuntimeError, match="runner close failed"),
+    ):
+        await runtime.close()
+
+    assert service.closed is True
 
 
 async def test_run_user_turn_streaming_basic() -> None:

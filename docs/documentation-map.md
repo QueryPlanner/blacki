@@ -6,6 +6,8 @@ The documentation is organized around the lifecycle of a Blacki installation.
 
 - [First VPS deployment](DEPLOYMENT.md) is the supported Docker Compose path.
 - [Telegram setup](telegram-setup.md) connects the primary chat interface.
+- [Zepto MCP](zepto-mcp.md) authenticates and protects the optional shared
+  Zepto account.
 - [Local development](development.md) covers uv, tests, and MkDocs.
 
 ## Operate

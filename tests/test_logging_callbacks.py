@@ -2,7 +2,7 @@
 """Unit tests for the LoggingCallbacks class in the blacki.logging_callbacks module."""
 
 import logging
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -117,6 +117,56 @@ class TestAgentCallbacks:
         assert result is None
         assert "*** Starting agent 'test_agent'" in caplog.text
         assert "User Content:" not in caplog.text
+
+    def test_secure_zepto_mode_redacts_all_lifecycle_content(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Prompts, responses, and all tool payloads stay out of secure logs."""
+        monkeypatch.setenv("ZEPTO_MCP_ENABLED", "true")
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+        context = MockLoggingCallbackContext(
+            user_content=MockContent({"text": "private-user-message"}),
+        )
+        request = MockLlmRequest(
+            [MockContent({"text": "private-model-request"})],
+        )
+        response = MockLlmResponse(
+            MockContent({"text": "private-model-response"}),
+        )
+        tool_context = MockToolContext(
+            user_content=MockContent({"text": "private-tool-context"}),
+        )
+        tool = MockBaseTool(name="weather")
+
+        callbacks.before_agent(context)  # type: ignore[arg-type]
+        callbacks.after_agent(context)  # type: ignore[arg-type]
+        callbacks.before_model(context, request)  # type: ignore[arg-type]
+        callbacks.after_model(context, response)  # type: ignore[arg-type]
+        cast(Any, callbacks.before_tool)(
+            tool,
+            {"address": "private-tool-argument"},
+            tool_context,
+        )
+        cast(Any, callbacks.after_tool)(
+            tool,
+            {"address": "private-tool-argument"},
+            tool_context,
+            {"phone": "private-tool-result"},
+        )
+
+        assert "redacted" in caplog.text
+        for private_value in (
+            "private-user-message",
+            "private-model-request",
+            "private-model-response",
+            "private-tool-context",
+            "private-tool-argument",
+            "private-tool-result",
+        ):
+            assert private_value not in caplog.text
 
     def test_after_agent_with_full_context(
         self,
@@ -323,6 +373,33 @@ class TestToolCallbacks:
         assert "*** After invoking tool 'test_tool'" in caplog.text
         assert "User Content:" not in caplog.text
         assert "Tool response: {'status': 'success'}" in caplog.text
+
+    def test_zepto_tool_payloads_are_redacted(
+        self,
+        mock_tool_context: MockToolContext,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Private Zepto arguments, responses, and user content stay out of logs."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+        tool = MockBaseTool(name="zepto_update_cart")
+
+        cast(Any, callbacks.before_tool)(
+            tool,
+            {"address": "private-address"},
+            mock_tool_context,
+        )
+        cast(Any, callbacks.after_tool)(
+            tool,
+            {"address": "private-address"},
+            mock_tool_context,
+            {"phone": "private-phone"},
+        )
+
+        assert "zepto_update_cart" in caplog.text
+        assert "Private Zepto tool payload redacted" in caplog.text
+        assert "private-address" not in caplog.text
+        assert "private-phone" not in caplog.text
 
 
 class TestEdgeCases:

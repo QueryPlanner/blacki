@@ -153,10 +153,9 @@ class SqliteReminderStorage(SqlStorage):
             ),
         )
         logger.info(
-            "Added reminder %s for user %s: '%s...' at %s (SQLite)",
+            "Added reminder %s for user %s at %s (SQLite)",
             rid,
             reminder.user_id,
-            reminder.message[:30],
             reminder.trigger_time,
         )
         return rid

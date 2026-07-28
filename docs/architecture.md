@@ -48,6 +48,7 @@ Blacki uses different stores for different responsibilities:
 | Telegram runtime session metadata | SQLite-backed application state | Yes |
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
+| Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
 
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
@@ -60,11 +61,22 @@ Optional tools follow the project's cloud-first principle:
 - models use OpenRouter or Google;
 - search can use Exa with Brave as a fallback;
 - browser automation can use Browser Use Cloud;
+- grocery shopping can use Zepto's hosted MCP server for one allowlisted,
+  shared account;
 - vector memory can use Qdrant Cloud; and
 - code execution can use an OpenSandbox server.
 
 Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
+
+Zepto is registered only on a Telegram-specific root-agent runner. The public
+ADK HTTP runner and delegated task worker never receive the Zepto toolset.
+Unauthorized Telegram identities are rejected before Blacki opens an MCP
+connection, and every Zepto tool requires an ADK confirmation. Its OAuth files
+is plaintext protected by a `0700` directory and `0600` file permissions; it
+is not encrypted. Shopping prompts, tool calls, and results remain in the local
+ADK session database and are sent to the configured model as part of normal
+agent execution.
 
 ### Sandbox credential threat model
 

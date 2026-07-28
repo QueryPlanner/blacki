@@ -151,12 +151,26 @@ and model usage.
 Running a local OpenSandbox server adds Docker and resource requirements beyond
 the Blacki golden path.
 
+## Zepto MCP
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ZEPTO_MCP_ENABLED` | `false` | Enable the root-only Zepto skill after OAuth |
+| `ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS` | unset | Comma-separated positive private chat IDs allowed to use the shared account |
+| `ZEPTO_MCP_CONFIG_DIR` | `data/credentials/zepto-mcp-remote` | Permission-protected bridge credential directory shared by host and container |
+
+The allowlist deliberately rejects Telegram groups, topics, and arbitrary HTTP
+user IDs. All allowed chats share one Zepto account and cart. Complete the
+one-time OAuth flow before enabling the integration; see
+[Zepto MCP](../zepto-mcp.md).
+
 ## Observability
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Allow instrumentors to capture message content |
+| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` | Allow legacy ADK spans to capture prompts and tool data |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred complete trace collector URL |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback; HTTP adds `/v1/traces` |
 | `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol: `grpc` or `http/protobuf` |
@@ -167,6 +181,10 @@ the Blacki golden path.
 Blacki always exports spans to local JSON. A validated trace-specific or global
 endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
 precedence. See [Observability](observability.md).
+
+When Zepto is enabled, Blacki forces both content-capture variables to `false`
+and disables the OpenInference Google ADK instrumentor because it otherwise
+records raw tool parameters.
 
 ## Precedence
 

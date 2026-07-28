@@ -1,5 +1,6 @@
 """Tests for Mem0MemoryService."""
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,8 +26,12 @@ class TestMem0MemoryService:
         assert service._client is mock_client
 
     @pytest.mark.asyncio
-    async def test_search_memory_success(self) -> None:
-        """Should search memories and convert to MemoryEntry objects."""
+    async def test_search_memory_success(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Search memories without copying the private query into logs."""
+        caplog.set_level(logging.DEBUG)
         mock_client = MagicMock()
         mock_client.search.return_value = {
             "results": [
@@ -37,7 +42,9 @@ class TestMem0MemoryService:
 
         service = Mem0MemoryService(mock_client)
         response = await service.search_memory(
-            app_name="test_app", user_id="test_user", query="food preferences"
+            app_name="test_app",
+            user_id="test_user",
+            query="private-shopping-query",
         )
 
         assert isinstance(response, SearchMemoryResponse)
@@ -50,8 +57,9 @@ class TestMem0MemoryService:
 
         mock_client.search.assert_called_once()
         call_kwargs = mock_client.search.call_args[1]
-        assert call_kwargs["query"] == "food preferences"
+        assert call_kwargs["query"] == "private-shopping-query"
         assert call_kwargs["user_id"] == "test_user"
+        assert "private-shopping-query" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_search_memory_empty_results(self) -> None:

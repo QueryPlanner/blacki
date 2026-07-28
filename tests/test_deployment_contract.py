@@ -1,5 +1,6 @@
 """Contract tests for the documented Docker Compose deployment path."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -61,10 +62,15 @@ def test_docker_context_is_an_explicit_allowlist() -> None:
         "*",
         "!Dockerfile",
         "!entrypoint.sh",
+        "!mcp-bridge/",
+        "!mcp-bridge/package.json",
+        "!mcp-bridge/package-lock.json",
         "!pyproject.toml",
         "!uv.lock",
         "!src/",
         "!src/**",
+        "src/.adk/",
+        "src/**/.adk/",
     }
     assert "!.env" not in rules
 
@@ -82,6 +88,8 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert "BIND_ADDRESS" not in values
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
+    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
 
 
 def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
@@ -93,6 +101,9 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     assert values["TELEGRAM_ENABLED"] == "false"
     assert "TELEGRAM_BOT_TOKEN" not in values
     assert values["HOST"] == "127.0.0.1"
+    assert values["ZEPTO_MCP_ENABLED"] == "false"
+    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
 
 
 def test_compose_defaults_are_private_persistent_and_live() -> None:
@@ -130,6 +141,25 @@ def test_runtime_prepares_every_persistent_mount() -> None:
         assert container_path in entrypoint
 
     assert 'exec runuser -u app -- "$@"' in entrypoint
+
+
+def test_zepto_bridge_is_locked_and_baked_into_the_image() -> None:
+    """Production must not download or resolve the Zepto bridge at runtime."""
+    package = json.loads(_read("mcp-bridge/package.json"))
+    lock = json.loads(_read("mcp-bridge/package-lock.json"))
+    dockerfile = _read("Dockerfile")
+
+    assert package["dependencies"] == {"mcp-remote": "0.1.38"}
+    assert lock["packages"][""]["dependencies"] == {"mcp-remote": "0.1.38"}
+    assert lock["packages"]["node_modules/mcp-remote"]["version"] == "0.1.38"
+    for required in (
+        "FROM node:22-bookworm-slim AS mcp-bridge",
+        "npm ci --omit=dev --ignore-scripts",
+        "COPY --from=mcp-bridge /usr/local/bin/node /usr/local/bin/node",
+        "/usr/local/bin/mcp-remote",
+    ):
+        assert required in dockerfile
+    assert "npx" not in dockerfile
 
 
 def test_mkdocs_navigation_targets_existing_files() -> None:
@@ -341,6 +371,7 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         '"compose.prod.yaml"',
         '"compose.smoke.yaml"',
         '"docs/**"',
+        '"mcp-bridge/**"',
         '"scripts/write_compose_env.py"',
         '"setup.sh"',
         '"src/**"',

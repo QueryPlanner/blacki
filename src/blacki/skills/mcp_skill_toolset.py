@@ -374,7 +374,9 @@ class McpSkillToolset(BaseToolset):
             mcp_toolset = self._mcp_toolsets.get(skill_name)
             if is_activated and mcp_toolset:
                 try:
-                    mcp_tools = await mcp_toolset.get_tools(readonly_context)
+                    mcp_tools = await mcp_toolset.get_tools_with_prefix(
+                        readonly_context
+                    )
                     tools.extend(mcp_tools)
                 except Exception:
                     logger.exception(
