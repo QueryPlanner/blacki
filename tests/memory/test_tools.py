@@ -1,5 +1,6 @@
 """Tests for Memory tools."""
 
+import logging
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -31,8 +32,13 @@ class TestSaveMemory:
         reset_memory_client()
 
     @pytest.mark.asyncio
-    async def test_save_memory_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should save memory successfully."""
+    async def test_save_memory_success(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Save memory without copying private text into logs."""
+        caplog.set_level(logging.INFO)
         monkeypatch.setenv("MEM0_API_KEY", "test_key")
         tool_context = self._tool_context()
 
@@ -40,10 +46,11 @@ class TestSaveMemory:
         mock_client.add.return_value = {"id": "mem_123", "event": "ADD"}
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
-            result = await save_memory("I love pizza", tool_context)
+            result = await save_memory("private-shopping-memory", tool_context)
 
         assert result["status"] == "success"
         mock_client.add.assert_called_once()
+        assert "private-shopping-memory" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_save_memory_empty_text(
@@ -109,8 +116,13 @@ class TestSearchMemory:
         reset_memory_client()
 
     @pytest.mark.asyncio
-    async def test_search_memory_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Should search and return memories."""
+    async def test_search_memory_success(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Search memory without copying a private query into logs."""
+        caplog.set_level(logging.INFO)
         monkeypatch.setenv("MEM0_API_KEY", "test_key")
         tool_context = self._tool_context()
 
@@ -126,12 +138,13 @@ class TestSearchMemory:
         }
 
         with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
-            result = await search_memory("food preferences", tool_context)
+            result = await search_memory("private-shopping-query", tool_context)
 
         assert result["status"] == "success"
         assert len(result["results"]) == 1
         assert result["results"][0]["id"] == "mem_123"
         assert result["results"][0]["memory"] == "User likes pizza"
+        assert "private-shopping-query" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_search_memory_empty_query(

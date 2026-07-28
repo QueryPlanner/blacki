@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
@@ -52,6 +53,7 @@ def mock_mcp_toolset() -> McpToolset:
     """Create a mock MCP toolset."""
     mock_toolset = create_autospec(McpToolset, spec_set=True, instance=True)
     mock_toolset.get_tools = AsyncMock(return_value=[])
+    mock_toolset.get_tools_with_prefix = AsyncMock(return_value=[])
     mock_toolset.close = AsyncMock()
     return mock_toolset  # type: ignore[no-any-return]
 
@@ -546,7 +548,9 @@ class TestMcpSkillToolset:
         """Test get_tools includes MCP tools after activation."""
         mock_mcp_tool = MagicMock(spec=BaseTool)
         mock_mcp_tool.name = "mcp_tool_1"
-        mock_mcp_toolset.get_tools = AsyncMock(return_value=[mock_mcp_tool])
+        cast(Any, mock_mcp_toolset).get_tools_with_prefix = AsyncMock(
+            return_value=[mock_mcp_tool]
+        )
 
         toolset = McpSkillToolset(skills=[(sample_skill, mock_mcp_toolset)])
 
@@ -563,7 +567,9 @@ class TestMcpSkillToolset:
         self, sample_skill: Skill, mock_mcp_toolset: McpToolset
     ) -> None:
         """Test get_tools handles MCP toolset failure gracefully."""
-        mock_mcp_toolset.get_tools = AsyncMock(side_effect=RuntimeError("MCP failed"))
+        cast(Any, mock_mcp_toolset).get_tools_with_prefix = AsyncMock(
+            side_effect=RuntimeError("MCP failed")
+        )
 
         toolset = McpSkillToolset(skills=[(sample_skill, mock_mcp_toolset)])
 
@@ -701,7 +707,7 @@ class TestMcpSkillToolset:
     ) -> None:
         """Test close calls close on all MCP toolsets."""
         mock_mcp_toolset_2 = create_autospec(McpToolset, spec_set=True, instance=True)
-        mock_mcp_toolset_2.get_tools = AsyncMock(return_value=[])
+        mock_mcp_toolset_2.get_tools_with_prefix = AsyncMock(return_value=[])
         mock_mcp_toolset_2.close = AsyncMock()
 
         toolset = McpSkillToolset(
@@ -724,13 +730,17 @@ class TestMcpSkillToolset:
         mock_mcp_tool_1 = MagicMock(spec=BaseTool)
         mock_mcp_tool_1.name = "mcp_tool_1"
         mock_mcp_toolset_1 = create_autospec(McpToolset, spec_set=True, instance=True)
-        mock_mcp_toolset_1.get_tools = AsyncMock(return_value=[mock_mcp_tool_1])
+        mock_mcp_toolset_1.get_tools_with_prefix = AsyncMock(
+            return_value=[mock_mcp_tool_1]
+        )
         mock_mcp_toolset_1.close = AsyncMock()
 
         mock_mcp_tool_2 = MagicMock(spec=BaseTool)
         mock_mcp_tool_2.name = "mcp_tool_2"
         mock_mcp_toolset_2 = create_autospec(McpToolset, spec_set=True, instance=True)
-        mock_mcp_toolset_2.get_tools = AsyncMock(return_value=[mock_mcp_tool_2])
+        mock_mcp_toolset_2.get_tools_with_prefix = AsyncMock(
+            return_value=[mock_mcp_tool_2]
+        )
         mock_mcp_toolset_2.close = AsyncMock()
 
         toolset = McpSkillToolset(

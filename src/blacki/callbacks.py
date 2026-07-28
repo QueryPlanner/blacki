@@ -19,6 +19,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
+from .privacy import is_private_tool, zepto_mcp_enabled
 from .telegram import TelegramConfig
 from .telegram.api import TelegramApiClient, TelegramApiError
 from .telegram.formatting import escape_markdown, format_for_telegram
@@ -391,7 +392,7 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        if not zepto_mcp_enabled() and (user_content := callback_context.user_content):
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -410,7 +411,7 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        if not zepto_mcp_enabled() and (user_content := callback_context.user_content):
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -435,15 +436,19 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        redact_content = zepto_mcp_enabled()
+        if not redact_content and (user_content := callback_context.user_content):
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
         self.logger.debug(f"LLM request contains {len(llm_request.contents)} messages:")
-        for i, content in enumerate(llm_request.contents, start=1):
-            self.logger.debug(
-                f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
-            )
+        if redact_content:
+            self.logger.debug("LLM request content redacted in secure Zepto mode")
+        else:
+            for i, content in enumerate(llm_request.contents, start=1):
+                self.logger.debug(
+                    f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
+                )
 
         return None
 
@@ -465,11 +470,14 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if user_content := callback_context.user_content:
+        redact_content = zepto_mcp_enabled()
+        if not redact_content and (user_content := callback_context.user_content):
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
-        if llm_content := llm_response.content:
+        if redact_content:
+            self.logger.debug("LLM response content redacted in secure Zepto mode")
+        elif llm_content := llm_response.content:
             response_data = llm_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"LLM response: {response_data}")
 
@@ -494,6 +502,12 @@ class LoggingCallbacks:
             f"'{tool_context.agent_name}' with invocation_id "
             f"'{tool_context.invocation_id}' ***"
         )
+        if zepto_mcp_enabled():
+            self.logger.debug("Tool payload redacted in secure Zepto mode")
+            return None
+        if is_private_tool(tool):
+            self.logger.debug("Private Zepto tool payload redacted")
+            return None
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:
@@ -528,6 +542,12 @@ class LoggingCallbacks:
             f"'{tool_context.agent_name}' with invocation_id "
             f"'{tool_context.invocation_id}' ***"
         )
+        if zepto_mcp_enabled():
+            self.logger.debug("Tool payload redacted in secure Zepto mode")
+            return None
+        if is_private_tool(tool):
+            self.logger.debug("Private Zepto tool payload redacted")
+            return None
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:

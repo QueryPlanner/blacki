@@ -37,9 +37,14 @@ class ToolConfig:
     skills_dir: Path | None = None
     weather_enabled: bool = True
     legacy_workout_tools_enabled: bool = False
+    zepto_mcp_enabled: bool = False
+    zepto_mcp_config_dir: Path = Path("data/credentials/zepto-mcp-remote")
+    zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
 
 
-def build_tools(config: ToolConfig) -> list[Any]:
+def build_tools(
+    config: ToolConfig, *, include_user_scoped_tools: bool = False
+) -> list[Any]:
     """Build tools based on explicit configuration.
 
     Args:
@@ -70,7 +75,13 @@ def build_tools(config: ToolConfig) -> list[Any]:
         logger.info("Sandbox tools enabled")
 
     if config.skills_dir:
-        tools.extend(_build_skill_tools(config.skills_dir))
+        tools.extend(
+            _build_skill_tools(
+                config.skills_dir,
+                config=config,
+                include_user_scoped_tools=include_user_scoped_tools,
+            )
+        )
 
     if config.weather_enabled:
         tools.extend(_build_weather_tools())
@@ -199,8 +210,14 @@ def _build_sandbox_tools() -> list[Any]:
         return []
 
 
-def _build_skill_tools(skills_dir: Path) -> list[Any]:
+def _build_skill_tools(
+    skills_dir: Path,
+    *,
+    config: ToolConfig | None = None,
+    include_user_scoped_tools: bool = False,
+) -> list[Any]:
     """Build skill tools from a directory."""
+    config = config or ToolConfig()
     try:
         from google.adk.skills.models import Skill
         from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
@@ -215,6 +232,21 @@ def _build_skill_tools(skills_dir: Path) -> list[Any]:
             if skill:
                 logger.info("%s skill enabled", skill_name)
                 loaded_skills.append((skill, None))
+
+        if include_user_scoped_tools and config.zepto_mcp_enabled:
+            from blacki.zepto import ZeptoCredentialError, create_zepto_toolset
+
+            try:
+                zepto_toolset = create_zepto_toolset(
+                    config_dir=config.zepto_mcp_config_dir,
+                    allowed_chat_ids=config.zepto_mcp_allowed_chat_ids,
+                )
+                zepto_skill = load_skill_from_dir(skills_dir / "zepto")
+                if zepto_skill:
+                    logger.info("Zepto MCP skill enabled for the root agent")
+                    loaded_skills.append((zepto_skill, zepto_toolset))
+            except ZeptoCredentialError as exc:
+                logger.warning("Zepto MCP disabled: %s", exc)
 
         if loaded_skills:
             return [McpSkillToolset(skills=loaded_skills)]
@@ -300,6 +332,11 @@ def build_tool_config_from_env() -> ToolConfig:
     default_sqlite_path = str(Path(agent_dir) / ".adk" / "tools.db")
 
     sqlite_path = os.getenv("SQLITE_PATH", "").strip() or default_sqlite_path
+    allowed_zepto_chat_ids = frozenset(
+        item.strip()
+        for item in os.getenv("ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS", "").split(",")
+        if item.strip()
+    )
 
     return ToolConfig(
         exa_api_key=os.getenv("EXA_API_KEY", "").strip() or None,
@@ -312,4 +349,13 @@ def build_tool_config_from_env() -> ToolConfig:
         .strip()
         .lower()
         in ("true", "1", "yes"),
+        zepto_mcp_enabled=os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower()
+        in ("true", "1", "yes"),
+        zepto_mcp_config_dir=Path(
+            os.getenv(
+                "ZEPTO_MCP_CONFIG_DIR",
+                "data/credentials/zepto-mcp-remote",
+            ).strip()
+        ),
+        zepto_mcp_allowed_chat_ids=allowed_zepto_chat_ids,
     )

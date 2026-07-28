@@ -582,7 +582,7 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
-        logger.info("Received message from chat %s: %s...", chat_id, user_message[:50])
+        logger.info("Received message from chat %s", chat_id)
 
         try:
             await self.api.send_chat_action(

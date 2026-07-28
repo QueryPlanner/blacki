@@ -1,9 +1,13 @@
 """Tests for the tool registry."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import create_autospec, patch
+
+import pytest
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from blacki.registry import ToolConfig, build_tool_config_from_env, build_tools
+from blacki.skills.mcp_skill_toolset import McpSkillToolset
 
 
 class TestToolConfig:
@@ -19,6 +23,8 @@ class TestToolConfig:
         assert config.sandbox_enabled is False
         assert config.skills_dir is None
         assert config.legacy_workout_tools_enabled is False
+        assert config.zepto_mcp_enabled is False
+        assert config.zepto_mcp_allowed_chat_ids == frozenset()
 
     def test_custom_values(self) -> None:
         """Should accept custom values."""
@@ -30,6 +36,9 @@ class TestToolConfig:
             sandbox_enabled=True,
             skills_dir=skills_path,
             legacy_workout_tools_enabled=True,
+            zepto_mcp_enabled=True,
+            zepto_mcp_config_dir=Path("/tmp/zepto"),
+            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
         )
 
         assert config.exa_api_key == "exa-key"
@@ -38,6 +47,9 @@ class TestToolConfig:
         assert config.sandbox_enabled is True
         assert config.skills_dir == skills_path
         assert config.legacy_workout_tools_enabled is True
+        assert config.zepto_mcp_enabled is True
+        assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
+        assert config.zepto_mcp_allowed_chat_ids == frozenset({"123"})
 
 
 class TestBuildTools:
@@ -108,6 +120,89 @@ class TestBuildTools:
 
         assert len(tools) > 15
 
+    def test_zepto_skill_is_root_only(self) -> None:
+        """Zepto should join the root skill toolset but never the task worker."""
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            zepto_mcp_enabled=True,
+            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
+        )
+        zepto_toolset = patch(
+            "blacki.zepto.create_zepto_toolset",
+            autospec=True,
+        )
+        with zepto_toolset as create:
+            create.return_value = create_autospec(
+                McpToolset, spec_set=True, instance=True
+            )
+            root_tools = build_tools(config, include_user_scoped_tools=True)
+            worker_tools = build_tools(config, include_user_scoped_tools=False)
+            default_tools = build_tools(config)
+
+        root_skills = next(
+            tool for tool in root_tools if isinstance(tool, McpSkillToolset)
+        )
+        worker_skills = next(
+            tool for tool in worker_tools if isinstance(tool, McpSkillToolset)
+        )
+        default_skills = next(
+            tool for tool in default_tools if isinstance(tool, McpSkillToolset)
+        )
+        assert "zepto" in root_skills._skills
+        assert "zepto" not in worker_skills._skills
+        assert "zepto" not in default_skills._skills
+        create.assert_called_once()
+
+    def test_invalid_zepto_credentials_disable_only_zepto(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Invalid private credentials should fail closed without losing skills."""
+        from blacki.zepto import ZeptoCredentialError
+
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            zepto_mcp_enabled=True,
+            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
+        )
+        with patch(
+            "blacki.zepto.create_zepto_toolset",
+            side_effect=ZeptoCredentialError("authenticate first"),
+        ):
+            tools = build_tools(config, include_user_scoped_tools=True)
+
+        skills = next(tool for tool in tools if isinstance(tool, McpSkillToolset))
+        assert "zepto" not in skills._skills
+        assert "Zepto MCP disabled" in caplog.text
+
+    def test_missing_zepto_skill_file_does_not_register_toolset(self) -> None:
+        """A missing packaged skill should not expose an orphan MCP toolset."""
+        config = ToolConfig(
+            skills_dir=Path("src/blacki/skills"),
+            weather_enabled=False,
+            zepto_mcp_enabled=True,
+            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
+        )
+        with (
+            patch("blacki.skills.load_skill_from_dir", return_value=None),
+            patch(
+                "blacki.zepto.create_zepto_toolset",
+                return_value=create_autospec(
+                    McpToolset,
+                    spec_set=True,
+                    instance=True,
+                ),
+            ) as create,
+        ):
+            tools = build_tools(config, include_user_scoped_tools=True)
+
+        assert not any(isinstance(tool, McpSkillToolset) for tool in tools)
+        create.assert_called_once()
+
     def test_build_brave_search_tools_import_error(self) -> None:
         """Should handle ImportError gracefully."""
         with (
@@ -143,6 +238,10 @@ class TestBuildToolConfigFromEnv:
             assert config.sqlite_path.endswith(".adk/tools.db")
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
+            assert config.zepto_mcp_enabled is False
+            assert config.zepto_mcp_config_dir == Path(
+                "data/credentials/zepto-mcp-remote"
+            )
 
     def test_brave_search_api_key_from_env(self) -> None:
         """Should read BRAVE_SEARCH_API_KEY from env."""
@@ -223,6 +322,23 @@ class TestBuildToolConfigFromEnv:
             "os.environ", {"LEGACY_WORKOUT_TOOLS_ENABLED": "false"}, clear=False
         ):
             assert build_tool_config_from_env().legacy_workout_tools_enabled is False
+
+    def test_zepto_settings_from_env(self) -> None:
+        """Should parse the explicit Zepto flag, path, and private chat allowlist."""
+        with patch.dict(
+            "os.environ",
+            {
+                "ZEPTO_MCP_ENABLED": "true",
+                "ZEPTO_MCP_CONFIG_DIR": "/tmp/zepto",
+                "ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS": " 123,456, ",
+            },
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.zepto_mcp_enabled is True
+        assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
+        assert config.zepto_mcp_allowed_chat_ids == frozenset({"123", "456"})
 
 
 class TestBuildBraveSearchTools:

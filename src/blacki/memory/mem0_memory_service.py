@@ -93,9 +93,8 @@ class Mem0MemoryService(BaseMemoryService):
                 )
 
             logger.debug(
-                "Found %d memories for query '%s' (user: %s)",
+                "Found %d memories for user %s",
                 len(memories),
-                query[:30],
                 user_id,
             )
             return SearchMemoryResponse(memories=memories)

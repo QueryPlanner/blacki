@@ -44,12 +44,27 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     if "blacki.server" in sys.modules:
         del sys.modules["blacki.server"]
 
-    import blacki.server  # noqa: F401
+    import blacki.server as server
 
     mock_dependencies.assert_called_once()
     call_kwargs = mock_dependencies.call_args[1]
 
     assert call_kwargs["session_service_uri"] is None
+    assert call_kwargs["lifespan"] is server.lifespan
+
+
+def test_server_skips_openinference_in_secure_zepto_mode(
+    mock_dependencies: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Secure Zepto mode must take the no-instrumentation startup branch."""
+    monkeypatch.setenv("ZEPTO_MCP_ENABLED", "true")
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    assert server.zepto_secure_mode is True
 
 
 @pytest.mark.asyncio
@@ -225,9 +240,23 @@ async def test_start_telegram_bot_starts_polling_and_tolerates_scheduler_failure
     bot.start_polling = AsyncMock()
     scheduler_error = RuntimeError("scheduler failed") if scheduler_fails else None
     start_scheduler = AsyncMock(side_effect=scheduler_error)
+    telegram_agent = MagicMock()
+    telegram_app = MagicMock()
 
     with (
-        patch.object(server, "create_adk_runtime", return_value=MagicMock()),
+        patch.object(
+            server,
+            "create_adk_runtime",
+            return_value=MagicMock(),
+        ) as create_runtime,
+        patch(
+            "blacki.agent.create_agent",
+            return_value=telegram_agent,
+        ) as create_agent,
+        patch(
+            "blacki.agent.create_app",
+            return_value=telegram_app,
+        ) as create_app,
         patch("blacki.telegram.bot.TelegramBot", return_value=bot),
         patch.object(
             server,
@@ -238,6 +267,9 @@ async def test_start_telegram_bot_starts_polling_and_tolerates_scheduler_failure
         await server._start_telegram_bot()
 
     assert server._telegram_bot is bot
+    create_agent.assert_called_once_with(include_user_scoped_tools=True)
+    create_app.assert_called_once_with(telegram_agent)
+    create_runtime.assert_called_once_with(server.env, agent_app=telegram_app)
     bot.start_polling.assert_awaited_once()
     start_scheduler.assert_awaited_once()
 

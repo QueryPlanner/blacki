@@ -2,6 +2,7 @@
 """Unit tests for reminder storage."""
 
 import asyncio
+import logging
 
 import aiosqlite
 import pytest
@@ -101,11 +102,16 @@ class TestSqliteReminderStorage:
         assert row is not None
 
     @pytest.mark.asyncio
-    async def test_add_reminder(self, storage) -> None:
-        """Should add a reminder and return its ID."""
+    async def test_add_reminder(
+        self,
+        storage,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Add a reminder without copying its private message into logs."""
+        caplog.set_level(logging.INFO)
         reminder = Reminder(
             user_id="user1",
-            message="Test reminder",
+            message="private-shopping-reminder",
             trigger_time="2026-04-18T12:00:00+00:00",
             created_at="2026-04-18T10:00:00+00:00",
         )
@@ -113,6 +119,7 @@ class TestSqliteReminderStorage:
         result = await storage.add_reminder(reminder)
 
         assert result == 1
+        assert "private-shopping-reminder" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_get_due_reminders(self, storage) -> None:

@@ -89,6 +89,27 @@ def test_disabled_task_worker_is_not_registered(
     assert TASK_WORKER_NAME not in {_tool_capability(tool) for tool in agent.tools}
 
 
+@pytest.mark.parametrize("include_user_scoped_tools", [False, True])
+def test_root_user_scoped_tools_require_explicit_transport_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    include_user_scoped_tools: bool,
+) -> None:
+    """Only a transport-specific root agent may request user-scoped tools."""
+    monkeypatch.setenv("TASK_WORKER_ENABLED", "false")
+    config = ToolConfig(weather_enabled=False)
+
+    with (
+        patch("blacki.agent.build_tool_config_from_env", return_value=config),
+        patch("blacki.agent.build_tools", return_value=[]) as build_tools,
+    ):
+        create_agent(include_user_scoped_tools=include_user_scoped_tools)
+
+    build_tools.assert_called_once_with(
+        config,
+        include_user_scoped_tools=include_user_scoped_tools,
+    )
+
+
 def test_default_task_worker_has_equivalent_isolated_toolsets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

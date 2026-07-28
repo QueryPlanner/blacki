@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1102,8 +1103,10 @@ class TestTelegramBotMessageHandling:
         self,
         telegram_config: TelegramConfig,
         runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Test message handling with streaming."""
+        """Handle a message without copying its text into Telegram logs."""
+        caplog.set_level(logging.INFO)
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
         runtime_recorder.run_user_turn_response = "Hello back!"
 
@@ -1132,13 +1135,15 @@ class TestTelegramBotMessageHandling:
         await bot._handle_message(
             chat_id=123456789,
             message_thread_id=None,
-            user_message="Hello, bot!",
+            user_message="private-shopping-message",
         )
 
         mock_api.send_chat_action.assert_called_once_with(
             chat_id=123456789, action="typing", message_thread_id=None
         )
         mock_api.send_message.assert_called()
+        assert "Received message from chat 123456789" in caplog.text
+        assert "private-shopping-message" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_handle_message_ignores_thoughts(

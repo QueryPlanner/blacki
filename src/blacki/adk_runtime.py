@@ -1,6 +1,7 @@
 """Shared ADK runtime helpers for FastAPI and Telegram."""
 
 import inspect
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.apps import App
 from google.adk.cli.service_registry import get_service_registry
 from google.adk.events import Event
 from google.adk.memory.base_memory_service import BaseMemoryService
@@ -46,6 +48,9 @@ get_service_registry().register_memory_service("mem0", _create_mem0_memory_servi
 
 DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."
 SESSION_VERSION_SEPARATOR = "-v"
+_CONFIRMATION_FUNCTION = "adk_request_confirmation"
+_CONFIRMATION_APPROVE = frozenset({"y", "yes", "confirm", "approve"})
+_CONFIRMATION_REJECT = frozenset({"n", "no", "reject", "cancel"})
 
 
 @dataclass(slots=True, frozen=True)
@@ -63,6 +68,99 @@ class StreamChunk:
     thoughts: str
     content: str
     is_partial: bool = True
+
+
+@dataclass(slots=True, frozen=True)
+class PendingConfirmation:
+    """One unresolved ADK tool-confirmation interrupt."""
+
+    interrupt_id: str
+    tool_name: str
+    tool_args: dict[str, Any]
+
+
+def _pending_confirmations(session: Session) -> list[PendingConfirmation]:
+    """Return confirmation calls that do not yet have a matching response."""
+    answered_ids = {
+        response.id
+        for event in session.events
+        for response in event.get_function_responses()
+        if response.id
+    }
+    pending: list[PendingConfirmation] = []
+    for event in session.events:
+        for function_call in event.get_function_calls():
+            if (
+                function_call.name != _CONFIRMATION_FUNCTION
+                or not function_call.id
+                or function_call.id in answered_ids
+            ):
+                continue
+            args = function_call.args or {}
+            original = args.get("originalFunctionCall")
+            if not isinstance(original, dict):
+                continue
+            tool_name = original.get("name")
+            tool_args = original.get("args", {})
+            if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
+                continue
+            pending.append(
+                PendingConfirmation(
+                    interrupt_id=function_call.id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                )
+            )
+    return pending
+
+
+def _format_confirmation(
+    confirmation: PendingConfirmation, *, pending_count: int
+) -> str:
+    args = json.dumps(
+        confirmation.tool_args,
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    suffix = ""
+    if pending_count > 1:
+        suffix = (
+            f"\n\nThere are {pending_count} pending calls. This reply applies "
+            "only to the first; each call must be confirmed separately."
+        )
+    return (
+        f"Confirm Zepto tool `{confirmation.tool_name}` with these arguments?\n\n"
+        f"```json\n{args}\n```\n\nReply exactly `yes` or `no`."
+        f"{suffix}"
+    )
+
+
+def _confirmation_response(
+    pending: list[PendingConfirmation], message_text: str
+) -> types.Content | None:
+    if not pending:
+        return None
+    normalized = message_text.strip().lower()
+    if normalized in _CONFIRMATION_APPROVE:
+        confirmed = True
+    elif normalized in _CONFIRMATION_REJECT:
+        confirmed = False
+    else:
+        return None
+    first = pending[0]
+    return types.Content(
+        role="user",
+        parts=[
+            types.Part(
+                function_response=types.FunctionResponse(
+                    id=first.interrupt_id,
+                    name=_CONFIRMATION_FUNCTION,
+                    response={"confirmed": confirmed},
+                )
+            )
+        ],
+    )
 
 
 def build_session_service_uri(env: ServerEnv) -> str | None:
@@ -145,8 +243,13 @@ class AdkRuntime:
         self,
         session_service: BaseSessionService,
         memory_service: BaseMemoryService | None = None,
+        *,
+        agent_app: App | None = None,
     ) -> None:
-        from .agent import app as agent_app
+        if agent_app is None:
+            from .agent import app as default_agent_app
+
+            agent_app = default_agent_app
 
         self.app = agent_app
         self.app_name = agent_app.name
@@ -234,15 +337,27 @@ class AdkRuntime:
     ) -> TurnResponse:
         """Run one user turn through ADK and return structured response."""
         session = await self.get_or_create_session(locator=locator, state=state)
-        new_message = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=message_text)],
-        )
+        pending_before_turn = _pending_confirmations(session)
+        new_message = _confirmation_response(pending_before_turn, message_text)
+        if pending_before_turn and new_message is None:
+            return TurnResponse(
+                thoughts="",
+                content=_format_confirmation(
+                    pending_before_turn[0],
+                    pending_count=len(pending_before_turn),
+                ),
+            )
+        if new_message is None:
+            new_message = types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=message_text)],
+            )
 
         thoughts_parts: list[str] = []
         content_parts: list[str] = []
         partial_thoughts = ""
         partial_content = ""
+        pending_after_turn: list[PendingConfirmation] = []
 
         async for event in self.runner.run_async(
             user_id=locator.user_id,
@@ -251,6 +366,25 @@ class AdkRuntime:
             state_delta=state,
         ):
             self._raise_on_event_error(event)
+            for function_call in event.get_function_calls():
+                if function_call.name != _CONFIRMATION_FUNCTION:
+                    continue
+                args = function_call.args or {}
+                original = args.get("originalFunctionCall")
+                if (
+                    not function_call.id
+                    or not isinstance(original, dict)
+                    or not isinstance(original.get("name"), str)
+                    or not isinstance(original.get("args", {}), dict)
+                ):
+                    continue
+                pending_after_turn.append(
+                    PendingConfirmation(
+                        interrupt_id=function_call.id,
+                        tool_name=original["name"],
+                        tool_args=original.get("args", {}),
+                    )
+                )
 
             has_function_call = (
                 event.content is not None
@@ -286,6 +420,11 @@ class AdkRuntime:
 
         final_thoughts = " ".join(thoughts_parts).strip() or partial_thoughts
         final_content = " ".join(content_parts).strip() or partial_content
+        if pending_after_turn:
+            final_content = _format_confirmation(
+                pending_after_turn[0],
+                pending_count=len(pending_after_turn),
+            )
 
         return TurnResponse(
             thoughts=final_thoughts,
@@ -349,14 +488,15 @@ class AdkRuntime:
         )
 
     async def close(self) -> None:
-        """Close the underlying session service when supported."""
-        close_method = getattr(self.session_service, "close", None)
-        if close_method is None:
-            return
-
-        close_result = close_method()
-        if inspect.isawaitable(close_result):
-            await close_result
+        """Close runner toolsets, then the underlying session service."""
+        try:
+            await self.runner.close()
+        finally:
+            close_method = getattr(self.session_service, "close", None)
+            if close_method is not None:
+                close_result = close_method()
+                if inspect.isawaitable(close_result):
+                    await close_result
 
     async def _get_latest_session(self, *, locator: SessionLocator) -> Session | None:
         response = await self.session_service.list_sessions(
@@ -415,7 +555,11 @@ class AdkRuntime:
         raise RuntimeError(msg)
 
 
-def create_adk_runtime(env: ServerEnv) -> AdkRuntime:
+def create_adk_runtime(
+    env: ServerEnv,
+    *,
+    agent_app: App | None = None,
+) -> AdkRuntime:
     """Create a shared ADK runtime using the current environment config."""
     session_service_uri = build_session_service_uri(env)
     session_db_kwargs = build_session_db_kwargs(env)
@@ -430,6 +574,7 @@ def create_adk_runtime(env: ServerEnv) -> AdkRuntime:
     return AdkRuntime(
         session_service=session_service,
         memory_service=memory_service,
+        agent_app=agent_app,
     )
 
 

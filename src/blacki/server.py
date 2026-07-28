@@ -19,6 +19,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
+from .privacy import configure_zepto_privacy
 from .utils import (
     ConfigurationError,
     ServerEnv,
@@ -32,12 +33,14 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 env = initialize_environment(ServerEnv)
+zepto_secure_mode = configure_zepto_privacy()
 
 configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-GoogleADKInstrumentor().instrument()
+if not zepto_secure_mode:
+    GoogleADKInstrumentor().instrument()
 
 setup_logging(log_level=env.log_level)
 setup_tracing()
@@ -58,6 +61,7 @@ async def _start_telegram_bot() -> None:
         return
 
     try:
+        from .agent import create_agent, create_app
         from .telegram import TelegramConfig
         from .telegram.bot import TelegramBot
 
@@ -69,7 +73,10 @@ async def _start_telegram_bot() -> None:
                 "TELEGRAM_TOOL_NOTIFICATIONS": env.telegram_tool_notifications,
             }
         )
-        adk_runtime = create_adk_runtime(env)
+        telegram_app = create_app(
+            create_agent(include_user_scoped_tools=True),
+        )
+        adk_runtime = create_adk_runtime(env, agent_app=telegram_app)
         _telegram_bot = TelegramBot(telegram_config, adk_runtime)
         logger.info("Telegram bot instance created")
 
@@ -131,16 +138,6 @@ AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 
 DEFAULT_SQLITE_PATH = str(Path(AGENT_DIR) / ".adk" / "tools.db")
 
-app: FastAPI = get_fast_api_app(
-    agents_dir=AGENT_DIR,
-    session_service_uri=None,
-    artifact_service_uri=None,
-    memory_service_uri="mem0://",
-    allow_origins=env.allow_origins_list,
-    web=env.serve_web_interface,
-    reload_agents=env.reload_agents,
-)
-
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -192,7 +189,16 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await close_shared_notify_client()
 
 
-app.router.lifespan_context = lifespan
+app: FastAPI = get_fast_api_app(
+    agents_dir=AGENT_DIR,
+    session_service_uri=None,
+    artifact_service_uri=None,
+    memory_service_uri="mem0://",
+    allow_origins=env.allow_origins_list,
+    web=env.serve_web_interface,
+    reload_agents=env.reload_agents,
+    lifespan=lifespan,
+)
 
 
 @app.get("/live")

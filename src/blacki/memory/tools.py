@@ -109,7 +109,7 @@ async def save_memory(
 
     try:
         result = client.add(text, user_id=user_id)
-        logger.info("Saved memory for user %s: %s", user_id, text[:50])
+        logger.info("Saved memory for user %s", user_id)
         return {
             "status": "success",
             "result": result,
@@ -173,9 +173,8 @@ async def search_memory(
             )
 
         logger.info(
-            "Found %d memories for query '%s' (user: %s)",
+            "Found %d memories for user %s",
             len(formatted_results),
-            query[:30],
             user_id,
         )
 
