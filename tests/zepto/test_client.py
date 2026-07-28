@@ -13,6 +13,7 @@ import pytest
 from google.adk.agents.readonly_context import ReadonlyContext
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 from mcp import StdioServerParameters
@@ -22,6 +23,7 @@ from blacki.zepto.client import (
     _ALLOWED_FILENAMES,
     _SERVER_HASH,
     BRIDGE_CONNECT_TIMEOUT_SECONDS,
+    FINAL_ORDER_PAYMENT_TOOL_NAMES,
     MCP_REMOTE_PACKAGE_VERSION,
     REQUIRED_SCOPE,
     ZEPTO_MCP_URL,
@@ -31,8 +33,10 @@ from blacki.zepto.client import (
     _absolute,
     _bridge_environment,
     _is_allowed_private_telegram_user,
+    _is_supported_zepto_tool,
     _locked_checkout_bridge,
     _read_private_object,
+    _requires_zepto_order_confirmation,
     _resolve_bridge_command,
     _validate_owner_and_mode,
     _verified_bridge_binary,
@@ -537,18 +541,30 @@ async def test_authorized_toolset_short_circuits_before_bridge() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_zepto_manifest_tools_stop_at_confirmation_boundary() -> None:
+async def test_zepto_manifest_uses_final_order_confirmation_policy() -> None:
     toolset = AuthorizedZeptoToolset(
         allowed_chat_ids=frozenset({"123"}),
         connection_params=StdioConnectionParams(
             server_params=StdioServerParameters(command="/bin/false")
         ),
         tool_name_prefix="zepto",
-        require_confirmation=True,
+        tool_filter=_is_supported_zepto_tool,
+        require_confirmation=_requires_zepto_order_confirmation,
     )
     manifest = ListToolsResult(
         tools=[
-            Tool(name=name, description=name, inputSchema={"type": "object"})
+            Tool(
+                name=name,
+                description=name,
+                inputSchema={
+                    "type": "object",
+                    "properties": (
+                        {"confirmOrder": {"type": "boolean"}}
+                        if name in FINAL_ORDER_PAYMENT_TOOL_NAMES
+                        else {}
+                    ),
+                },
+            )
             for name in sorted(ZEPTO_TOOL_NAMES)
         ]
     )
@@ -563,17 +579,42 @@ async def test_all_zepto_manifest_tools_stop_at_confirmation_boundary() -> None:
     create_session = AsyncMock()
 
     assert {tool.name for tool in tools} == {
-        f"zepto_{name}" for name in ZEPTO_TOOL_NAMES
+        f"zepto_{name}" for name in ZEPTO_TOOL_NAMES - {"zepto_shop"}
     }
+    assert "zepto_zepto_shop" not in {tool.name for tool in tools}
     with patch.object(
         toolset._mcp_session_manager,
         "create_session",
         new=create_session,
     ):
         for tool in tools:
+            assert isinstance(tool, McpTool)
             context = MagicMock(spec=ToolContext)
             context.tool_confirmation = None
-            result = await tool.run_async(args={}, tool_context=context)
+            assert await tool.check_require_confirmation({}, context) is False
+
+            tool_name = tool.name.removeprefix("zepto_")
+            if tool_name not in FINAL_ORDER_PAYMENT_TOOL_NAMES:
+                continue
+
+            assert (
+                await tool.check_require_confirmation(
+                    {"confirmOrder": False},
+                    context,
+                )
+                is False
+            )
+            assert (
+                await tool.check_require_confirmation(
+                    {"confirmOrder": True},
+                    context,
+                )
+                is True
+            )
+            result = await tool.run_async(
+                args={"confirmOrder": True},
+                tool_context=context,
+            )
             assert result == {
                 "error": (
                     "This tool call requires confirmation, please approve or reject."
@@ -581,6 +622,29 @@ async def test_all_zepto_manifest_tools_stop_at_confirmation_boundary() -> None:
             }
             context.request_confirmation.assert_called_once()
     create_session.assert_not_awaited()
+
+
+@pytest.mark.parametrize("malformed_value", [None, 0, "false", {}, []])
+def test_order_confirmation_fails_closed_for_malformed_values(
+    malformed_value: object,
+) -> None:
+    assert _requires_zepto_order_confirmation() is False
+    assert _requires_zepto_order_confirmation(confirmOrder=False) is False
+    assert _requires_zepto_order_confirmation(confirmOrder=True) is True
+    assert _requires_zepto_order_confirmation(confirmOrder=malformed_value) is True
+
+
+def test_zepto_skill_uses_only_adk_final_confirmation() -> None:
+    skill_path = (
+        Path(__file__).parents[2] / "src" / "blacki" / "skills" / "zepto" / "SKILL.md"
+    )
+    instructions = skill_path.read_text(encoding="utf-8")
+
+    assert "Every Zepto tool call requires" not in instructions
+    assert "without asking for approval" in instructions
+    assert "`confirmOrder=false`" in instructions
+    assert "`confirmOrder=true`" in instructions
+    assert "Do not ask separately" in instructions
 
 
 def test_create_toolset_requires_private_allowlist_and_ready_store(
@@ -607,7 +671,8 @@ def test_create_toolset_requires_private_allowlist_and_ready_store(
 
     assert isinstance(toolset, AuthorizedZeptoToolset)
     assert toolset.tool_name_prefix == "zepto"
-    assert toolset._require_confirmation is True
+    assert toolset.tool_filter is _is_supported_zepto_tool
+    assert toolset._require_confirmation is _requires_zepto_order_confirmation
     connection = toolset._connection_params
     assert isinstance(connection, StdioConnectionParams)
     assert connection.server_params == server
