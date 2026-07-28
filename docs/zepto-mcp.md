@@ -15,7 +15,9 @@ clients.
 - Zepto is loaded into a Telegram-only ADK runner. The unauthenticated ADK HTTP
   runner never receives the Zepto skill or toolset, even if a caller spoofs an
   allowlisted Telegram user ID.
-- Every `zepto_*` tool call requires confirmation, including read calls.
+- Only final order or payment calls with `confirmOrder=true` require ADK
+  confirmation. Reads, cart changes, address changes, and order previews run
+  without approval.
 - Credentials are plaintext protected by `0700` directories and `0600` files.
 - ADK session history retains shopping prompts, tool arguments, and results.
   The configured model also receives tool data needed to answer the request.
@@ -35,9 +37,9 @@ uv run python -m blacki.zepto.auth login
 Blacki starts the exact locked `mcp-remote` bridge, which opens Zepto's
 mobile-number and OTP flow in the browser. The bridge requests Zepto's
 `tools:read` MCP scope with PKCE. That scope authorizes access to the tool
-server; write-capable shopping tools remain protected separately by Blacki's
-confirmation gate. The command then lists the complete tool manifest without
-calling any shopping tool.
+server; Blacki separately confirms only final order or payment placement. The
+command then lists the complete tool manifest without calling any shopping
+tool.
 
 The default credential directory is:
 
@@ -76,16 +78,18 @@ ZEPTO_MCP_CONFIG_DIR=data/credentials/zepto-mcp-remote
 ```
 
 Restart Blacki, then ask it to search Zepto or inspect the cart. The first
-request loads the Zepto skill. Blacki shows the exact tool name and arguments;
+request loads the Zepto skill and non-final tools run directly. When a final
+order or payment call is ready, Blacki shows its exact tool name and arguments;
 reply exactly `yes` or `no`.
 
 ## Verification boundary
 
-Tool discovery and read calls are safe local verification. Write-capable tools
-can be verified up to their confirmation interrupt without changing Zepto.
-A reversible cart mutation still requires explicit approval and must be
-restored afterward. Never place, pay for, cancel, or reorder a real order only
-to test this integration.
+Tool discovery and read calls are safe local verification. Order and payment
+tools can generate a preview with `confirmOrder=false`; `confirmOrder=true`
+stops at the confirmation interrupt before the real final action. Cart,
+address, store, and profile mutations execute without approval and affect the
+shared account immediately. Never place, pay for, cancel, or reorder a real
+order only to test this integration.
 
 ## Runtime and deployment notes
 

@@ -19,6 +19,14 @@ from mcp.client.stdio import get_default_environment
 
 ZEPTO_MCP_URL = "https://mcp.zepto.co.in/mcp"
 ZEPTO_TOOL_PREFIX = "zepto"
+FINAL_ORDER_PAYMENT_TOOL_NAMES = frozenset(
+    {
+        "create_online_payment_order",
+        "create_order",
+        "create_upi_reserve_pay_order",
+        "create_wallet_order",
+    }
+)
 REQUIRED_SCOPE = "tools:read"
 MCP_REMOTE_PACKAGE_VERSION = "0.1.38"
 # mcp-remote 0.1.38's bundled storage namespace still reports 0.1.37.
@@ -341,6 +349,22 @@ def _is_allowed_private_telegram_user(
     return chat_id.isdigit() and chat_id in allowed_chat_ids
 
 
+def _is_supported_zepto_tool(
+    tool: BaseTool,
+    readonly_context: ReadonlyContext | None = None,
+) -> bool:
+    """Exclude Zepto's conversational wrapper from individual MCP tool use."""
+    del readonly_context
+    return tool.name != "zepto_shop"
+
+
+def _requires_zepto_order_confirmation(
+    confirmOrder: object = False,  # noqa: N803 - external Zepto MCP field
+) -> bool:
+    """Confirm only calls that can finalize a real Zepto order or payment."""
+    return confirmOrder is not False
+
+
 class AuthorizedZeptoToolset(McpToolset):
     """MCP toolset that refuses bridge startup for unauthorized identities."""
 
@@ -388,5 +412,6 @@ def create_zepto_toolset(
             timeout=BRIDGE_CONNECT_TIMEOUT_SECONDS,
         ),
         tool_name_prefix=ZEPTO_TOOL_PREFIX,
-        require_confirmation=True,
+        tool_filter=_is_supported_zepto_tool,
+        require_confirmation=_requires_zepto_order_confirmation,
     )

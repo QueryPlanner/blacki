@@ -72,11 +72,12 @@ Startup still requires at least one model API key.
 Zepto is registered only on a Telegram-specific root-agent runner. The public
 ADK HTTP runner and delegated task worker never receive the Zepto toolset.
 Unauthorized Telegram identities are rejected before Blacki opens an MCP
-connection, and every Zepto tool requires an ADK confirmation. Its OAuth files
-is plaintext protected by a `0700` directory and `0600` file permissions; it
-is not encrypted. Shopping prompts, tool calls, and results remain in the local
-ADK session database and are sent to the configured model as part of normal
-agent execution.
+connection. ADK confirmation is required only when an order or payment tool
+uses `confirmOrder=true`; other individual Zepto tools run directly. Its OAuth
+files are plaintext protected by a `0700` directory and `0600` file
+permissions; they are not encrypted. Shopping prompts, tool calls, and results
+remain in the local ADK session database and are sent to the configured model
+as part of normal agent execution.
 
 ### Sandbox credential threat model
 
