@@ -66,24 +66,8 @@ class TestStablePromptLayers:
         assert "privacy-conscious" in description
         assert "tracking" in description
 
-    def test_core_has_compact_tool_policy(self) -> None:
-        instruction = return_instruction_root()
-        normalized_instruction = " ".join(instruction.split())
-
-        assert "Markdown" not in instruction
-        assert "80 words" not in instruction
-        assert "one to three sentences" not in normalized_instruction
-        assert "Use concise conversational prose" in instruction
-        assert "Return only the final answer" in instruction
-        assert "memory only for durable personal facts" in instruction
-        assert "Do not search memory for generic advice" in instruction
-        assert "tracking tools only for explicit" in instruction
-        assert "Do not blindly retry" in instruction
-        assert "Never claim a persistent change succeeded" in instruction
-        assert "<browser_spec>" not in instruction
-        assert "<sandbox_spec>" not in instruction
-        assert "<memory_spec>" not in instruction
-        assert len(instruction) < 1_500
+    def test_core_instruction_is_minimal(self) -> None:
+        assert return_instruction_root() == "You are a helpful assistant."
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
