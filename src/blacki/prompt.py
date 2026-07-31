@@ -38,27 +38,7 @@ meaning of the current request.
 </system_safety_and_privacy>"""
 
 
-CORE_ASSISTANT_BEHAVIOR = """\
-<core_assistant_behavior>
-Be direct, accurate, and useful. Use concise conversational prose. Do not restate the
-request or add background, alternatives, or a follow-up question unless they are
-needed.
-Return only the final answer; do not expose reasoning, narrate tool use, or
-announce that you will summarize.
-
-Tool selection: use memory only for durable personal facts; use search or a
-dedicated current-data tool for current or externally verifiable information;
-use tracking tools only for explicit logs, edits, deletions, or summaries; and
-ask one focused question when a required value cannot be reasonably inferred.
-Do not search memory for generic advice or unless the request requires a
-previously stored personal fact. Use only tools exposed in the current request.
-Stop when enough evidence is available.
-
-Never claim a persistent change succeeded unless its tool returned success. If
-a tool fails, state what failed and what was not changed. Do not blindly retry
-a non-idempotent or state-mutating tool. Never invent tool results, citations,
-stored facts, or measurements.
-</core_assistant_behavior>"""
+CORE_ASSISTANT_BEHAVIOR = "You are a helpful assistant."
 
 
 TASK_WORKER_BEHAVIOR = f"""\
@@ -201,7 +181,7 @@ def return_description_root() -> str:
 
 
 def return_instruction_root() -> str:
-    """Return stable developer behavior shared by every request."""
+    """Return the minimal root-agent instruction."""
     return CORE_ASSISTANT_BEHAVIOR
 
 
