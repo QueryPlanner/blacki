@@ -3,7 +3,7 @@
 import inspect
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -319,12 +319,14 @@ class AdkRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        user_parts: Sequence[types.Part] | None = None,
     ) -> str:
         """Run one user turn through ADK and return the final assistant text."""
         response = await self.run_user_turn_with_thoughts(
             locator=locator,
             message_text=message_text,
             state=state,
+            user_parts=user_parts,
         )
         return response.content or DEFAULT_EMPTY_RESPONSE
 
@@ -334,8 +336,9 @@ class AdkRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        user_parts: Sequence[types.Part] | None = None,
     ) -> TurnResponse:
-        """Run one user turn through ADK and return structured response."""
+        """Run one text or multimodal user turn and return structured response."""
         session = await self.get_or_create_session(locator=locator, state=state)
         pending_before_turn = _pending_confirmations(session)
         new_message = _confirmation_response(pending_before_turn, message_text)
@@ -350,7 +353,11 @@ class AdkRuntime:
         if new_message is None:
             new_message = types.Content(
                 role="user",
-                parts=[types.Part.from_text(text=message_text)],
+                parts=(
+                    list(user_parts)
+                    if user_parts is not None
+                    else [types.Part.from_text(text=message_text)]
+                ),
             )
 
         thoughts_parts: list[str] = []

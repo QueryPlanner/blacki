@@ -25,8 +25,10 @@ the ADK application plugins.
 
 1. The Telegram bot polls Telegram's HTTPS API for updates.
 2. A Telegram chat is mapped to the ADK runtime.
-3. The agent calls the configured model and tools.
-4. The response is sent back through Telegram's API.
+3. Text is sent as an ADK text part. Telegram photos are downloaded, validated,
+   and sent as caption/default text plus an inline JPEG part.
+4. The agent calls the configured model and tools.
+5. The response is sent back through Telegram's API.
 
 Long polling is outbound. It does not require a public webhook, domain, TLS
 certificate, or inbound application port.
@@ -46,6 +48,7 @@ Blacki uses different stores for different responsibilities:
 | ADK HTTP/web conversation sessions | In-memory ADK session service | No |
 | Reminders, calories, workouts, preferences, declarative data | SQLite | Yes |
 | Telegram runtime session metadata | SQLite-backed application state | Yes |
+| Telegram photo parts in ADK history | SQLite-backed session events | Yes |
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
 | Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
@@ -53,6 +56,10 @@ Blacki uses different stores for different responsibilities:
 
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
 first two as application state.
+
+Native Telegram photos are capped at 10 MB because ADK retains inline user
+parts in session history for later conversation turns. This bounds session
+database growth and image replay costs while preserving multimodal context.
 
 ## Managed integrations
 

@@ -213,6 +213,46 @@ async def test_run_user_turn_uses_final_non_partial_text() -> None:
     assert response == "Final answer"
 
 
+async def test_run_user_turn_sends_multimodal_parts_to_runner() -> None:
+    """Runtime should preserve text and inline image data in the ADK message."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+    image_bytes = b"\xff\xd8\xffimage"
+    user_parts = (
+        types.Part.from_text(text="Describe this image."),
+        types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        new_message = kwargs["new_message"]
+        assert isinstance(new_message, types.Content)
+        assert new_message.role == "user"
+        assert new_message.parts is not None
+        assert new_message.parts[0].text == "Describe this image."
+        assert new_message.parts[1].inline_data is not None
+        assert new_message.parts[1].inline_data.mime_type == "image/jpeg"
+        assert new_message.parts[1].inline_data.data == image_bytes
+        yield Event(
+            author="root_agent",
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text="An image")],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn(
+            locator=locator,
+            message_text="Describe this image.",
+            user_parts=user_parts,
+        )
+
+    assert response == "An image"
+
+
 async def test_run_user_turn_returns_default_when_events_have_no_text() -> None:
     """Test that empty ADK events fall back to the default empty response."""
     runtime = AdkRuntime(InMemorySessionService())
@@ -859,6 +899,10 @@ async def test_pending_confirmation_reprompts_or_resumes_same_call() -> None:
         response = await runtime.run_user_turn_with_thoughts(
             locator=locator,
             message_text="maybe",
+            user_parts=(
+                types.Part.from_text(text="maybe"),
+                types.Part.from_bytes(data=b"image", mime_type="image/jpeg"),
+            ),
         )
 
     assert "zepto_update_cart" in response.content
