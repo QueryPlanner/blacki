@@ -4,12 +4,13 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
+from google.genai import types
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
 from blacki.reminders.storage import Reminder
@@ -53,12 +54,14 @@ class RecordingRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        user_parts: Sequence[types.Part] | None = None,
     ) -> str:
         self.run_user_turn_calls.append(
             {
                 "locator": locator,
                 "message_text": message_text,
                 "state": state,
+                "user_parts": user_parts,
             }
         )
         if self.run_user_turn_error is not None:
@@ -71,12 +74,14 @@ class RecordingRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        user_parts: Sequence[types.Part] | None = None,
     ) -> TurnResponse:
         self.run_user_turn_calls.append(
             {
                 "locator": locator,
                 "message_text": message_text,
                 "state": state,
+                "user_parts": user_parts,
             }
         )
         if self.run_user_turn_error is not None:
@@ -92,12 +97,14 @@ class RecordingRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        user_parts: Sequence[types.Part] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.run_user_turn_calls.append(
             {
                 "locator": locator,
                 "message_text": message_text,
                 "state": state,
+                "user_parts": user_parts,
             }
         )
         if self.run_user_turn_error is not None:
@@ -2855,7 +2862,7 @@ class TestRouteNonTextMessage:
     ) -> None:
         """Test routing a photo message."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+        bot._handle_photo_upload = AsyncMock()  # type: ignore[method-assign]
 
         message = Message.model_validate(
             {
@@ -2874,6 +2881,7 @@ class TestRouteNonTextMessage:
                         "file_unique_id": "u2",
                         "width": 800,
                         "height": 600,
+                        "file_size": 2048,
                     },
                 ],
             }
@@ -2881,11 +2889,11 @@ class TestRouteNonTextMessage:
 
         await bot._route_non_text_message(message)
 
-        bot._handle_file_upload.assert_called_once_with(
+        bot._handle_photo_upload.assert_called_once_with(
             chat_id=123,
             message_thread_id=None,
             file_id="large",
-            file_name="photo.jpg",
+            file_size=2048,
             caption=None,
         )
 
@@ -3013,6 +3021,151 @@ class TestRouteNonTextMessage:
         await bot._route_non_text_message(message)
 
         bot._handle_file_upload.assert_not_called()
+
+
+class TestHandlePhotoUpload:
+    """Tests for native multimodal Telegram photo handling."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("caption", "expected_prompt"),
+        [
+            ("What is shown here?", "What is shown here?"),
+            (None, "Describe this image."),
+            ("   ", "Describe this image."),
+        ],
+    )
+    async def test_photo_reaches_runtime_as_image_part(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caption: str | None,
+        expected_prompt: str,
+    ) -> None:
+        """Photo bytes and caption should reach ADK without requiring a sandbox."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        image_bytes = b"\xff\xd8\xfftelegram-jpeg"
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/photo.jpg"})
+        mock_api.download_file = AsyncMock(return_value=image_bytes)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as get_manager:
+            await bot._handle_photo_upload(
+                chat_id=123,
+                message_thread_id=7,
+                file_id="photo123",
+                file_size=len(image_bytes),
+                caption=caption,
+            )
+
+        get_manager.assert_not_called()
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["message_text"] == expected_prompt
+        parts = call["user_parts"]
+        assert parts is not None
+        assert parts[0].text == expected_prompt
+        assert parts[1].inline_data is not None
+        assert parts[1].inline_data.mime_type == "image/jpeg"
+        assert parts[1].inline_data.data == image_bytes
+        mock_api.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_photo_rejects_reported_oversize_before_download(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """A reported photo over 10 MB should be rejected before downloading."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_photo_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="large-photo",
+            file_size=10 * 1024 * 1024 + 1,
+            caption=None,
+        )
+
+        mock_api.get_file.assert_not_awaited()
+        assert runtime_recorder.run_user_turn_calls == []
+        assert "too large" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("file_info", "downloaded"),
+        [
+            ({}, None),
+            ({"file_path": "photos/empty.jpg"}, b""),
+            ({"file_path": "photos/not-jpeg.jpg"}, b"not a jpeg"),
+            (
+                {"file_path": "photos/too-large.jpg"},
+                b"\xff\xd8\xff" + b"x" * (10 * 1024 * 1024),
+            ),
+        ],
+    )
+    async def test_photo_rejects_invalid_downloads(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        file_info: dict[str, str],
+        downloaded: bytes | None,
+    ) -> None:
+        """Missing, empty, invalid, and oversized downloads should fail safely."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value=file_info)
+        mock_api.download_file = AsyncMock(return_value=downloaded)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_photo_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="photo123",
+            file_size=None,
+            caption=None,
+        )
+
+        assert runtime_recorder.run_user_turn_calls == []
+        assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_photo_handles_runtime_failure_without_logging_content(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Model failures should not log image or caption data."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        private_caption = "private caption value"
+        image_bytes = b"\xff\xd8\xffprivate-image-value"
+        runtime_recorder.run_user_turn_error = RuntimeError("model rejected image")
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/photo.jpg"})
+        mock_api.download_file = AsyncMock(return_value=image_bytes)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_photo_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="photo123",
+            file_size=len(image_bytes),
+            caption=private_caption,
+        )
+
+        assert private_caption not in caplog.text
+        assert "private-image-value" not in caplog.text
+        assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
 
 
 class TestHandleFileUpload:

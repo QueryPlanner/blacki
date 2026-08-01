@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from google.genai import types
+
 from blacki.adk_runtime import AdkRuntime, SessionLocator
 from blacki.reminders.storage import Reminder
 from blacki.utils.preferences import get_preferences_storage
@@ -31,6 +33,9 @@ POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
+_MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_DEFAULT_IMAGE_PROMPT = "Describe this image."
 
 MODEL_CHOICES = {
     "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),
@@ -268,12 +273,20 @@ class TelegramBot:
         chat_id = message.chat.id
         message_thread_id = message.message_thread_id
 
+        if message.photo:
+            photo = max(message.photo, key=lambda item: item.width * item.height)
+            await self._handle_photo_upload(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                file_id=photo.file_id,
+                file_size=photo.file_size,
+                caption=message.caption,
+            )
+            return
+
         if message.document:
             file_id = message.document.file_id
             file_name = message.document.file_name or "document"
-        elif message.photo:
-            file_id = message.photo[-1].file_id
-            file_name = "photo.jpg"
         elif message.audio:
             file_id = message.audio.file_id
             file_name = message.audio.file_name or "audio.mp3"
@@ -293,6 +306,98 @@ class TelegramBot:
             file_id=file_id,
             file_name=file_name,
             caption=message.caption,
+        )
+
+    async def _handle_photo_upload(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        file_id: str,
+        file_size: int | None,
+        caption: str | None,
+    ) -> None:
+        """Download a Telegram photo and send it to ADK as native image input."""
+        if file_size is not None and file_size > _MAX_NATIVE_IMAGE_BYTES:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ The photo is too large to process (10 MB maximum).",
+            )
+            return
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+        )
+
+        try:
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
+            file_info = await self.api.get_file(file_id)
+            file_path_api = file_info.get("file_path")
+            if not file_path_api:
+                raise ValueError("Telegram did not return a photo file path")
+
+            image_bytes = await self.api.download_file(file_path_api)
+            if not image_bytes:
+                raise ValueError("Telegram returned an empty photo")
+            if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
+                raise ValueError("Telegram photo exceeds the 10 MB limit")
+            if not image_bytes.startswith(_JPEG_MAGIC):
+                raise ValueError("Telegram photo is not a JPEG image")
+
+            prompt = (
+                caption.strip()
+                if caption and caption.strip()
+                else _DEFAULT_IMAGE_PROMPT
+            )
+            user_parts = (
+                types.Part.from_text(text=prompt),
+                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            )
+            final_response = await self.runtime.run_user_turn(
+                locator=SessionLocator(
+                    user_id=session_identity.user_id,
+                    session_id_prefix=session_identity.session_id_prefix,
+                ),
+                message_text=prompt,
+                state=state,
+                user_parts=user_parts,
+            )
+            await self._send_final_response(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                response_text=final_response,
+            )
+        except Exception:
+            logger.exception("Failed to handle Telegram photo")
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ Sorry, I failed to process the photo.",
+            )
+
+    async def _send_photo_error(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        text: str,
+    ) -> None:
+        """Send a plain-text photo processing error."""
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=text,
+            message_thread_id=message_thread_id,
         )
 
     async def _handle_command(self, message: Message, command: str) -> None:

@@ -61,6 +61,13 @@ Open the bot in Telegram and send:
 Then send a normal message and confirm the model responds. Blacki does not
 currently implement a `/clear` command.
 
+To verify image input, select a vision-capable model, send a Telegram photo,
+and optionally add a caption as the instruction. Without a caption, Blacki asks
+the model to describe the image. Native photo input is limited to 10 MB;
+documents, audio, video, and voice messages continue to use the sandbox upload
+path. A model that does not support images will return the normal photo
+processing error without changing the selected model.
+
 ## Tool notifications
 
 `TELEGRAM_TOOL_NOTIFICATIONS=true` sends short tool-use notices for Telegram
