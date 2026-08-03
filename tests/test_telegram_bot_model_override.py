@@ -359,9 +359,18 @@ async def test_reasoning_menu_hides_off_for_mandatory_model(bot: TelegramBot) ->
 async def test_thinking_menu_falls_back_when_capability_client_fails(
     bot: TelegramBot,
 ) -> None:
-    with patch(
-        "blacki.telegram.bot.OpenRouterModelCapabilitiesResolver",
-        side_effect=RuntimeError("capability client unavailable"),
+    with (
+        patch.object(
+            bot,
+            "_load_chat_profile",
+            AsyncMock(
+                return_value=InferenceProfile(model="openrouter/openai/gpt-5.6-luna")
+            ),
+        ),
+        patch(
+            "blacki.telegram.bot.OpenRouterModelCapabilitiesResolver",
+            side_effect=RuntimeError("capability client unavailable"),
+        ),
     ):
         await bot._send_thinking_menu(chat_id=123, message_thread_id=None)
 
@@ -687,6 +696,10 @@ async def test_resolve_capabilities_uses_cached_resolver(bot: TelegramBot) -> No
 
     resolver.resolve.assert_awaited_once()
     assert resolver.resolve.await_args.args == ("openrouter/openai/gpt-5.6-luna",)
+
+
+def test_model_display_name_handles_unknown_future_model(bot: TelegramBot) -> None:
+    assert bot._model_display_name("openrouter/acme/future-model") == "future-model"
 
 
 def test_reasoning_display_inherits_when_only_token_budget_is_set(
