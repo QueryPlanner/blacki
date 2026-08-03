@@ -66,6 +66,12 @@ ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
     Blacki builds a LiteLLM model and normalizes common model identifiers to
     OpenRouter form when this key is present.
 
+    Set `ROOT_AGENT_REASONING_EFFORT` to configure the process-wide reasoning
+    fallback. Supported values are `max`, `xhigh`, `high`, `medium`, `low`,
+    `minimal`, and `none`; leave it unset to inherit the provider default.
+    A Telegram chat's explicit thinking selection overrides this fallback for
+    that chat. Only configure an effort advertised by the selected model.
+
 === "Google AI Studio"
 
     ```dotenv

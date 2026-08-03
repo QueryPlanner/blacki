@@ -19,6 +19,7 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
+from .inference import InferenceProfile, inference_profile_context
 from .utils.config import ServerEnv
 
 logger = logging.getLogger(__name__)
@@ -320,6 +321,7 @@ class AdkRuntime:
         message_text: str,
         state: dict[str, Any] | None = None,
         user_parts: Sequence[types.Part] | None = None,
+        inference_profile: InferenceProfile | None = None,
     ) -> str:
         """Run one user turn through ADK and return the final assistant text."""
         response = await self.run_user_turn_with_thoughts(
@@ -327,6 +329,7 @@ class AdkRuntime:
             message_text=message_text,
             state=state,
             user_parts=user_parts,
+            inference_profile=inference_profile,
         )
         return response.content or DEFAULT_EMPTY_RESPONSE
 
@@ -337,6 +340,7 @@ class AdkRuntime:
         message_text: str,
         state: dict[str, Any] | None = None,
         user_parts: Sequence[types.Part] | None = None,
+        inference_profile: InferenceProfile | None = None,
     ) -> TurnResponse:
         """Run one text or multimodal user turn and return structured response."""
         session = await self.get_or_create_session(locator=locator, state=state)
@@ -366,64 +370,65 @@ class AdkRuntime:
         partial_content = ""
         pending_after_turn: list[PendingConfirmation] = []
 
-        async for event in self.runner.run_async(
-            user_id=locator.user_id,
-            session_id=session.id,
-            new_message=new_message,
-            state_delta=state,
-        ):
-            self._raise_on_event_error(event)
-            for function_call in event.get_function_calls():
-                if function_call.name != _CONFIRMATION_FUNCTION:
-                    continue
-                args = function_call.args or {}
-                original = args.get("originalFunctionCall")
-                if (
-                    not function_call.id
-                    or not isinstance(original, dict)
-                    or not isinstance(original.get("name"), str)
-                    or not isinstance(original.get("args", {}), dict)
-                ):
-                    continue
-                pending_after_turn.append(
-                    PendingConfirmation(
-                        interrupt_id=function_call.id,
-                        tool_name=original["name"],
-                        tool_args=original.get("args", {}),
+        with inference_profile_context(inference_profile):
+            async for event in self.runner.run_async(
+                user_id=locator.user_id,
+                session_id=session.id,
+                new_message=new_message,
+                state_delta=state,
+            ):
+                self._raise_on_event_error(event)
+                for function_call in event.get_function_calls():
+                    if function_call.name != _CONFIRMATION_FUNCTION:
+                        continue
+                    args = function_call.args or {}
+                    original = args.get("originalFunctionCall")
+                    if (
+                        not function_call.id
+                        or not isinstance(original, dict)
+                        or not isinstance(original.get("name"), str)
+                        or not isinstance(original.get("args", {}), dict)
+                    ):
+                        continue
+                    pending_after_turn.append(
+                        PendingConfirmation(
+                            interrupt_id=function_call.id,
+                            tool_name=original["name"],
+                            tool_args=original.get("args", {}),
+                        )
+                    )
+
+                has_function_call = (
+                    event.content is not None
+                    and event.content.parts
+                    and any(
+                        getattr(p, "function_call", None) is not None
+                        for p in event.content.parts
                     )
                 )
 
-            has_function_call = (
-                event.content is not None
-                and event.content.parts
-                and any(
-                    getattr(p, "function_call", None) is not None
-                    for p in event.content.parts
-                )
-            )
+                if event.content and event.content.parts:
+                    event_thoughts = " ".join(
+                        p.text
+                        for p in event.content.parts
+                        if getattr(p, "thought", False) and p.text
+                    )
+                    event_content = " ".join(
+                        p.text
+                        for p in event.content.parts
+                        if not getattr(p, "thought", False) and p.text
+                    )
 
-            if event.content and event.content.parts:
-                event_thoughts = " ".join(
-                    p.text
-                    for p in event.content.parts
-                    if getattr(p, "thought", False) and p.text
-                )
-                event_content = " ".join(
-                    p.text
-                    for p in event.content.parts
-                    if not getattr(p, "thought", False) and p.text
-                )
-
-                if event_thoughts:
-                    if event.partial:
-                        partial_thoughts = event_thoughts
-                    else:
-                        thoughts_parts.append(event_thoughts)
-                if event_content and not has_function_call:
-                    if event.partial:
-                        partial_content = event_content
-                    else:
-                        content_parts.append(event_content)
+                    if event_thoughts:
+                        if event.partial:
+                            partial_thoughts = event_thoughts
+                        else:
+                            thoughts_parts.append(event_thoughts)
+                    if event_content and not has_function_call:
+                        if event.partial:
+                            partial_content = event_content
+                        else:
+                            content_parts.append(event_content)
 
         final_thoughts = " ".join(thoughts_parts).strip() or partial_thoughts
         final_content = " ".join(content_parts).strip() or partial_content
@@ -444,6 +449,7 @@ class AdkRuntime:
         locator: SessionLocator,
         message_text: str,
         state: dict[str, Any] | None = None,
+        inference_profile: InferenceProfile | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Yield streaming chunks as ADK events arrive.
 
@@ -460,33 +466,34 @@ class AdkRuntime:
 
         streaming_config = RunConfig(streaming_mode=StreamingMode.SSE)
 
-        async for event in self.runner.run_async(
-            user_id=locator.user_id,
-            session_id=session.id,
-            new_message=new_message,
-            run_config=streaming_config,
-            state_delta=state,
-        ):
-            self._raise_on_event_error(event)
+        with inference_profile_context(inference_profile):
+            async for event in self.runner.run_async(
+                user_id=locator.user_id,
+                session_id=session.id,
+                new_message=new_message,
+                run_config=streaming_config,
+                state_delta=state,
+            ):
+                self._raise_on_event_error(event)
 
-            if event.content and event.content.parts:
-                event_thoughts = " ".join(
-                    p.text
-                    for p in event.content.parts
-                    if getattr(p, "thought", False) and p.text
-                )
-                event_content = " ".join(
-                    p.text
-                    for p in event.content.parts
-                    if not getattr(p, "thought", False) and p.text
-                )
-
-                if event_thoughts or event_content:
-                    yield StreamChunk(
-                        thoughts=event_thoughts,
-                        content=event_content,
-                        is_partial=True,
+                if event.content and event.content.parts:
+                    event_thoughts = " ".join(
+                        p.text
+                        for p in event.content.parts
+                        if getattr(p, "thought", False) and p.text
                     )
+                    event_content = " ".join(
+                        p.text
+                        for p in event.content.parts
+                        if not getattr(p, "thought", False) and p.text
+                    )
+
+                    if event_thoughts or event_content:
+                        yield StreamChunk(
+                            thoughts=event_thoughts,
+                            content=event_content,
+                            is_partial=True,
+                        )
 
         yield StreamChunk(
             thoughts="",

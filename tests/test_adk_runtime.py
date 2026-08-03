@@ -1,6 +1,7 @@
 # mypy: disable-error-code="no-untyped-def"
 """Tests for shared ADK runtime helpers."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,12 @@ from blacki.adk_runtime import (
     build_session_service_uri,
     create_adk_runtime,
     create_session_service,
+)
+from blacki.inference import (
+    InferenceProfile,
+    ReasoningConfig,
+    ReasoningEffort,
+    get_active_inference_profile,
 )
 from blacki.utils.config import ServerEnv
 
@@ -211,6 +218,156 @@ async def test_run_user_turn_uses_final_non_partial_text() -> None:
         response = await runtime.run_user_turn(locator=locator, message_text="Hello")
 
     assert response == "Final answer"
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_scopes_inference_profile_across_runner_stream() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-profile",
+        session_id_prefix="telegram-chat-profile",
+    )
+    profile = InferenceProfile(
+        model="openrouter/openai/gpt-5.6-luna",
+        reasoning=ReasoningConfig(effort=ReasoningEffort.MAX),
+    )
+    observed: list[InferenceProfile | None] = []
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        observed.append(get_active_inference_profile())
+        yield Event(
+            author="root_agent",
+            content=types.Content(
+                role="model", parts=[types.Part.from_text(text="Scoped")]
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn(
+            locator=locator,
+            message_text="Hello",
+            inference_profile=profile,
+        )
+
+    assert response == "Scoped"
+    assert observed == [profile]
+    assert get_active_inference_profile() is None
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_resets_inference_profile_after_runner_error() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-error",
+        session_id_prefix="telegram-chat-error",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        assert get_active_inference_profile() is not None
+        yield Event(
+            author="root_agent",
+            error_code="model_failed",
+            error_message="model failed",
+        )
+
+    with (
+        patch.object(runtime.runner, "run_async", fake_run_async),
+        pytest.raises(RuntimeError, match="model failed"),
+    ):
+        await runtime.run_user_turn(
+            locator=locator,
+            message_text="Hello",
+            inference_profile=InferenceProfile(model="error-model"),
+        )
+
+    assert get_active_inference_profile() is None
+
+
+@pytest.mark.asyncio
+async def test_run_user_turn_resets_inference_profile_after_cancellation() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-cancel",
+        session_id_prefix="telegram-chat-cancel",
+    )
+    started = asyncio.Event()
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        assert get_active_inference_profile() is not None
+        started.set()
+        await asyncio.Event().wait()
+        yield Event(author="root_agent")
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        task = asyncio.create_task(
+            runtime.run_user_turn(
+                locator=locator,
+                message_text="Hello",
+                inference_profile=InferenceProfile(model="cancel-model"),
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert get_active_inference_profile() is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turns_keep_inference_profiles_isolated() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    first_locator = SessionLocator(
+        user_id="telegram-chat-first",
+        session_id_prefix="telegram-chat-first",
+    )
+    second_locator = SessionLocator(
+        user_id="telegram-chat-second",
+        session_id_prefix="telegram-chat-second",
+    )
+    profiles = {
+        first_locator.session_id_prefix: InferenceProfile(model="first-model"),
+        second_locator.session_id_prefix: InferenceProfile(model="second-model"),
+    }
+    ready = set[str]()
+    all_ready = asyncio.Event()
+    observed: dict[str, InferenceProfile | None] = {}
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        session_id = str(kwargs["session_id"])
+        observed[session_id] = get_active_inference_profile()
+        ready.add(session_id)
+        if len(ready) == 2:
+            all_ready.set()
+        await all_ready.wait()
+        yield Event(
+            author="root_agent",
+            content=types.Content(
+                role="model", parts=[types.Part.from_text(text=session_id)]
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        first, second = await asyncio.gather(
+            runtime.run_user_turn(
+                locator=first_locator,
+                message_text="first",
+                inference_profile=profiles[first_locator.session_id_prefix],
+            ),
+            runtime.run_user_turn(
+                locator=second_locator,
+                message_text="second",
+                inference_profile=profiles[second_locator.session_id_prefix],
+            ),
+        )
+
+    assert first == f"{first_locator.session_id_prefix}-v1"
+    assert second == f"{second_locator.session_id_prefix}-v1"
+    assert observed == {f"{key}-v1": value for key, value in profiles.items()}
+    assert get_active_inference_profile() is None
 
 
 async def test_run_user_turn_sends_multimodal_parts_to_runner() -> None:

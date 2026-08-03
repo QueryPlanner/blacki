@@ -19,6 +19,13 @@ from .callbacks import (
     notify_telegram_before_tool,
     telegram_tool_notifications_enabled,
 )
+from .inference import (
+    InferenceProfile,
+    apply_inference_profile,
+    get_active_inference_profile,
+    inference_profile_from_environment,
+    load_inference_profile,
+)
 from .privacy import (
     PrivacyAwareLoggingPlugin,
     configure_zepto_privacy,
@@ -59,32 +66,50 @@ class TelegramModelOverridePlugin(BasePlugin):
     async def before_model_callback(
         self, *, callback_context: CallbackContext, llm_request: LlmRequest
     ) -> None:
-        if not callback_context.session:
-            return
+        profile = get_active_inference_profile()
+        if profile is None:
+            profile = await self._load_fallback_profile(callback_context)
 
-        chat_id = callback_context.session.state.get("telegram_chat_id")
-        if not chat_id:
-            return
+        if profile.model:
+            model_name = profile.model
+            if self.normalize_openrouter:
+                model_name = _normalize_model_for_openrouter(model_name)
+            profile = profile.model_copy(update={"model": model_name})
+            logger.info("Overriding model for Telegram chat to: %s", model_name)
 
-        from .utils.preferences import get_preferences_storage
+        effective_model = profile.model or llm_request.model or ""
+        is_openrouter_request = (
+            self.normalize_openrouter
+            or effective_model.lower().startswith("openrouter/")
+        )
+        if profile.reasoning is not None and not is_openrouter_request:
+            logger.info(
+                "Ignoring OpenRouter reasoning controls for native model: %s",
+                effective_model,
+            )
+            profile = profile.model_copy(update={"reasoning": None})
 
-        try:
-            storage = get_preferences_storage()
-            model_override = await storage.get(chat_id, "telegram_model_override")
-        except Exception:
-            logger.exception("Failed to fetch preferences for model override")
-            return
+        apply_inference_profile(llm_request, profile)
 
-        if not model_override:
-            return
+    async def _load_fallback_profile(
+        self,
+        callback_context: CallbackContext,
+    ) -> InferenceProfile:
+        """Resolve preferences when a transport did not provide a snapshot."""
+        chat_id: object | None = None
+        if callback_context.session:
+            chat_id = callback_context.session.state.get("telegram_chat_id")
 
-        logger.info("Overriding model for Telegram chat to: %s", model_override)
+        if chat_id:
+            from .utils.preferences import get_preferences_storage
 
-        # Normalize to litellm string format if OpenRouter API key is set
-        if self.normalize_openrouter:
-            model_override = _normalize_model_for_openrouter(model_override)
+            try:
+                storage = get_preferences_storage()
+                return await load_inference_profile(storage, str(chat_id))
+            except Exception:
+                logger.exception("Failed to fetch inference preferences")
 
-        llm_request.model = model_override
+        return inference_profile_from_environment()
 
 
 def _find_and_load_dotenv() -> None:
