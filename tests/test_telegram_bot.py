@@ -13,6 +13,7 @@ import pytest
 from google.genai import types
 
 from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
+from blacki.inference import InferenceProfile
 from blacki.reminders.storage import Reminder
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
@@ -55,6 +56,7 @@ class RecordingRuntime:
         message_text: str,
         state: dict[str, Any] | None = None,
         user_parts: Sequence[types.Part] | None = None,
+        inference_profile: Any | None = None,
     ) -> str:
         self.run_user_turn_calls.append(
             {
@@ -62,6 +64,7 @@ class RecordingRuntime:
                 "message_text": message_text,
                 "state": state,
                 "user_parts": user_parts,
+                "inference_profile": inference_profile,
             }
         )
         if self.run_user_turn_error is not None:
@@ -75,6 +78,7 @@ class RecordingRuntime:
         message_text: str,
         state: dict[str, Any] | None = None,
         user_parts: Sequence[types.Part] | None = None,
+        inference_profile: Any | None = None,
     ) -> TurnResponse:
         self.run_user_turn_calls.append(
             {
@@ -82,6 +86,7 @@ class RecordingRuntime:
                 "message_text": message_text,
                 "state": state,
                 "user_parts": user_parts,
+                "inference_profile": inference_profile,
             }
         )
         if self.run_user_turn_error is not None:
@@ -98,6 +103,7 @@ class RecordingRuntime:
         message_text: str,
         state: dict[str, Any] | None = None,
         user_parts: Sequence[types.Part] | None = None,
+        inference_profile: Any | None = None,
     ) -> AsyncIterator[StreamChunk]:
         self.run_user_turn_calls.append(
             {
@@ -105,6 +111,7 @@ class RecordingRuntime:
                 "message_text": message_text,
                 "state": state,
                 "user_parts": user_parts,
+                "inference_profile": inference_profile,
             }
         )
         if self.run_user_turn_error is not None:
@@ -1293,8 +1300,9 @@ class TestTelegramBotLifecycle:
 
         mock_api.set_my_commands.assert_called_once()
         commands = mock_api.set_my_commands.call_args.args[0]
-        assert len(commands) == 4
+        assert len(commands) == 5
         assert commands[0].command == "start"
+        assert {command.command for command in commands} >= {"model", "thinking"}
 
     @pytest.mark.asyncio
     async def test_register_commands_handles_error(
@@ -3064,6 +3072,7 @@ class TestHandlePhotoUpload:
         get_manager.assert_not_called()
         call = runtime_recorder.run_user_turn_calls[0]
         assert call["message_text"] == expected_prompt
+        assert isinstance(call["inference_profile"], InferenceProfile)
         parts = call["user_parts"]
         assert parts is not None
         assert parts[0].text == expected_prompt
