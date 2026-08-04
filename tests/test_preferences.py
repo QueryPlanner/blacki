@@ -6,7 +6,7 @@ import asyncio
 import aiosqlite
 import pytest
 
-from blacki.utils.preferences import SqlitePreferencesStorage
+from blacki.utils.preferences import PreferenceConflictError, SqlitePreferencesStorage
 
 
 @pytest.fixture
@@ -112,6 +112,51 @@ class TestSqlitePreferencesStorage:
         result = await storage.get("user1", "inference")
         assert result is not None
         assert result == {f"field_{index}": index for index in range(20)}
+
+    @pytest.mark.asyncio
+    async def test_update_dict_seeds_only_missing_default_fields(self, storage) -> None:
+        await storage.set(
+            "user1",
+            "inference",
+            {"reasoning": {"effort": "low"}},
+        )
+
+        migrated = await storage.update_dict(
+            "user1",
+            "inference",
+            {"reasoning": {"effort": "max"}},
+            defaults={"model": "legacy-model"},
+        )
+        preserved = await storage.update_dict(
+            "user1",
+            "inference",
+            {"reasoning": {"effort": "high"}},
+            defaults={"model": "stale-model"},
+        )
+
+        assert migrated["model"] == "legacy-model"
+        assert preserved == {
+            "model": "legacy-model",
+            "reasoning": {"effort": "high"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_update_dict_rejects_stale_expected_fields(self, storage) -> None:
+        await storage.set("user1", "inference", {"model": "new-model"})
+
+        with pytest.raises(
+            PreferenceConflictError,
+            match="Preference fields changed during update: model",
+        ):
+            await storage.update_dict(
+                "user1",
+                "inference",
+                {"reasoning": {"effort": "max"}},
+                defaults={"model": "old-model"},
+                expected={"model": "old-model"},
+            )
+
+        assert await storage.get("user1", "inference") == {"model": "new-model"}
 
     @pytest.mark.asyncio
     async def test_update_dict_recovers_from_malformed_json(

@@ -16,6 +16,7 @@ from blacki.inference import (
     InferenceProfile,
     ReasoningConfig,
     ReasoningEffort,
+    inference_profile_from_environment,
     load_inference_profile,
     update_inference_profile,
 )
@@ -649,6 +650,7 @@ class TelegramBot:
                     storage,
                     str(chat_id),
                     {"reasoning": reasoning},
+                    base_profile=profile,
                 )
                 await self._edit_model_menu(query, chat_id)
                 return
@@ -740,15 +742,19 @@ class TelegramBot:
             logger.exception("Failed to render Telegram settings error")
 
     async def _load_chat_profile(self, chat_id: int | str) -> InferenceProfile:
-        """Load one immutable profile snapshot and fail closed on storage errors."""
+        """Load a profile snapshot, retaining the process fallback on errors."""
         try:
             profile = await load_inference_profile(
                 get_preferences_storage(), str(chat_id)
             )
         except Exception:
             logger.exception("Failed to load inference profile for chat %s", chat_id)
-            return InferenceProfile()
-        return profile if isinstance(profile, InferenceProfile) else InferenceProfile()
+            return inference_profile_from_environment()
+        return (
+            profile
+            if isinstance(profile, InferenceProfile)
+            else inference_profile_from_environment()
+        )
 
     async def _resolve_capabilities(
         self, model_id: str | None

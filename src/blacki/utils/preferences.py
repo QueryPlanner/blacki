@@ -16,6 +16,11 @@ if TYPE_CHECKING:
     import aiosqlite
 
 logger = logging.getLogger(__name__)
+_MISSING = object()
+
+
+class PreferenceConflictError(RuntimeError):
+    """Raised when an atomic preference update is based on stale state."""
 
 
 class SqlitePreferencesStorage(SqlStorage):
@@ -66,6 +71,9 @@ class SqlitePreferencesStorage(SqlStorage):
         user_id: str,
         key: str,
         updates: Mapping[str, Any],
+        *,
+        defaults: Mapping[str, Any] | None = None,
+        expected: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Atomically merge JSON object fields into one preference.
 
@@ -73,6 +81,8 @@ class SqlitePreferencesStorage(SqlStorage):
         concurrent Telegram callbacks cannot overwrite each other's fields.
         A non-object existing value is treated as an empty object, allowing a
         preference key to migrate safely from an older scalar representation.
+        Defaults seed only missing fields. Expected fields provide a compare-
+        and-set guard and raise ``PreferenceConflictError`` when state changed.
         """
         now = now_utc().isoformat(timespec="seconds")
         async with self._lock:
@@ -88,6 +98,21 @@ class SqlitePreferencesStorage(SqlStorage):
                     decoded = None
                 if isinstance(decoded, dict):
                     current.update(decoded)
+
+            if defaults is not None:
+                for field, value in defaults.items():
+                    current.setdefault(field, value)
+            if expected is not None:
+                conflicts = [
+                    field
+                    for field, value in expected.items()
+                    if current.get(field, _MISSING) != value
+                ]
+                if conflicts:
+                    names = ", ".join(sorted(conflicts))
+                    raise PreferenceConflictError(
+                        f"Preference fields changed during update: {names}"
+                    )
 
             current.update(dict(updates))
             await self._conn.execute(

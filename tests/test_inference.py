@@ -184,10 +184,21 @@ class _PreferenceStore:
         return self.values.get((user_id, key), default)
 
     async def update_dict(
-        self, user_id: str, key: str, updates: dict[str, object]
+        self,
+        user_id: str,
+        key: str,
+        updates: dict[str, object],
+        *,
+        defaults: dict[str, object] | None = None,
+        expected: dict[str, object] | None = None,
     ) -> dict[str, object]:
         current = self.values.get((user_id, key), {})
         merged = dict(current) if isinstance(current, dict) else {}
+        for field, value in (defaults or {}).items():
+            merged.setdefault(field, value)
+        for field, value in (expected or {}).items():
+            if merged.get(field) != value:
+                raise RuntimeError("preference conflict")
         merged.update(updates)
         self.values[(user_id, key)] = merged
         return merged
@@ -209,6 +220,50 @@ async def test_load_profile_prefers_canonical_explicit_inherit_over_legacy() -> 
 async def test_load_profile_falls_back_to_legacy_model() -> None:
     storage = _PreferenceStore()
     storage.values[("123", "telegram_model_override")] = "old-model"
+
+    profile = await load_inference_profile(storage, "123")  # type: ignore[arg-type]
+
+    assert profile == InferenceProfile(model="old-model")
+
+
+@pytest.mark.asyncio
+async def test_load_profile_backfills_legacy_model_when_canonical_omits_it() -> None:
+    storage = _PreferenceStore()
+    storage.values[("123", "telegram_model_override")] = "old-model"
+    storage.values[("123", "telegram_inference_profile")] = {
+        "reasoning": {"effort": "high"}
+    }
+
+    profile = await load_inference_profile(storage, "123")  # type: ignore[arg-type]
+
+    assert profile == InferenceProfile(
+        model="old-model",
+        reasoning=ReasoningConfig(effort=ReasoningEffort.HIGH),
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_profile_explicit_default_model_suppresses_legacy() -> None:
+    storage = _PreferenceStore()
+    storage.values[("123", "telegram_model_override")] = "old-model"
+    storage.values[("123", "telegram_inference_profile")] = {
+        "model": None,
+        "reasoning": {"effort": "high"},
+    }
+
+    profile = await load_inference_profile(storage, "123")  # type: ignore[arg-type]
+
+    assert profile == InferenceProfile(
+        model=None,
+        reasoning=ReasoningConfig(effort=ReasoningEffort.HIGH),
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_profile_recovers_legacy_model_from_malformed_canonical() -> None:
+    storage = _PreferenceStore()
+    storage.values[("123", "telegram_model_override")] = "old-model"
+    storage.values[("123", "telegram_inference_profile")] = ["invalid"]
 
     profile = await load_inference_profile(storage, "123")  # type: ignore[arg-type]
 
@@ -307,6 +362,24 @@ async def test_update_profile_accepts_model_only_update() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_profile_seeds_model_from_base_profile() -> None:
+    storage = _PreferenceStore()
+    base_profile = InferenceProfile(model="legacy-model")
+
+    profile = await update_inference_profile(
+        storage,  # type: ignore[arg-type]
+        "123",
+        {"reasoning": ReasoningConfig(effort=ReasoningEffort.MAX)},
+        base_profile=base_profile,
+    )
+
+    assert profile == InferenceProfile(
+        model="legacy-model",
+        reasoning=ReasoningConfig(effort=ReasoningEffort.MAX),
+    )
+
+
+@pytest.mark.asyncio
 async def test_update_profile_serializes_explicit_inherit() -> None:
     storage = _PreferenceStore()
 
@@ -324,9 +397,15 @@ async def test_update_profile_serializes_explicit_inherit() -> None:
 
 class _MalformedUpdateStore(_PreferenceStore):
     async def update_dict(
-        self, user_id: str, key: str, updates: dict[str, object]
+        self,
+        user_id: str,
+        key: str,
+        updates: dict[str, object],
+        *,
+        defaults: dict[str, object] | None = None,
+        expected: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        del user_id, key, updates
+        del user_id, key, updates, defaults, expected
         return {"reasoning": {"effort": "unsupported"}}
 
 

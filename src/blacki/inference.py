@@ -177,10 +177,10 @@ async def load_inference_profile(
 ) -> InferenceProfile:
     """Load a chat profile with canonical and legacy preference fallback.
 
-    Presence of the canonical key, including an explicit ``null`` value,
-    takes precedence over the legacy model-only key.  This prevents an old
-    model override from being resurrected.  A profile without an explicit
-    reasoning setting still inherits the optional process fallback.
+    An explicit canonical ``null`` or ``model: null`` takes precedence over
+    the legacy model-only key so an old override is not resurrected. Partial
+    or malformed canonical values recover a legacy model when one exists. A
+    profile without explicit reasoning still inherits the process fallback.
     """
 
     missing = object()
@@ -191,7 +191,25 @@ async def load_inference_profile(
     )
     if stored_profile is not missing:
         profile = parse_inference_profile(stored_profile)
-        return _merge_environment_reasoning(profile or InferenceProfile())
+        resolved_profile = profile or InferenceProfile()
+        should_backfill_legacy = stored_profile is not None and (
+            not isinstance(stored_profile, Mapping) or "model" not in stored_profile
+        )
+        if should_backfill_legacy:
+            legacy_model = await storage.get(
+                chat_id,
+                LEGACY_MODEL_PREFERENCE_KEY,
+                missing,
+            )
+            if legacy_model is not missing and legacy_model not in (
+                None,
+                "",
+                "default",
+            ):
+                resolved_profile = resolved_profile.model_copy(
+                    update={"model": str(legacy_model)}
+                )
+        return _merge_environment_reasoning(resolved_profile)
 
     legacy_model = await storage.get(chat_id, LEGACY_MODEL_PREFERENCE_KEY, missing)
     if legacy_model is not missing and legacy_model not in (None, "", "default"):
@@ -215,8 +233,15 @@ async def update_inference_profile(
     storage: SqlitePreferencesStorage,
     chat_id: str,
     updates: Mapping[str, Any],
+    *,
+    base_profile: InferenceProfile | None = None,
 ) -> InferenceProfile:
-    """Atomically update and validate one chat's canonical profile."""
+    """Atomically update and validate one chat's canonical profile.
+
+    When ``base_profile`` is provided, its model seeds a missing canonical
+    model and acts as a compare-and-set guard. This migrates legacy model-only
+    preferences without overwriting a newer concurrent model selection.
+    """
 
     unknown_fields = set(updates) - {"model", "reasoning"}
     if unknown_fields:
@@ -241,10 +266,13 @@ async def update_inference_profile(
     # Validate the shape before writing.  ``InferenceProfile`` supplies the
     # nested Pydantic conversion for dictionary reasoning values.
     InferenceProfile.model_validate(normalized_updates)
+    model_guard = {"model": base_profile.model} if base_profile is not None else None
     merged = await storage.update_dict(
         chat_id,
         INFERENCE_PROFILE_PREFERENCE_KEY,
         normalized_updates,
+        defaults=model_guard,
+        expected=model_guard,
     )
     profile = parse_inference_profile(merged)
     if profile is None:
