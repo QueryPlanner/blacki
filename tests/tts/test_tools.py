@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import httpx
@@ -221,6 +222,58 @@ async def test_tool_synthesizes_and_sends_to_current_telegram_thread(
         message_thread_id=77,
     )
     assert json.loads(requests[0].content)["input"] == "Hello from Blacki"
+
+
+@pytest.mark.asyncio
+async def test_tool_serializes_synthesis_until_upload_releases_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only one response may occupy synthesis and upload memory at a time."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
+    synthesis_inputs: list[str] = []
+    first_upload_started = asyncio.Event()
+    release_first_upload = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        synthesis_inputs.append(json.loads(request.content)["input"])
+        return _audio_response()
+
+    factory, telegram, _ = _telegram_factory()
+
+    async def hold_first_upload(**_: object) -> None:
+        if telegram.send_audio.await_count == 1:
+            first_upload_started.set()
+            await release_first_upload.wait()
+
+    telegram.send_audio.side_effect = hold_first_upload
+    tool = create_send_text_to_speech_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(handler),
+        telegram_client_factory=factory,
+    )
+    context = cast(
+        ToolContext,
+        MockToolContext(state=MockState({"telegram_chat_id": "123"})),
+    )
+
+    first: asyncio.Future[dict[str, Any]] = asyncio.ensure_future(
+        tool("first", context)
+    )
+    await first_upload_started.wait()
+    second: asyncio.Future[dict[str, Any]] = asyncio.ensure_future(
+        tool("second", context)
+    )
+    await asyncio.sleep(0)
+
+    assert synthesis_inputs == ["first"]
+
+    release_first_upload.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result["status"] == "success"
+    assert second_result["status"] == "success"
+    assert synthesis_inputs == ["first", "second"]
+    assert telegram.send_audio.await_count == 2
 
 
 @pytest.mark.asyncio

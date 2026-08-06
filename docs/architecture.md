@@ -82,10 +82,11 @@ Startup still requires at least one model API key.
 Kokoro speech delivery is registered only on the Telegram-specific root agent.
 The public ADK runner and delegated task worker cannot call it. Blacki sends
 only the requested speech text to the configured Kokoro endpoint, accepts a
-bounded MP3 response, keeps it in memory, and does not retry Telegram delivery
-automatically. Configuring the tool disables content-rich ADK and OpenInference
-logging, although the local ADK session database still retains tool calls and
-arguments as normal conversation history.
+bounded MP3 response, keeps it in memory, and serializes synthesis through
+Telegram upload so concurrent chats cannot retain multiple audio payloads. It
+does not retry Telegram delivery automatically. Configuring the tool disables
+content-rich ADK and OpenInference logging, although the local ADK session
+database still retains tool calls and arguments as normal conversation history.
 
 Zepto is registered only on a Telegram-specific root-agent runner. The public
 ADK HTTP runner and delegated task worker never receive the Zepto toolset.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -22,9 +23,11 @@ KOKORO_MODEL = "kokoro"
 KOKORO_RESPONSE_FORMAT = "mp3"
 KOKORO_AUDIO_MIME_TYPE = "audio/mpeg"
 MAX_TTS_TEXT_CHARS = 4096
-# Telegram currently documents a 50 MB sendAudio ceiling. Keep headroom for
-# multipart framing and fail before attempting an oversized upload.
-MAX_TTS_AUDIO_BYTES = 49 * 1024 * 1024
+# The agent targets 512 MiB-class VPS instances. Keep the response far below
+# Telegram's transport ceiling because bytearray-to-bytes conversion and the
+# multipart upload can temporarily retain more than one copy.
+MAX_TTS_AUDIO_BYTES = 8 * 1024 * 1024
+MAX_CONCURRENT_TTS_DELIVERIES = 1
 TTS_CONNECT_TIMEOUT_SECONDS = 5.0
 TTS_READ_TIMEOUT_SECONDS = 60.0
 _VOICE_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,128}")
@@ -137,6 +140,7 @@ def create_send_text_to_speech_tool(
     telegram_client_factory: Callable[[str], TelegramApiClient] | None = None,
 ) -> Callable[[str, ToolContext], Awaitable[dict[str, Any]]]:
     """Create the private, Telegram-scoped Kokoro speech tool."""
+    delivery_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS_DELIVERIES)
 
     async def send_text_to_speech(
         text: str,
@@ -175,53 +179,56 @@ def create_send_text_to_speech_tool(
                 "error": "Telegram audio delivery is not configured.",
             }
 
-        timeout = httpx.Timeout(
-            TTS_READ_TIMEOUT_SECONDS,
-            connect=TTS_CONNECT_TIMEOUT_SECONDS,
-        )
-        try:
-            async with httpx.AsyncClient(
-                timeout=timeout,
-                follow_redirects=False,
-                transport=http_transport,
-            ) as client:
-                audio_bytes = await _synthesize_mp3(
-                    normalized_text,
-                    config,
-                    client,
-                )
-        except Exception as exc:
-            logger.warning(
-                "Kokoro TTS synthesis failed (%s)",
-                type(exc).__name__,
+        async with delivery_semaphore:
+            timeout = httpx.Timeout(
+                TTS_READ_TIMEOUT_SECONDS,
+                connect=TTS_CONNECT_TIMEOUT_SECONDS,
             )
-            return {"status": "error", "error": "Speech synthesis failed."}
+            try:
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=False,
+                    transport=http_transport,
+                ) as client:
+                    audio_bytes = await _synthesize_mp3(
+                        normalized_text,
+                        config,
+                        client,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Kokoro TTS synthesis failed (%s)",
+                    type(exc).__name__,
+                )
+                return {"status": "error", "error": "Speech synthesis failed."}
 
-        client_factory = telegram_client_factory or TelegramApiClient
-        try:
-            async with client_factory(token) as telegram:
-                await telegram.send_audio(
-                    chat_id=chat_id,
-                    audio_bytes=audio_bytes,
-                    filename="blacki-speech.mp3",
-                    message_thread_id=thread_id,
+            client_factory = telegram_client_factory or TelegramApiClient
+            try:
+                async with client_factory(token) as telegram:
+                    await telegram.send_audio(
+                        chat_id=chat_id,
+                        audio_bytes=audio_bytes,
+                        filename="blacki-speech.mp3",
+                        message_thread_id=thread_id,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Telegram TTS delivery failed (%s)",
+                    type(exc).__name__,
                 )
-        except Exception as exc:
-            logger.warning(
-                "Telegram TTS delivery failed (%s)",
-                type(exc).__name__,
-            )
-            return {
-                "status": "error",
-                "error": "Speech was generated but Telegram delivery failed.",
+                return {
+                    "status": "error",
+                    "error": "Speech was generated but Telegram delivery failed.",
+                }
+
+            result = {
+                "status": "success",
+                "message": "Speech audio sent to the current Telegram chat.",
+                "format": KOKORO_RESPONSE_FORMAT,
+                "voice": config.normalized_voice,
+                "bytes": len(audio_bytes),
             }
 
-        return {
-            "status": "success",
-            "message": "Speech audio sent to the current Telegram chat.",
-            "format": KOKORO_RESPONSE_FORMAT,
-            "voice": config.normalized_voice,
-            "bytes": len(audio_bytes),
-        }
+        return result
 
     return send_text_to_speech

@@ -44,8 +44,9 @@ Use the Tailscale IP or MagicDNS name that is reachable from the Blacki
 container. `localhost` refers to the Blacki container itself, not a Kokoro
 server on another machine. Blacki calls Kokoro's OpenAI-compatible
 `/v1/audio/speech` endpoint, keeps the bounded MP3 in memory, and uploads it to
-the current Telegram chat or topic. The tool is not registered on the public
-ADK HTTP runner or delegated task worker.
+the current Telegram chat or topic. Synthesis and upload are serialized so only
+one audio payload is retained at a time. The tool is not registered on the
+public ADK HTTP runner or delegated task worker.
 
 When this private tool is configured, Blacki disables content-rich ADK and
 OpenInference logging. Tool notifications may show that speech synthesis is
