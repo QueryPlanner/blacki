@@ -19,7 +19,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
-from .privacy import configure_zepto_privacy
+from .privacy import configure_private_tool_privacy
 from .utils import (
     ConfigurationError,
     ServerEnv,
@@ -33,13 +33,13 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 env = initialize_environment(ServerEnv)
-zepto_secure_mode = configure_zepto_privacy()
+private_tool_secure_mode = configure_private_tool_privacy()
 
 configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-if not zepto_secure_mode:
+if not private_tool_secure_mode:
     GoogleADKInstrumentor().instrument()
 
 setup_logging(log_level=env.log_level)

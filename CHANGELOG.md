@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Add a tested Material for MkDocs documentation site
 - Add a safe first-VPS deployment and operations contract
+- Add private Kokoro speech delivery for Telegram replies
 
 ### Changed
 - Make Docker Compose private, persistent, and health-checked by default

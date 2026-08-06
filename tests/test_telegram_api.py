@@ -266,6 +266,146 @@ class TestTelegramApiClient:
         assert exc_info.value.retry_after == 30
 
     @pytest.mark.asyncio
+    async def test_send_audio_success_with_optional_fields(self) -> None:
+        """send_audio uploads an MP3 to Telegram's native audio endpoint."""
+        client = TelegramApiClient("token")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "message_id": 42,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": -123, "type": "supergroup"},
+                "audio": {
+                    "file_id": "audio123",
+                    "file_unique_id": "unique123",
+                    "duration": 1,
+                    "mime_type": "audio/mpeg",
+                },
+            },
+        }
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+        ):
+            result = await client.send_audio(
+                chat_id=-123,
+                audio_bytes=b"ID3-audio",
+                filename="speech.mp3",
+                caption="Spoken response",
+                message_thread_id=77,
+                parse_mode=ParseMode.HTML,
+            )
+
+        assert isinstance(result, Message)
+        assert result.audio is not None
+        call = mock_http_client.post.await_args
+        assert call.args == ("https://api.telegram.org/bottoken/sendAudio",)
+        assert call.kwargs["data"] == {
+            "chat_id": -123,
+            "caption": "Spoken response",
+            "message_thread_id": 77,
+            "parse_mode": "HTML",
+        }
+        assert call.kwargs["files"] == {
+            "audio": ("speech.mp3", b"ID3-audio", "audio/mpeg")
+        }
+        assert call.kwargs["timeout"] == 30.0
+
+    @pytest.mark.asyncio
+    async def test_send_audio_success_with_required_fields_only(self) -> None:
+        """send_audio omits unset optional multipart fields."""
+        client = TelegramApiClient("token")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "ok": True,
+            "result": {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+            },
+        }
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with patch.object(
+            client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+        ):
+            await client.send_audio(123, b"audio", "speech.mp3")
+
+        assert mock_http_client.post.await_args.kwargs["data"] == {"chat_id": 123}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("json_error", [False, True])
+    async def test_send_audio_http_error(self, json_error: bool) -> None:
+        """send_audio sanitizes either structured or plain HTTP failures."""
+        client = TelegramApiClient("token")
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "plain failure"
+        if json_error:
+            mock_response.json.side_effect = ValueError("not json")
+            expected = "plain failure"
+        else:
+            mock_response.json.return_value = {"description": "API failure"}
+            expected = "API failure"
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match=expected),
+        ):
+            await client.send_audio(123, b"audio", "speech.mp3")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("description", "parameters", "expected", "retry_after"),
+        [
+            ("Forbidden", None, "Forbidden", None),
+            ("Rate limited", {"retry_after": 9}, "Rate limited", 9),
+            (None, None, "Unknown Telegram API error", None),
+        ],
+    )
+    async def test_send_audio_api_error(
+        self,
+        description: str | None,
+        parameters: dict[str, int] | None,
+        expected: str,
+        retry_after: int | None,
+    ) -> None:
+        """send_audio preserves Telegram API error metadata."""
+        client = TelegramApiClient("token")
+        body: dict[str, Any] = {
+            "ok": False,
+            "description": description,
+            "error_code": 429 if parameters else 403,
+        }
+        if parameters is not None:
+            body["parameters"] = parameters
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = body
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+
+        with (
+            patch.object(
+                client, "_ensure_client", AsyncMock(return_value=mock_http_client)
+            ),
+            pytest.raises(TelegramApiError, match=expected) as exc_info,
+        ):
+            await client.send_audio(123, b"audio", "speech.mp3")
+
+        assert exc_info.value.retry_after == retry_after
+
+    @pytest.mark.asyncio
     async def test_answer_callback_query(self) -> None:
         """Test answer_callback_query sends correct params."""
         client = TelegramApiClient("token")

@@ -31,6 +31,28 @@ token is present and follows Telegram's `number:string` format at startup.
 At least one model provider must also be configured. See
 [Configuration](base-infra/environment-variables.md).
 
+### Optional Kokoro speech replies
+
+To let the Telegram-only root agent turn text into playable MP3 audio, add:
+
+```dotenv
+KOKORO_TTS_BASE_URL=http://100.x.y.z:8880
+KOKORO_TTS_VOICE=af_heart
+```
+
+Use the Tailscale IP or MagicDNS name that is reachable from the Blacki
+container. `localhost` refers to the Blacki container itself, not a Kokoro
+server on another machine. Blacki calls Kokoro's OpenAI-compatible
+`/v1/audio/speech` endpoint, keeps the bounded MP3 in memory, and uploads it to
+the current Telegram chat or topic. Synthesis and upload are serialized so only
+one audio payload is retained at a time. The tool is not registered on the
+public ADK HTTP runner or delegated task worker.
+
+When this private tool is configured, Blacki disables content-rich ADK and
+OpenInference logging. Tool notifications may show that speech synthesis is
+running, but never include the text being spoken. ADK session history still
+retains the model's tool call and arguments.
+
 ## 3. Start or recreate the service
 
 Docker Compose:
@@ -63,6 +85,10 @@ Open the bot in Telegram and send:
 
 Then send a normal message and confirm the model responds. Blacki does not
 currently implement a `/clear` command.
+
+If Kokoro speech is configured, ask the bot to “send that as audio” and confirm
+Telegram receives an MP3 in its native audio player. Kokoro failures return a
+text error and do not create a local audio file.
 
 The `/model` panel stores one profile for the Telegram chat. Choose a model,
 then select a thinking effort supported by that model. `Default` uses

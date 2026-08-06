@@ -28,8 +28,8 @@ from .inference import (
 )
 from .privacy import (
     PrivacyAwareLoggingPlugin,
-    configure_zepto_privacy,
-    zepto_mcp_enabled,
+    configure_private_tool_privacy,
+    private_tool_privacy_enabled,
 )
 from .prompt import (
     DomainPolicyPlugin,
@@ -284,10 +284,10 @@ def create_app(agent: LlmAgent | None = None) -> App:
         StoredPreferencesPlugin(name="stored_preferences"),
         ResponsePolicyPlugin(name="response_policy"),
     ]
-    if not zepto_mcp_enabled():
+    if not private_tool_privacy_enabled():
         plugins.append(PrivacyAwareLoggingPlugin())
     else:
-        logger.info("ADK content logging plugin disabled in secure Zepto mode")
+        logger.info("ADK content logging plugin disabled in private-tool mode")
 
     return App(
         name="blacki",
@@ -300,7 +300,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
 
 
 _find_and_load_dotenv()
-configure_zepto_privacy()
+configure_private_tool_privacy()
 
 root_agent = create_agent(include_user_scoped_tools=False)
 

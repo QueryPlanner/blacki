@@ -25,7 +25,7 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 At startup Blacki:
 
 1. sets `OTEL_RESOURCE_ATTRIBUTES`;
-2. instruments Google ADK with `GoogleADKInstrumentor` unless secure Zepto
+2. instruments Google ADK with `GoogleADKInstrumentor` unless a private-tool
    mode is enabled;
 3. configures stdout and JSON file logging; and
 4. registers a `TracerProvider` with `JSONFileSpanExporter`; and
@@ -47,10 +47,11 @@ Both `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` and
 and legacy ADK content capture. Capturing prompts and responses can expose
 personal data, credentials, and tool results.
 
-When `ZEPTO_MCP_ENABLED=true`, Blacki forces both values to `false`, disables
-the OpenInference Google ADK instrumentor, and prevents MCP body-debug logging.
-The ADK session database still retains tool calls and results so interrupted
-turns and confirmations can resume correctly.
+When `ZEPTO_MCP_ENABLED=true` or `KOKORO_TTS_BASE_URL` is configured, Blacki
+forces both values to `false` and disables the OpenInference Google ADK
+instrumentor. Zepto additionally prevents MCP body-debug logging. The ADK
+session database still retains tool calls and results so interrupted turns and
+confirmations can resume correctly.
 
 ## Remote OTLP export
 

@@ -397,9 +397,35 @@ class TestToolCallbacks:
         )
 
         assert "zepto_update_cart" in caplog.text
-        assert "Private Zepto tool payload redacted" in caplog.text
+        assert "Private tool payload redacted" in caplog.text
         assert "private-address" not in caplog.text
         assert "private-phone" not in caplog.text
+
+    def test_tts_tool_payloads_are_redacted(
+        self,
+        mock_tool_context: MockToolContext,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Speech text stays out of before- and after-tool debug logs."""
+        caplog.set_level(logging.DEBUG)
+        callbacks = LoggingCallbacks()
+        tool = MockBaseTool(name="send_text_to_speech")
+
+        cast(Any, callbacks.before_tool)(
+            tool,
+            {"text": "private speech"},
+            mock_tool_context,
+        )
+        cast(Any, callbacks.after_tool)(
+            tool,
+            {"text": "private speech"},
+            mock_tool_context,
+            {"status": "success"},
+        )
+
+        assert "send_text_to_speech" in caplog.text
+        assert "Private tool payload redacted" in caplog.text
+        assert "private speech" not in caplog.text
 
 
 class TestEdgeCases:
