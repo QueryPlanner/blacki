@@ -12,11 +12,22 @@ from google.adk.tools.tool_context import ToolContext
 
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _ZEPTO_TOOL_PREFIX = "zepto_"
+_PRIVATE_TOOL_NAMES = frozenset({"send_text_to_speech"})
 
 
 def zepto_mcp_enabled() -> bool:
     """Return whether secure Zepto mode is explicitly enabled."""
     return os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower() in _ENABLED_VALUES
+
+
+def kokoro_tts_enabled() -> bool:
+    """Return whether the private Kokoro TTS integration is configured."""
+    return bool(os.getenv("KOKORO_TTS_BASE_URL", "").strip())
+
+
+def private_tool_privacy_enabled() -> bool:
+    """Return whether any configured tool needs content-level redaction."""
+    return zepto_mcp_enabled() or kokoro_tts_enabled()
 
 
 def configure_zepto_privacy() -> bool:
@@ -30,13 +41,25 @@ def configure_zepto_privacy() -> bool:
     return True
 
 
+def configure_private_tool_privacy() -> bool:
+    """Disable content-rich tracing when any private tool is configured."""
+    if not private_tool_privacy_enabled():
+        return False
+    os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] = "false"
+    os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false"
+    if zepto_mcp_enabled():
+        logging.getLogger("google_adk.google.adk.tools.mcp_tool").setLevel(logging.INFO)
+        logging.getLogger("google.adk.tools.mcp_tool").setLevel(logging.INFO)
+    return True
+
+
 def is_private_tool(tool: BaseTool) -> bool:
-    """Return whether a tool can expose private Zepto account data."""
-    return tool.name.startswith(_ZEPTO_TOOL_PREFIX)
+    """Return whether a tool can expose private account or message data."""
+    return tool.name.startswith(_ZEPTO_TOOL_PREFIX) or tool.name in _PRIVATE_TOOL_NAMES
 
 
 class PrivacyAwareLoggingPlugin(LoggingPlugin):
-    """Keep ADK's lifecycle logs while redacting Zepto payloads."""
+    """Keep ADK lifecycle logs while redacting private tool payloads."""
 
     async def before_tool_callback(
         self,

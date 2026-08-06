@@ -23,6 +23,8 @@ class TestToolConfig:
         assert config.sandbox_enabled is False
         assert config.skills_dir is None
         assert config.legacy_workout_tools_enabled is False
+        assert config.kokoro_tts_base_url is None
+        assert config.kokoro_tts_voice == "af_heart"
         assert config.zepto_mcp_enabled is False
         assert config.zepto_mcp_allowed_chat_ids == frozenset()
 
@@ -36,6 +38,8 @@ class TestToolConfig:
             sandbox_enabled=True,
             skills_dir=skills_path,
             legacy_workout_tools_enabled=True,
+            kokoro_tts_base_url="http://kokoro.internal:8880",
+            kokoro_tts_voice="hf_alpha",
             zepto_mcp_enabled=True,
             zepto_mcp_config_dir=Path("/tmp/zepto"),
             zepto_mcp_allowed_chat_ids=frozenset({"123"}),
@@ -47,6 +51,8 @@ class TestToolConfig:
         assert config.sandbox_enabled is True
         assert config.skills_dir == skills_path
         assert config.legacy_workout_tools_enabled is True
+        assert config.kokoro_tts_base_url == "http://kokoro.internal:8880"
+        assert config.kokoro_tts_voice == "hf_alpha"
         assert config.zepto_mcp_enabled is True
         assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
         assert config.zepto_mcp_allowed_chat_ids == frozenset({"123"})
@@ -155,6 +161,38 @@ class TestBuildTools:
         assert "zepto" not in default_skills._skills
         create.assert_called_once()
 
+    def test_kokoro_tts_tool_is_telegram_root_only(self) -> None:
+        """Private speech delivery must not reach public or worker agents."""
+        config = ToolConfig(
+            weather_enabled=False,
+            kokoro_tts_base_url="http://kokoro.internal:8880",
+            kokoro_tts_voice="af_heart",
+        )
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+        default_tools = build_tools(config)
+
+        assert "send_text_to_speech" in {tool.__name__ for tool in root_tools}
+        assert "send_text_to_speech" not in {tool.__name__ for tool in worker_tools}
+        assert "send_text_to_speech" not in {tool.__name__ for tool in default_tools}
+
+    def test_invalid_kokoro_tts_config_disables_only_tts(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Malformed optional TTS settings degrade without losing other tools."""
+        config = ToolConfig(
+            weather_enabled=False,
+            kokoro_tts_base_url="file:///tmp/kokoro",
+        )
+
+        tools = build_tools(config, include_user_scoped_tools=True)
+
+        assert "send_text_to_speech" not in {tool.__name__ for tool in tools}
+        assert len(tools) == 6
+        assert "Kokoro TTS disabled" in caplog.text
+
     def test_invalid_zepto_credentials_disable_only_zepto(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -239,6 +277,8 @@ class TestBuildToolConfigFromEnv:
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
             assert config.zepto_mcp_enabled is False
+            assert config.kokoro_tts_base_url is None
+            assert config.kokoro_tts_voice == "af_heart"
             assert config.zepto_mcp_config_dir == Path(
                 "data/credentials/zepto-mcp-remote"
             )
@@ -339,6 +379,32 @@ class TestBuildToolConfigFromEnv:
         assert config.zepto_mcp_enabled is True
         assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
         assert config.zepto_mcp_allowed_chat_ids == frozenset({"123", "456"})
+
+    def test_kokoro_tts_settings_from_env(self) -> None:
+        """Should strip the optional Kokoro base URL and voice settings."""
+        with patch.dict(
+            "os.environ",
+            {
+                "KOKORO_TTS_BASE_URL": " http://100.77.130.71:8880 ",
+                "KOKORO_TTS_VOICE": " hf_alpha ",
+            },
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.kokoro_tts_base_url == "http://100.77.130.71:8880"
+        assert config.kokoro_tts_voice == "hf_alpha"
+
+    def test_empty_kokoro_voice_uses_default(self) -> None:
+        """An empty voice setting should retain the verified default voice."""
+        with patch.dict(
+            "os.environ",
+            {"KOKORO_TTS_VOICE": "   "},
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.kokoro_tts_voice == "af_heart"
 
 
 class TestBuildBraveSearchTools:

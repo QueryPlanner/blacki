@@ -53,18 +53,24 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     assert call_kwargs["lifespan"] is server.lifespan
 
 
-def test_server_skips_openinference_in_secure_zepto_mode(
+@pytest.mark.parametrize(
+    "setting",
+    ["ZEPTO_MCP_ENABLED", "KOKORO_TTS_BASE_URL"],
+)
+def test_server_skips_openinference_in_private_tool_mode(
     mock_dependencies: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    setting: str,
 ) -> None:
-    """Secure Zepto mode must take the no-instrumentation startup branch."""
-    monkeypatch.setenv("ZEPTO_MCP_ENABLED", "true")
+    """Private tools must take the no-content-instrumentation startup branch."""
+    value = "true" if setting == "ZEPTO_MCP_ENABLED" else "http://kokoro.internal"
+    monkeypatch.setenv(setting, value)
     if "blacki.server" in sys.modules:
         del sys.modules["blacki.server"]
 
     import blacki.server as server
 
-    assert server.zepto_secure_mode is True
+    assert server.private_tool_secure_mode is True
 
 
 @pytest.mark.asyncio

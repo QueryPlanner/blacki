@@ -950,3 +950,31 @@ async def test_notify_sends_args_in_message(
     assert "capital of France" in kwargs["text"]
     assert "limit" in kwargs["text"]
     assert "5" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_notify_redacts_private_tts_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Optional tool notices may name TTS but never include speech contents."""
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
+    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+
+    mock_client = MagicMock()
+    mock_client.send_message = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
+        ctx = MockToolContext(state=MockState({"telegram_chat_id": "4242"}))
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("send_text_to_speech")),
+            {"text": "private spoken content"},
+            cast(ToolContext, ctx),
+        )
+
+    sent_text = mock_client.send_message.await_args.kwargs["text"]
+    assert r"send\_text\_to\_speech" in sent_text
+    assert "private spoken content" not in sent_text
+    assert r"\=" not in sent_text

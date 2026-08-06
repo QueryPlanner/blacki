@@ -28,7 +28,9 @@ the ADK application plugins.
 3. Text is sent as an ADK text part. Telegram photos are downloaded, validated,
    and sent as caption/default text plus an inline JPEG part.
 4. The agent calls the configured model and tools.
-5. The response is sent back through Telegram's API.
+5. The response is sent back through Telegram's API. When the private Kokoro
+   tool is enabled and selected, it synthesizes a bounded MP3 in memory and
+   sends it directly to the same chat or topic through Telegram `sendAudio`.
 
 Long polling is outbound. It does not require a public webhook, domain, TLS
 certificate, or inbound application port.
@@ -68,6 +70,7 @@ Optional tools follow the project's cloud-first principle:
 - models use OpenRouter or Google;
 - search can use Exa with Brave as a fallback;
 - browser automation can use Browser Use Cloud;
+- speech synthesis can use a private Kokoro API reachable over Tailscale;
 - grocery shopping can use Zepto's hosted MCP server for one allowlisted,
   shared account;
 - vector memory can use Qdrant Cloud; and
@@ -75,6 +78,14 @@ Optional tools follow the project's cloud-first principle:
 
 Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
+
+Kokoro speech delivery is registered only on the Telegram-specific root agent.
+The public ADK runner and delegated task worker cannot call it. Blacki sends
+only the requested speech text to the configured Kokoro endpoint, accepts a
+bounded MP3 response, keeps it in memory, and does not retry Telegram delivery
+automatically. Configuring the tool disables content-rich ADK and OpenInference
+logging, although the local ADK session database still retains tool calls and
+arguments as normal conversation history.
 
 Zepto is registered only on a Telegram-specific root-agent runner. The public
 ADK HTTP runner and delegated task worker never receive the Zepto toolset.

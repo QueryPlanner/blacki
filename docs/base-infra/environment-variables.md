@@ -89,8 +89,17 @@ its presence changes model routing.
 | `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
 | `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
 | `TELEGRAM_TOOL_NOTIFICATIONS` | `false` | Send short tool-use notices |
+| `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
+| `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
 
 The token is required and format-validated when Telegram is enabled.
+
+`KOKORO_TTS_BASE_URL` is an optional HTTP or HTTPS base URL without a path to
+`/v1/audio/speech`; Blacki appends that fixed endpoint. The URL must be
+reachable from inside the Blacki container. Do not use `localhost` for a
+Kokoro process on another Tailscale host; configure that host's Tailscale IP or
+MagicDNS name instead. Plain HTTP is suitable only across a trusted private
+network such as the encrypted Tailscale connection.
 
 ## Search and browser tools
 

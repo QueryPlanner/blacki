@@ -1,4 +1,4 @@
-"""Tests for Zepto-specific logging and tracing privacy controls."""
+"""Tests for private-tool logging and tracing privacy controls."""
 
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ from google.adk.tools.base_tool import BaseTool
 
 from blacki.privacy import (
     PrivacyAwareLoggingPlugin,
+    configure_private_tool_privacy,
     configure_zepto_privacy,
     is_private_tool,
+    kokoro_tts_enabled,
+    private_tool_privacy_enabled,
     zepto_mcp_enabled,
 )
 
@@ -47,7 +50,30 @@ def test_configure_zepto_privacy_is_explicit_and_forces_safe_values(
 
 def test_private_tool_identification_uses_zepto_prefix() -> None:
     assert is_private_tool(_tool("zepto_search_products")) is True
+    assert is_private_tool(_tool("send_text_to_speech")) is True
     assert is_private_tool(_tool("search_products")) is False
+
+
+def test_kokoro_tts_enables_content_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ZEPTO_MCP_ENABLED", "false")
+    monkeypatch.delenv("KOKORO_TTS_BASE_URL", raising=False)
+    assert kokoro_tts_enabled() is False
+    assert private_tool_privacy_enabled() is False
+    assert configure_private_tool_privacy() is False
+
+    monkeypatch.setenv("KOKORO_TTS_BASE_URL", " http://kokoro.internal:8880 ")
+    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "true")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+
+    assert kokoro_tts_enabled() is True
+    assert private_tool_privacy_enabled() is True
+    assert configure_private_tool_privacy() is True
+    import os
+
+    assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
 
 
 def test_secure_zepto_app_removes_content_logging_plugin(
@@ -107,6 +133,33 @@ async def test_privacy_logging_plugin_redacts_private_payloads(
     assert "zepto_update_cart" in output
     for private_value in ("private-address", "private-phone", "private-error"):
         assert private_value not in output
+
+
+@pytest.mark.asyncio
+async def test_privacy_logging_plugin_redacts_tts_payloads(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin = PrivacyAwareLoggingPlugin()
+    context = MagicMock()
+    context.function_call_id = "call-tts"
+    context.agent_name = "blacki"
+    tool = _tool("send_text_to_speech")
+
+    await plugin.before_tool_callback(
+        tool=tool,
+        tool_args={"text": "private speech"},
+        tool_context=context,
+    )
+    await plugin.after_tool_callback(
+        tool=tool,
+        tool_args={"text": "private speech"},
+        tool_context=context,
+        result={"status": "success"},
+    )
+
+    output = capsys.readouterr().out
+    assert "send_text_to_speech" in output
+    assert "private speech" not in output
 
 
 @pytest.mark.asyncio
