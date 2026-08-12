@@ -49,7 +49,7 @@ _FATAL_ERROR_CODES = {401, 403}
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
-_DEFAULT_IMAGE_PROMPT = "Describe this image."
+_DEFAULT_IMAGE_PROMPT = "What is in this image?"
 
 MODEL_CHOICES = {
     "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),

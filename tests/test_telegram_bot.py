@@ -3039,8 +3039,8 @@ class TestHandlePhotoUpload:
         ("caption", "expected_prompt"),
         [
             ("What is shown here?", "What is shown here?"),
-            (None, "Describe this image."),
-            ("   ", "Describe this image."),
+            (None, "What is in this image?"),
+            ("   ", "What is in this image?"),
         ],
     )
     async def test_photo_reaches_runtime_as_image_part(

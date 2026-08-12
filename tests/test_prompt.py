@@ -129,10 +129,10 @@ class TestDomainPolicyAssembly:
         )
 
         assert (
-            "General\nnutrition questions must not create or change records"
+            "General nutrition\nquestions must not create or change records"
             in instruction
         )
-        assert "food name\nby itself is ambiguous" in instruction
+        assert "food name by itself is\nambiguous" in instruction
         assert "never replace an invalid date with today" in instruction
 
     def test_workout_uses_canonical_system_without_implicit_advance(self) -> None:
@@ -443,6 +443,126 @@ class TestDomainPolicyPlugin:
         )
         assert completed is not None
         assert "already completed" in str(completed["error"])
+
+
+class TestImagePolicy:
+    """Verify image input routes through the nutrition policy safely."""
+
+    @pytest.mark.asyncio
+    async def test_injects_image_policy_for_inline_image_part(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        request.tools_dict = {"log_meal": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(
+            user_content=types.Content(
+                role="user",
+                parts=[types.Part.from_bytes(data=b"jpeg", mime_type="image/jpeg")],
+            )
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        instruction = str(request.config.system_instruction)
+        assert "<image_policy>" in instruction
+        assert "<nutrition_policy>" in instruction
+
+    @pytest.mark.asyncio
+    async def test_image_policy_forces_nutrition_without_matching_text(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        request.tools_dict = {"log_meal": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(
+            user_content=types.Content(
+                role="user",
+                parts=[types.Part.from_bytes(data=b"jpeg", mime_type="image/jpeg")],
+            )
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is not None
+        assert "An image is attached" in request.config.system_instruction
+
+    @pytest.mark.asyncio
+    async def test_image_policy_is_absent_when_nutrition_tools_are_disabled(
+        self,
+    ) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        request.tools_dict = {"log_training": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(
+            user_content=types.Content(
+                role="user",
+                parts=[types.Part.from_bytes(data=b"jpeg", mime_type="image/jpeg")],
+            )
+        )
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is None
+
+    @pytest.mark.asyncio
+    async def test_image_policy_is_absent_for_text_only_requests(self) -> None:
+        plugin = DomainPolicyPlugin()
+        request = LlmRequest()
+        request.tools_dict = {"log_meal": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(user_content=_user_content("What is in this image?"))
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        assert request.config.system_instruction is None
+
+    @pytest.mark.asyncio
+    async def test_image_policy_is_absent_after_log_meal_function_response(
+        self,
+    ) -> None:
+        plugin = DomainPolicyPlugin()
+        image_content = types.Content(
+            role="user",
+            parts=[types.Part.from_bytes(data=b"jpeg", mime_type="image/jpeg")],
+        )
+        request = LlmRequest(
+            contents=[
+                image_content,
+                types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="I found a meal.")],
+                ),
+                types.Content(
+                    role="tool",
+                    parts=[
+                        types.Part(
+                            function_response=types.FunctionResponse(
+                                name="log_meal", response={"status": "success"}
+                            )
+                        )
+                    ],
+                ),
+            ]
+        )
+        request.tools_dict = {"log_meal": object()}  # type: ignore[dict-item]
+        context = SimpleNamespace(user_content=image_content)
+
+        await plugin.before_model_callback(
+            callback_context=context,  # type: ignore[arg-type]
+            llm_request=request,
+        )
+
+        instruction = str(request.config.system_instruction)
+        assert "An image is attached" not in instruction
+        assert "<nutrition_policy>" in instruction
 
 
 class TestResponsePolicyPlugin:

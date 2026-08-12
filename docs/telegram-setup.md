@@ -102,10 +102,12 @@ capability-aware menu.
 
 To verify image input, select a vision-capable model, send a Telegram photo,
 and optionally add a caption as the instruction. Without a caption, Blacki asks
-the model to describe the image. Native photo input is limited to 10 MB;
-documents, audio, video, and voice messages continue to use the sandbox upload
-path. A model that does not support images will return the normal photo
-processing error without changing the selected model.
+the model, "What is in this image?" Food photos are estimated and written to a
+`calorie_logs` row; other images are answered without creating a nutrition
+record. Native photo input is limited to 10 MB; documents, audio, video, and
+voice messages continue to use the sandbox upload path. A model that does not
+support images will return the normal photo processing error without changing
+the selected model.
 
 ## Tool notifications
 
