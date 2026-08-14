@@ -245,9 +245,6 @@ class SqliteCalorieStorage(SqlStorage):
         )
 
 
-_storage: SqliteCalorieStorage | None = None
-
-
 def get_storage() -> SqliteCalorieStorage:
     """Return the process-wide singleton SqliteCalorieStorage instance.
 

@@ -825,9 +825,6 @@ class SqliteDeclarativeDbStorage(SqlStorage):
         )
 
 
-_storage: SqliteDeclarativeDbStorage | None = None
-
-
 def get_declarative_db_storage() -> SqliteDeclarativeDbStorage:
     """Return the process-wide singleton SqliteDeclarativeDbStorage instance."""
     from blacki.container import get_container

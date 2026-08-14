@@ -5,7 +5,6 @@ A single aiosqlite connection is used for all database operations.
 
 from __future__ import annotations
 
-import abc
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -54,46 +53,6 @@ class Reminder(BaseModel):
     def is_recurring(self) -> bool:
         """True when this reminder will be rescheduled after firing."""
         return bool(self.recurrence_rule)
-
-
-class BaseReminderStorage(abc.ABC):
-    """Abstract base class for reminder storage."""
-
-    @abc.abstractmethod
-    async def initialize(self) -> None:
-        """Initialize storage (create tables, open connections)."""
-
-    @abc.abstractmethod
-    async def close(self) -> None:
-        """Close storage connections."""
-
-    @abc.abstractmethod
-    async def add_reminder(self, reminder: Reminder) -> int:
-        """Insert a reminder and return its new row ID."""
-
-    @abc.abstractmethod
-    async def get_due_reminders(self) -> list[Reminder]:
-        """Return a batch of unsent reminders whose trigger time has passed."""
-
-    @abc.abstractmethod
-    async def mark_sent(self, reminder_id: int) -> None:
-        """Mark a reminder as sent."""
-
-    @abc.abstractmethod
-    async def reschedule_reminder(
-        self, reminder_id: int, next_trigger_time: str
-    ) -> None:
-        """Move a recurring reminder to its next scheduled fire time."""
-
-    @abc.abstractmethod
-    async def get_user_reminders(
-        self, user_id: str, include_sent: bool = False
-    ) -> list[Reminder]:
-        """Return reminders for a user."""
-
-    @abc.abstractmethod
-    async def delete_reminder(self, reminder_id: int, user_id: str) -> bool:
-        """Delete a reminder if it belongs to the given user."""
 
 
 class SqliteReminderStorage(SqlStorage):
@@ -248,9 +207,6 @@ class SqliteReminderStorage(SqlStorage):
             timezone_name=row["timezone_name"],
             created_at=row["created_at"],
         )
-
-
-_storage: SqliteReminderStorage | None = None
 
 
 def get_storage() -> SqliteReminderStorage:
