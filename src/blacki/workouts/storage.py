@@ -857,9 +857,6 @@ class SqliteWorkoutStorage(SqlStorage):
         )
 
 
-_storage: SqliteWorkoutStorage | None = None
-
-
 def get_storage() -> SqliteWorkoutStorage:
     """Return the process-wide singleton SqliteWorkoutStorage instance.
 

@@ -138,9 +138,6 @@ class SqlitePreferencesStorage(SqlStorage):
             return cursor.rowcount > 0
 
 
-_storage: SqlitePreferencesStorage | None = None
-
-
 def get_preferences_storage() -> SqlitePreferencesStorage:
     """Return the process-wide singleton SqlitePreferencesStorage instance.
 

@@ -107,15 +107,6 @@ class Voice(BaseModel):
     file_size: int | None = None
 
 
-class File(BaseModel):
-    """A file ready to be downloaded."""
-
-    file_id: str
-    file_unique_id: str
-    file_size: int | None = None
-    file_path: str | None = None
-
-
 class Message(BaseModel):
     """A Telegram message."""
 
@@ -202,23 +193,6 @@ class TelegramResponse(BaseModel):
     parameters: ResponseParameters | None = None
 
     model_config = {"populate_by_name": True}
-
-
-class SendMessageResponse(BaseModel):
-    """Response from sendMessage/sendMessageDraft."""
-
-    message_id: int = Field(..., alias="message_id")
-    chat: Chat
-    date: datetime
-    text: str | None = None
-
-    model_config = {"populate_by_name": True}
-
-
-class GetUpdatesResponse(BaseModel):
-    """Response from getUpdates."""
-
-    updates: list[Update] = Field(default_factory=list)
 
 
 class InlineKeyboardButton(BaseModel):
