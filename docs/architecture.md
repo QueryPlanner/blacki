@@ -48,12 +48,18 @@ when enabled.
 
 The dashboard is always available on the local server. Set `HOST_BIND_IP` to
 the server's Tailscale IPv4 address for direct tailnet access, or keep the
-loopback bind and use Tailscale Serve for tailnet-only HTTPS access:
-`tailscale serve --bg localhost:${HOST_PORT:-8080}`. The `--bg` flag keeps the
-Serve configuration across host reboots and service restarts; it remains
-tailnet-only. Configure Tailscale ACLs and device restrictions for the operator
-devices. Do not use Tailscale Funnel or set `HOST_BIND_IP=0.0.0.0` because the
-dashboard contains private user chats.
+loopback bind and use Tailscale Serve for tailnet-only HTTPS access from the
+repository directory:
+
+```bash
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
+```
+
+The `--bg` flag keeps the Serve configuration across host reboots and service
+restarts; it remains tailnet-only. Configure Tailscale ACLs and device
+restrictions for the operator devices. Do not use Tailscale Funnel or set
+`HOST_BIND_IP=0.0.0.0` because the dashboard contains private user chats.
 
 ## Persistence boundaries
 

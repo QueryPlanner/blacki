@@ -144,8 +144,12 @@ If you prefer HTTPS while keeping Docker on loopback, leave `HOST_BIND_IP` at
 its default and use Tailscale Serve on the VPS:
 
 ```bash
-tailscale serve --bg localhost:${HOST_PORT:-8080}
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
 ```
+
+The first line reads the configured host port from `.env` and falls back to
+8080 when it is absent. Run it from the Blacki repository directory.
 
 Do not use Tailscale Funnel for this dashboard.
 

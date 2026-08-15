@@ -478,6 +478,9 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
     assert 'printf \'IMAGE="%s"\\n\' "$IMAGE_NAME"' in workflow
     assert 'printf \'DEPLOY_SHA="%s"\\n\' "$DEPLOY_SHA"' in workflow
+    assert "HOST_BIND_IP=$(" in workflow
+    assert "HOST_BIND_IP=127.0.0.1" in workflow
+    assert 'printf \'HOST_BIND_IP="%s"\\n\' "$HOST_BIND_IP"' in workflow
     assert 'SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"' in workflow
     assert "source /tmp/deploy.env" not in workflow
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow

@@ -439,6 +439,13 @@ jobs:
           if [ "$HOST_PORT" -lt 1 ] || [ "$HOST_PORT" -gt 65535 ]; then
             HOST_PORT=8080
           fi
+          HOST_BIND_IP=$(
+            sed -n 's/^HOST_BIND_IP="\{0,1\}\([0-9][0-9.]*\)"\{0,1\}$/\1/p' \
+              .env 2>/dev/null | tail -n 1
+          )
+          case "$HOST_BIND_IP" in
+            ''|*[!0-9.]*) HOST_BIND_IP=127.0.0.1 ;;
+          esac
 
           ACTIVE_CONTAINER_ID=$(
             docker ps \
@@ -474,6 +481,7 @@ jobs:
             printf 'DEPLOY_SHA="%s"\n' "$DEPLOY_SHA"
             printf 'IMAGE="%s"\n' "$IMAGE_NAME"
             printf 'HOST_PORT="%s"\n' "$HOST_PORT"
+            printf 'HOST_BIND_IP="%s"\n' "$HOST_BIND_IP"
           } >> .env.next
           chmod 600 .env.next
 

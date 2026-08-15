@@ -129,8 +129,12 @@ keep the production Compose loopback binding and use Tailscale Serve to reverse
 proxy the service to your tailnet over HTTPS:
 
 ```bash
-tailscale serve --bg localhost:${HOST_PORT:-8080}
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
 ```
+
+Run the commands from the Blacki repository directory; the first line reads
+the configured host port from `.env` and falls back to 8080 when absent.
 
 The `--bg` flag keeps the Serve configuration across host reboots and service
 restarts while the endpoint remains tailnet-only. Use `tailscale serve`, never
