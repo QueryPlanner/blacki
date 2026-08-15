@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from google.adk.events import Event
+from google.adk.events._rewind_events import _apply_rewinds
 from google.adk.sessions import InMemorySessionService, Session
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
@@ -57,6 +58,12 @@ def _build_server_env(**overrides: str) -> ServerEnv:
 )
 def test_provider_from_model(model: str | None, provider: str | None) -> None:
     assert _provider_from_model(model) == provider
+
+
+def test_empty_response_without_invocation_id_is_not_retryable() -> None:
+    error = EmptyModelResponseError("empty response")
+
+    assert error.retryable is False
 
 
 def test_build_session_service_uri_ignores_database_url() -> None:
@@ -371,6 +378,71 @@ async def test_run_user_turn_marks_empty_response_after_unusable_events() -> Non
     assert error.provider == "openrouter"
     assert error.invocation_id == "empty-final-invocation"
     assert error.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_rewind_empty_model_response_removes_failed_turn_before_retry(
+    tmp_path: Path,
+) -> None:
+    """A retry rewinds the persisted invocation before appending its message again."""
+    database_uri = f"sqlite+aiosqlite:///{tmp_path / 'sessions.db'}"
+    runtime = AdkRuntime(DatabaseSessionService(database_uri))
+    locator = SessionLocator(
+        user_id="telegram-chat-retry",
+        session_id_prefix="telegram-chat-retry",
+    )
+    try:
+        session = await runtime.get_or_create_session(locator=locator)
+        await runtime.session_service.append_event(
+            session,
+            Event(
+                author="user",
+                invocation_id="empty-invocation",
+                content=types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="retry me")],
+                ),
+            ),
+        )
+        await runtime.session_service.append_event(
+            session,
+            Event(
+                author="root_agent",
+                invocation_id="empty-invocation",
+                error_code=MODEL_RETURNED_NO_CONTENT,
+            ),
+        )
+
+        await runtime.rewind_empty_model_response(
+            locator=locator,
+            invocation_id="empty-invocation",
+        )
+
+        reloaded = await runtime.get_or_create_session(locator=locator)
+        rewind_event = reloaded.events[-1]
+        assert rewind_event.actions.rewind_before_invocation_id == ("empty-invocation")
+
+        await runtime.session_service.append_event(
+            reloaded,
+            Event(
+                author="user",
+                invocation_id="retry-invocation",
+                content=types.Content(
+                    role="user",
+                    parts=[types.Part.from_text(text="retry me")],
+                ),
+            ),
+        )
+        live_events = _apply_rewinds(reloaded.events)
+        live_user_messages = [
+            event
+            for event in live_events
+            if event.author == "user" and event.content is not None
+        ]
+        assert len(live_user_messages) == 1
+        assert live_user_messages[0].invocation_id == "retry-invocation"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

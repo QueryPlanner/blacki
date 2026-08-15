@@ -75,8 +75,8 @@ class EmptyModelResponseError(RuntimeError):
 
     @property
     def retryable(self) -> bool:
-        """Return whether retrying cannot repeat a completed tool call."""
-        return not self.tool_calls_seen
+        """Return whether retrying can safely rewind this invocation."""
+        return not self.tool_calls_seen and self.invocation_id is not None
 
 
 @dataclass(slots=True, frozen=True)
@@ -378,6 +378,20 @@ class AdkRuntime:
             inference_profile=inference_profile,
         )
         return response.content or DEFAULT_EMPTY_RESPONSE
+
+    async def rewind_empty_model_response(
+        self,
+        *,
+        locator: SessionLocator,
+        invocation_id: str,
+    ) -> None:
+        """Rewind an empty invocation before retrying its user message."""
+        session = await self.get_or_create_session(locator=locator)
+        await self.runner.rewind_async(
+            user_id=locator.user_id,
+            session_id=session.id,
+            rewind_before_invocation_id=invocation_id,
+        )
 
     async def run_user_turn_with_thoughts(
         self,

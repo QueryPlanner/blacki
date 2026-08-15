@@ -53,6 +53,7 @@ class RecordingRuntime:
         self.run_user_turn_side_effects: list[str | Exception] = []
         self.create_next_session_error: Exception | None = None
         self.run_user_turn_calls: list[dict[str, Any]] = []
+        self.rewind_empty_model_response_calls: list[dict[str, Any]] = []
         self.create_next_session_calls: list[dict[str, Any]] = []
         self.closed = False
 
@@ -82,6 +83,16 @@ class RecordingRuntime:
         if self.run_user_turn_error is not None:
             raise self.run_user_turn_error
         return self.run_user_turn_response
+
+    async def rewind_empty_model_response(
+        self,
+        *,
+        locator: SessionLocator,
+        invocation_id: str,
+    ) -> None:
+        self.rewind_empty_model_response_calls.append(
+            {"locator": locator, "invocation_id": invocation_id}
+        )
 
     async def run_user_turn_with_thoughts(
         self,
@@ -1369,6 +1380,15 @@ class TestTelegramBotMessageHandling:
         )
 
         assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert runtime_recorder.rewind_empty_model_response_calls == [
+            {
+                "locator": SessionLocator(
+                    user_id="telegram-chat-123456789",
+                    session_id_prefix="telegram-chat-123456789",
+                ),
+                "invocation_id": "empty-invocation",
+            }
+        ]
         assert [
             call["message_text"] for call in runtime_recorder.run_user_turn_calls
         ] == ["same user message", "same user message"]
@@ -1411,12 +1431,14 @@ class TestTelegramBotMessageHandling:
 
         await bot._handle_message(
             chat_id=123456789,
-            message_thread_id=None,
+            message_thread_id=77,
             user_message="empty twice",
         )
 
         assert len(runtime_recorder.run_user_turn_calls) == 2
         assert "empty response" in mock_api.send_message.call_args.kwargs["text"]
+        assert mock_api.send_message.call_args.kwargs["message_thread_id"] == 77
+        assert len(runtime_recorder.rewind_empty_model_response_calls) == 1
         assert "retry_count=1" in caplog.text
         assert "empty-invocation-2" in caplog.text
 
@@ -1452,6 +1474,7 @@ class TestTelegramBotMessageHandling:
         )
 
         assert len(runtime_recorder.run_user_turn_calls) == 1
+        assert runtime_recorder.rewind_empty_model_response_calls == []
         assert "retryable=False" in caplog.text
 
 

@@ -1047,8 +1047,12 @@ class TelegramBot:
                 )
                 model = model or "unknown"
                 provider = error.provider or "unknown"
-                invocation_id = error.invocation_id or "unknown"
-                if retry_count >= _MAX_EMPTY_RESPONSE_RETRIES or not error.retryable:
+                invocation_id = error.invocation_id
+                if (
+                    retry_count >= _MAX_EMPTY_RESPONSE_RETRIES
+                    or not error.retryable
+                    or invocation_id is None
+                ):
                     logger.warning(
                         "Empty model response recovery stopped: "
                         "model=%s provider=%s conversation_id=%s "
@@ -1056,12 +1060,19 @@ class TelegramBot:
                         model,
                         provider,
                         session_identity.conversation_key,
-                        invocation_id,
+                        invocation_id or "unknown",
                         retry_count,
                         error.retryable,
                     )
                     raise
 
+                await self.runtime.rewind_empty_model_response(
+                    locator=SessionLocator(
+                        user_id=session_identity.user_id,
+                        session_id_prefix=session_identity.session_id_prefix,
+                    ),
+                    invocation_id=invocation_id,
+                )
                 retry_count += 1
                 logger.warning(
                     "Empty model response; retrying Telegram turn: "
@@ -1123,6 +1134,7 @@ class TelegramBot:
             await self.api.send_message(
                 chat_id=chat_id,
                 text=text,
+                message_thread_id=message_thread_id,
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
         except Exception:
