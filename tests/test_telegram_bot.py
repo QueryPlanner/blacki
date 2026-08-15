@@ -1034,6 +1034,60 @@ The file handles model selection dynamically:
 • LiteLLM Integration: If an OPENROUTER\_API\_KEY is present\."""
         assert formatted == expected
 
+    def test_format_for_telegram_converts_markdown_table_to_code_block(self) -> None:
+        """Render Markdown tables in Telegram's supported monospaced format."""
+        text = "| Name | Value |\n| --- | ---: |\n| Alpha | 1 |\n| Beta | 2 |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nName  | Value\n------+------\nAlpha | 1\nBeta  | 2\n```"
+        )
+
+    def test_format_for_telegram_converts_table_without_outer_pipes(self) -> None:
+        """Recognize Markdown tables that omit leading and trailing pipes."""
+        text = "Name | Value\n:--- | ---:\nAlpha | 1"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == "```\nName  | Value\n------+------\nAlpha | 1\n```"
+
+    def test_format_for_telegram_preserves_pipes_inside_table_cells(self) -> None:
+        """Keep escaped and inline-code pipes inside their table cells."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| a\\|b | `x|y` |"
+
+        formatted = format_for_telegram(text)
+
+        assert (
+            formatted == "```\nExpression | Meaning\n"
+            "-----------+--------\na|b        | \\`x|y\\`\n```"
+        )
+
+    def test_format_for_telegram_does_not_convert_existing_code_tables(self) -> None:
+        """Leave already fenced tables unchanged."""
+        text = "```\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n```"
+
+        assert format_for_telegram(text) == text
+
+    def test_format_for_telegram_preserves_table_line_endings(self) -> None:
+        """Preserve CRLF line endings and text following a table."""
+        text = "| Name | Value |\r\n| --- | --- |\r\n| Alpha | 1 |\r\nAfter\r\n"
+
+        formatted = format_for_telegram(text)
+
+        assert (
+            formatted
+            == "```\r\nName  | Value\r\n------+------\r\nAlpha | 1\r\n```\r\nAfter\r\n"
+        )
+
+    def test_format_for_telegram_keeps_non_table_pipes_as_plain_text(self) -> None:
+        """Do not interpret arbitrary pipe-delimited text as a table."""
+        text = "alpha | beta\nnot a separator | nope"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == "alpha \\| beta\nnot a separator \\| nope"
+
 
 class TestTelegramBotCommands:
     """Tests for Telegram bot command handling."""
