@@ -40,8 +40,10 @@ docker compose -f compose.yaml -f compose.prod.yaml ps
 
 The HTTP port binds to `127.0.0.1` by default. Telegram polling needs outbound
 HTTPS only, so a Telegram deployment does not need a public application port.
-See the [deployment guide](docs/DEPLOYMENT.md) for verification, secure browser
-access, and upgrade notes.
+For direct private dashboard access over Tailscale, set `HOST_BIND_IP` to the
+VPS's Tailscale IPv4 address in `.env`. See the
+[deployment guide](docs/DEPLOYMENT.md) for verification, secure browser access,
+and upgrade notes.
 
 ## What persists
 

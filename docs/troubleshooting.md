@@ -108,10 +108,12 @@ VPS defaults intentionally set:
 SERVE_WEB_INTERFACE=false
 ```
 
-The supported overlays bind only to loopback. Enable the interface with the
-development overlay and use an SSH tunnel as described in
-[First VPS deployment](DEPLOYMENT.md#secure-browser-access). A loopback bind is
-not reachable directly from another computer.
+The production overlay binds only to loopback by default. For the private
+dashboard, set `HOST_BIND_IP` to the server's Tailscale IPv4 address, recreate
+the production service, and open `/dashboard` from an allowed tailnet device.
+Use Tailscale ACLs because the dashboard has no application authentication.
+For the ADK development interface, keep it disabled in production and use an
+SSH tunnel as described in [First VPS deployment](DEPLOYMENT.md#secure-browser-access).
 
 ## Host port 8080 is already in use
 

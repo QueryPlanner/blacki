@@ -24,6 +24,7 @@ These values are consumed by Compose rather than `ServerEnv`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `HOST_BIND_IP` | `127.0.0.1` | Production host interface for the published port |
 | `HOST_PORT` | `8080` | Host-side port |
 | `RESTART_POLICY` | `unless-stopped` | Compose restart policy |
 | `IMAGE` | `blacki:local` | Image name or verified registry reference |
@@ -31,7 +32,11 @@ These values are consumed by Compose rather than `ServerEnv`.
 
 `HOST` and `PORT` are different: they control the process inside the container.
 Compose sets them to `0.0.0.0` and `8080`; the supported overlays publish only
-to host loopback and `HOST_PORT` selects that loopback port.
+to host loopback by default. The production overlay uses `HOST_BIND_IP` when it
+is explicitly set, and `HOST_PORT` selects the host-side port. Set
+`HOST_BIND_IP` to the server's Tailscale IPv4 address for direct tailnet access
+to `/dashboard`. Do not set it to `0.0.0.0`; that publishes the private-data
+surface on every host interface.
 
 ## Server
 

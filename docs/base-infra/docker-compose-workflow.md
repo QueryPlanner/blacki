@@ -55,15 +55,30 @@ The mapping is:
 
 ```yaml
 ports:
-  - "127.0.0.1:${HOST_PORT:-8080}:8080"
+  - "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8080}:8080"
 ```
 
 The process listens on `0.0.0.0:8080` inside the container, while the VPS
-publishes it only on loopback. Telegram long polling needs no inbound port.
+publishes it only on host loopback by default. Telegram long polling needs no
+inbound port.
+
+For direct private dashboard access over Tailscale, set the production host
+bind in `.env` to the VPS's Tailscale IPv4 address:
+
+```dotenv
+HOST_BIND_IP=100.x.y.z
+```
+
+Then recreate the production service and open
+`http://100.x.y.z:${HOST_PORT:-8080}/dashboard` from an allowed tailnet device.
+The dashboard has no application authentication, so configure Tailscale ACLs
+for the operator devices and never use `0.0.0.0` for this setting. Tailscale
+Serve remains an alternative when HTTPS and a loopback-only Docker bind are
+preferred.
 
 The base file publishes no host port. `compose.prod.yaml` adds the loopback
-mapping and forces the web interface and reload off even if hostile shell or
-`.env` values request them.
+mapping by default and forces the web interface and reload off even if hostile
+shell or `.env` values request them.
 For local browser development, use `compose.dev.yaml`; it enables the
 development features but also forces loopback. Use an SSH tunnel for temporary
 remote access. Neither overlay provides authentication for public exposure.
