@@ -127,6 +127,12 @@ HOST_BIND_IP=100.x.y.z
 HOST_PORT=8080
 ```
 
+When the production deployment is managed by GitHub Actions, set the
+`HOST_BIND_IP` secret in the repository or `production` environment. The
+deployment workflow writes that value to the server's `.env` before recreating
+the Compose service. If the secret is unset, the workflow preserves the
+server's existing bind or falls back to loopback.
+
 Recreate the service after changing `.env`:
 
 ```bash
