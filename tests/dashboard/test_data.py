@@ -259,6 +259,64 @@ async def test_sessions_users_replay_versions_and_overview(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_overview_error_rate_uses_failed_invocations_only(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-1", "session-1")
+    for event_id in ("failed-start", "failed-end"):
+        _insert_event(
+            db_path,
+            event_id,
+            "user-1",
+            "session-1",
+            1_781_000_000.0,
+            {
+                **_text_event(
+                    event_id,
+                    "model",
+                    "failed",
+                    1_781_000_000.0,
+                    invocation_id="failed-invocation",
+                ),
+                "error": "provider failure",
+            },
+        )
+    (tmp_path / "blacki-telemetry.log").write_text(
+        json.dumps(
+            {
+                "timestamp": 1_781_000_000.0,
+                "level": "ERROR",
+                "message": "request failed",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "blacki-traces.log").write_text(
+        json.dumps(
+            {
+                "name": "failed-request",
+                "context": {"trace_id": "trace-1", "span_id": "span-1"},
+                "start_time": 1_781_000_000.0,
+                "end_time": 1_781_000_001.0,
+                "status": "ERROR",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    overview = await DashboardStore(db_path, tmp_path).get_overview("all")
+
+    assert overview["stats"]["requests"] == 1
+    assert overview["stats"]["errors"] == 1
+    assert overview["stats"]["request_errors"] == 1
+    assert overview["stats"]["log_errors"] == 1
+    assert overview["stats"]["trace_errors"] == 1
+    assert overview["stats"]["error_rate"] == 1.0
+
+
+@pytest.mark.asyncio
 async def test_read_only_snapshot_can_read_during_wal_writer(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     _make_db(db_path)
@@ -760,9 +818,18 @@ def test_bounded_jsonl_iterator_and_json_sanitizer_edges(
             return next(self.chunks, b"")
 
     oversized = list(
-        _iter_raw_jsonl_lines(ChunkedHandle([b"x" * (1024 * 1024 + 1), b"\n"]))
+        _iter_raw_jsonl_lines(
+            ChunkedHandle(
+                [
+                    b"x" * (1024 * 1024 + 1),
+                    b"y" * (64 * 1024),
+                    b"z" * (64 * 1024),
+                    b'\n{"ok": true}\n',
+                ]
+            )
+        )
     )
-    assert oversized == [(b"", True)]
+    assert oversized == [(b"", True), (b'{"ok": true}', False)]
     assert list(_iter_raw_jsonl_lines(ChunkedHandle([b"x" * (1024 * 1024 + 1)]))) == [
         (b"", True)
     ]

@@ -465,6 +465,11 @@ def _iter_raw_jsonl_lines(handle: Any) -> Iterator[tuple[bytes, bool]]:
             # bounded chunks until the newline marks the end of this record.
             buffer.clear()
             oversized = True
+        elif oversized:
+            # Keep discarding chunks until the record terminator arrives.
+            # Without this branch, one malformed record can grow the buffer
+            # without bound after it first crosses the configured limit.
+            buffer.clear()
     if oversized:
         yield b"", True
     elif buffer:
@@ -715,7 +720,8 @@ def _event_stats(events: Iterable[_EventRow]) -> dict[str, Any]:
         for event in event_list
     )
     invocation_timestamps: dict[str, list[float]] = defaultdict(list)
-    input_tokens = output_tokens = total_tokens = errors = 0
+    input_tokens = output_tokens = total_tokens = event_errors = 0
+    error_invocations: set[str] = set()
     for event in event_list:
         if event.invocation_id and event.timestamp is not None:
             invocation_timestamps[event.invocation_id].append(event.timestamp)
@@ -723,7 +729,10 @@ def _event_stats(events: Iterable[_EventRow]) -> dict[str, Any]:
         input_tokens += current_input
         output_tokens += current_output
         total_tokens += current_total
-        errors += int(_event_is_error(event))
+        if _event_is_error(event):
+            event_errors += 1
+            if event.invocation_id:
+                error_invocations.add(event.invocation_id)
     latencies = [
         (max(timestamps) - min(timestamps)) * 1000
         for timestamps in invocation_timestamps.values()
@@ -743,7 +752,8 @@ def _event_stats(events: Iterable[_EventRow]) -> dict[str, Any]:
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "tokens": total_tokens,
-        "errors": errors,
+        "errors": event_errors,
+        "request_errors": len(error_invocations),
         "latency_ms": {
             "average": round(average, 2),
             "p95": round(p95, 2),
@@ -1268,7 +1278,7 @@ class DashboardStore:
         stats["trace_latency_ms"] = trace_latency
         stats["log_errors"] = log_errors
         stats["trace_errors"] = trace_errors
-        stats["errors"] += log_errors + trace_errors
+        stats["errors"] = stats["request_errors"]
         stats["error_rate"] = (
             stats["errors"] / stats["requests"] if stats["requests"] else 0.0
         )
