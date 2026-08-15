@@ -1034,6 +1034,103 @@ The file handles model selection dynamically:
 • LiteLLM Integration: If an OPENROUTER\_API\_KEY is present\."""
         assert formatted == expected
 
+    def test_format_for_telegram_converts_markdown_table_to_code_block(self) -> None:
+        """Render Markdown tables in Telegram's supported monospaced format."""
+        text = "| Name | Value |\n| --- | ---: |\n| Alpha | 1 |\n| Beta | 2 |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nName  | Value\n------+------\nAlpha | 1\nBeta  | 2\n```"
+        )
+
+    def test_format_for_telegram_converts_table_without_outer_pipes(self) -> None:
+        """Recognize Markdown tables that omit leading and trailing pipes."""
+        text = "Name | Value\n:--- | ---:\nAlpha | 1"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == "```\nName  | Value\n------+------\nAlpha | 1\n```"
+
+    def test_format_for_telegram_preserves_pipes_inside_table_cells(self) -> None:
+        """Keep escaped and inline-code pipes inside their table cells."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| a\\|b | `x|y` |"
+
+        formatted = format_for_telegram(text)
+
+        assert (
+            formatted == "```\nExpression | Meaning\n"
+            "-----------+--------\na|b        | \\`x|y\\`\n```"
+        )
+
+    def test_format_for_telegram_preserves_escaped_trailing_cell_pipe(self) -> None:
+        """Keep an escaped pipe when it is the final cell character."""
+        text = "Name | Value\n--- | ---\nAlpha | a\\|"
+
+        assert (
+            format_for_telegram(text)
+            == "```\nName  | Value\n------+------\nAlpha | a|\n```"
+        )
+
+    def test_format_for_telegram_matches_multi_backtick_code_spans(self) -> None:
+        """Keep pipes inside code spans delimited by multiple backticks."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| ``a|b`` | literal |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nExpression | Meaning\n"
+            "-----------+--------\n\\`\\`a|b\\`\\`    | literal\n```"
+        )
+
+    def test_format_for_telegram_ignores_pipes_in_mixed_backtick_runs(
+        self,
+    ) -> None:
+        """Keep pipes inside longer spans with shorter inner backtick runs."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| ``a `|` b`` | literal |"
+
+        assert format_for_telegram(text) == (
+            "```\nExpression  | Meaning\n"
+            "------------+--------\n\\`\\`a \\`|\\` b\\`\\` | literal\n```"
+        )
+
+    def test_format_for_telegram_pads_unicode_table_cells_by_display_width(
+        self,
+    ) -> None:
+        """Align CJK and combining characters in monospaced table output."""
+        text = "| Word | Other |\n| --- | --- |\n| 猫 | é |\n| Dog | long |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nWord | Other\n-----+------\n猫   | é\nDog  | long\n```"
+        )
+
+    def test_format_for_telegram_does_not_convert_existing_code_tables(self) -> None:
+        """Leave already fenced tables unchanged."""
+        text = "```\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n```"
+
+        assert format_for_telegram(text) == text
+
+    def test_format_for_telegram_preserves_table_line_endings(self) -> None:
+        """Preserve CRLF line endings and text following a table."""
+        text = "| Name | Value |\r\n| --- | --- |\r\n| Alpha | 1 |\r\nAfter\r\n"
+
+        formatted = format_for_telegram(text)
+
+        assert (
+            formatted
+            == "```\r\nName  | Value\r\n------+------\r\nAlpha | 1\r\n```\r\nAfter\r\n"
+        )
+
+    def test_format_for_telegram_keeps_non_table_pipes_as_plain_text(self) -> None:
+        """Do not interpret arbitrary pipe-delimited text as a table."""
+        text = "alpha | beta\nnot a separator | nope"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == "alpha \\| beta\nnot a separator \\| nope"
+
 
 class TestTelegramBotCommands:
     """Tests for Telegram bot command handling."""

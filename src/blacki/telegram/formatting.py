@@ -5,11 +5,13 @@ which requires special handling for reserved characters.
 """
 
 import re
+import unicodedata
 
 MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~`>#+-=|{}.!\\")
 
 HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
 BULLET_PATTERN = re.compile(r"^(\s*)[*\-+]\s+", re.MULTILINE)
+TABLE_SEPARATOR_CELL_PATTERN = re.compile(r"^:?-+:?$")
 
 
 def escape_markdown(text: str) -> str:
@@ -58,9 +60,11 @@ def format_for_telegram(text: str) -> str:
     - **bold** to *bold* (Telegram bold)
     - # Heading to *Heading* (bold, no heading in Telegram)
     - * item, - item to • item (bullet character)
+    - Markdown tables to aligned code blocks (Telegram has no table entity)
     - Escapes remaining special characters
     """
     original_text = text
+    text = _convert_markdown_tables(text)
     text = _convert_headings_to_bold(text)
     text = _convert_bullets(text)
     text = _convert_bold(text)
@@ -153,6 +157,161 @@ def _convert_bullets(text: str) -> str:
         return f"{indent}• "
 
     return BULLET_PATTERN.sub(replace_bullet, text)
+
+
+def _convert_markdown_tables(text: str) -> str:
+    """Convert GitHub-style Markdown tables to Telegram code blocks."""
+    if "|" not in text:
+        return text
+
+    lines = text.splitlines()
+    newline = "\r\n" if "\r\n" in text else "\n"
+    has_trailing_newline = text.endswith(("\n", "\r"))
+    converted: list[str] = []
+    in_code_block = False
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if line.lstrip().startswith("```"):
+            converted.append(line)
+            in_code_block = not in_code_block
+            index += 1
+            continue
+
+        if not in_code_block and index + 1 < len(lines):
+            header = _split_table_row(line)
+            separator = _split_table_row(lines[index + 1])
+            if (
+                header
+                and separator
+                and len(header) == len(separator)
+                and all(
+                    TABLE_SEPARATOR_CELL_PATTERN.fullmatch(cell.strip())
+                    for cell in separator
+                )
+            ):
+                rows = [header]
+                index += 2
+                while index < len(lines):
+                    row = _split_table_row(lines[index])
+                    if row is None:
+                        break
+                    rows.append(row)
+                    index += 1
+
+                converted.extend(["```", *_render_table(rows), "```"])
+                continue
+
+        converted.append(line)
+        index += 1
+
+    result = newline.join(converted)
+    if has_trailing_newline:
+        result += newline
+    return result
+
+
+def _split_table_row(line: str) -> list[str] | None:
+    """Split a Markdown table row without treating escaped/code pipes as delimiters."""
+    cells: list[str] = []
+    current: list[str] = []
+    code_delimiter_length: int | None = None
+    has_pipe = False
+    index = 0
+
+    while index < len(line):
+        character = line[index]
+        if character == "`":
+            run_start = index
+            while index < len(line) and line[index] == "`":
+                index += 1
+            run_length = index - run_start
+            current.extend("`" * run_length)
+            if code_delimiter_length is None:
+                code_delimiter_length = run_length
+            elif run_length == code_delimiter_length:
+                code_delimiter_length = None
+            continue
+
+        if character == "|" and code_delimiter_length is None:
+            backslashes = 0
+            preceding = index - 1
+            while preceding >= 0 and line[preceding] == "\\":
+                backslashes += 1
+                preceding -= 1
+            if backslashes % 2 == 0:
+                cells.append("".join(current).strip())
+                current = []
+                has_pipe = True
+                index += 1
+                continue
+
+        current.append(character)
+        index += 1
+
+    if not has_pipe:
+        return None
+
+    cells.append("".join(current).strip())
+    if line.lstrip().startswith("|") and cells:
+        cells.pop(0)
+    if _has_unescaped_trailing_pipe(line) and cells:
+        cells.pop()
+    return cells or None
+
+
+def _has_unescaped_trailing_pipe(line: str) -> bool:
+    """Return whether the row ends with an unescaped table delimiter."""
+    stripped = line.rstrip()
+    if not stripped.endswith("|"):
+        return False
+
+    backslashes = 0
+    preceding = len(stripped) - 2
+    while preceding >= 0 and stripped[preceding] == "\\":
+        backslashes += 1
+        preceding -= 1
+    return backslashes % 2 == 0
+
+
+def _render_table(rows: list[list[str]]) -> list[str]:
+    """Render table rows as padded text suitable for a Telegram code block."""
+    column_count = max(len(row) for row in rows)
+    normalized_rows = [
+        [cell.replace(r"\|", "|") for cell in row] + [""] * (column_count - len(row))
+        for row in rows
+    ]
+    widths = [
+        max(1, max(_display_width(row[column]) for row in normalized_rows))
+        for column in range(column_count)
+    ]
+
+    def render_row(row: list[str]) -> str:
+        return " | ".join(
+            _pad_cell(cell, width) for cell, width in zip(row, widths, strict=True)
+        ).rstrip()
+
+    rendered = [render_row(normalized_rows[0])]
+    rendered.append("-+-".join("-" * width for width in widths))
+    rendered.extend(render_row(row) for row in normalized_rows[1:])
+    return rendered
+
+
+def _display_width(text: str) -> int:
+    """Return the approximate monospace display width of Unicode text."""
+    width = 0
+    for character in text:
+        category = unicodedata.category(character)
+        if unicodedata.combining(character) or category in {"Cf", "Mn", "Me"}:
+            continue
+        width += 2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+    return width
+
+
+def _pad_cell(cell: str, width: int) -> str:
+    """Pad a table cell to a target display width."""
+    return cell + " " * max(0, width - _display_width(cell))
 
 
 def _convert_bold(text: str) -> str:
