@@ -5,13 +5,14 @@ import contextlib
 import logging
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from google.genai import types
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator
+from blacki.adk_runtime import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.inference import (
     InferenceProfile,
     ReasoningConfig,
@@ -29,7 +30,7 @@ from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig
 from .api import TelegramApiClient, TelegramApiError
-from .formatting import format_for_telegram
+from .formatting import escape_markdown_plain, format_for_telegram
 from .streaming import split_long_message
 from .types import (
     BotCommand,
@@ -46,6 +47,7 @@ logger = logging.getLogger(__name__)
 POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
+_MAX_EMPTY_RESPONSE_RETRIES = 1
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -407,11 +409,8 @@ class TelegramBot:
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             )
             profile = await self._load_chat_profile(chat_id)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
                 message_text=prompt,
                 state=state,
                 user_parts=user_parts,
@@ -841,15 +840,15 @@ class TelegramBot:
 
     async def _send_start_message(self, chat_id: int) -> None:
         """Send the start/welcome message."""
-        text = (
-            "👋 Hello! I'm blacki, your AI assistant\\.\n\n"
+        text = escape_markdown_plain(
+            "👋 Hello! I'm blacki, your AI assistant.\n\n"
             "I run through the same ADK agent as the web interface, so our "
-            "conversation history stays attached to this chat\\.\n\n"
+            "conversation history stays attached to this chat.\n\n"
             "Commands:\n"
-            "/help \\- Show available commands\n"
-            "/reset \\- Start a fresh conversation session\n"
-            "/model \\- Choose the model and thinking settings\n"
-            "/thinking \\- Choose supported reasoning effort"
+            "/help - Show available commands\n"
+            "/reset - Start a fresh conversation session\n"
+            "/model - Choose the model and thinking settings\n"
+            "/thinking - Choose supported reasoning effort"
         )
         try:
             await self.api.send_message(
@@ -949,7 +948,9 @@ class TelegramBot:
         if not manager.config.enabled:
             await self.api.send_message(
                 chat_id=chat_id,
-                text="❌ Sandbox is not enabled. Cannot process file uploads\\.",
+                text=escape_markdown_plain(
+                    "❌ Sandbox is not enabled. Cannot process file uploads."
+                ),
                 message_thread_id=message_thread_id,
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
@@ -995,11 +996,8 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
                 message_text=user_message,
                 state=state,
                 inference_profile=await self._load_chat_profile(chat_id),
@@ -1019,6 +1017,62 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
+
+    async def _run_user_turn_with_retry(
+        self,
+        *,
+        session_identity: TelegramSessionIdentity,
+        message_text: str,
+        state: dict[str, str],
+        inference_profile: InferenceProfile | None,
+        user_parts: Sequence[types.Part] | None = None,
+    ) -> str:
+        """Run a Telegram turn with one safe empty-response retry."""
+        retry_count = 0
+        while True:
+            try:
+                return await self.runtime.run_user_turn(
+                    locator=SessionLocator(
+                        user_id=session_identity.user_id,
+                        session_id_prefix=session_identity.session_id_prefix,
+                    ),
+                    message_text=message_text,
+                    state=state,
+                    user_parts=user_parts,
+                    inference_profile=inference_profile,
+                )
+            except EmptyModelResponseError as error:
+                model = error.model or (
+                    inference_profile.model if inference_profile else None
+                )
+                model = model or "unknown"
+                provider = error.provider or "unknown"
+                invocation_id = error.invocation_id or "unknown"
+                if retry_count >= _MAX_EMPTY_RESPONSE_RETRIES or not error.retryable:
+                    logger.warning(
+                        "Empty model response recovery stopped: "
+                        "model=%s provider=%s conversation_id=%s "
+                        "invocation_id=%s retry_count=%d retryable=%s",
+                        model,
+                        provider,
+                        session_identity.conversation_key,
+                        invocation_id,
+                        retry_count,
+                        error.retryable,
+                    )
+                    raise
+
+                retry_count += 1
+                logger.warning(
+                    "Empty model response; retrying Telegram turn: "
+                    "model=%s provider=%s conversation_id=%s "
+                    "invocation_id=%s retry_count=%d",
+                    model,
+                    provider,
+                    session_identity.conversation_key,
+                    invocation_id,
+                    retry_count,
+                )
 
     async def _handle_message(
         self,
@@ -1047,11 +1101,8 @@ class TelegramBot:
                 conversation_key=session_identity.conversation_key,
             )
             profile = await self._load_chat_profile(chat_id)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
                 message_text=user_message,
                 state=state,
                 inference_profile=profile,
@@ -1063,6 +1114,17 @@ class TelegramBot:
             )
 
             logger.info("Sent ADK response to chat %s", chat_id)
+        except EmptyModelResponseError:
+            logger.exception("Empty model response after retry for chat %s", chat_id)
+            text = (
+                "❌ The model returned an empty response\\. "
+                "Please try sending your message again\\."
+            )
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
         except Exception:
             logger.exception("Error processing message for chat %s", chat_id)
             text = (
@@ -1106,11 +1168,8 @@ class TelegramBot:
                 conversation_key=session_identity.conversation_key,
             )
             profile = await self._load_chat_profile(chat_id_str)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
                 message_text=f"[Scheduled Event] {reminder.message}",
                 state=state,
                 inference_profile=profile,

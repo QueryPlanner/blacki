@@ -48,10 +48,35 @@ def _create_mem0_memory_service(uri: str, **kwargs: Any) -> BaseMemoryService:
 get_service_registry().register_memory_service("mem0", _create_mem0_memory_service)
 
 DEFAULT_EMPTY_RESPONSE = "I apologize, but I couldn't generate a response."
+MODEL_RETURNED_NO_CONTENT = "MODEL_RETURNED_NO_CONTENT"
 SESSION_VERSION_SEPARATOR = "-v"
 _CONFIRMATION_FUNCTION = "adk_request_confirmation"
 _CONFIRMATION_APPROVE = frozenset({"y", "yes", "confirm", "approve"})
 _CONFIRMATION_REJECT = frozenset({"n", "no", "reject", "cancel"})
+
+
+class EmptyModelResponseError(RuntimeError):
+    """A model completed without returning usable text or a tool call."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        invocation_id: str | None = None,
+        tool_calls_seen: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.model = model
+        self.provider = provider
+        self.invocation_id = invocation_id
+        self.tool_calls_seen = tool_calls_seen
+
+    @property
+    def retryable(self) -> bool:
+        """Return whether retrying cannot repeat a completed tool call."""
+        return not self.tool_calls_seen
 
 
 @dataclass(slots=True, frozen=True)
@@ -78,6 +103,27 @@ class PendingConfirmation:
     interrupt_id: str
     tool_name: str
     tool_args: dict[str, Any]
+
+
+def _provider_from_model(model: str | None) -> str | None:
+    if not model:
+        return None
+    if "/" in model:
+        return model.split("/", 1)[0]
+    if model.casefold().startswith(("gemini", "gemma")):
+        return "google"
+    return None
+
+
+def _model_metadata(
+    event: Event,
+    inference_profile: InferenceProfile | None,
+) -> tuple[str | None, str | None]:
+    profile_model = inference_profile.model if inference_profile else None
+    event_model = event.model_version or None
+    model = event_model or profile_model
+    provider = _provider_from_model(profile_model) or _provider_from_model(model)
+    return model, provider
 
 
 def _pending_confirmations(session: Session) -> list[PendingConfirmation]:
@@ -369,6 +415,10 @@ class AdkRuntime:
         partial_thoughts = ""
         partial_content = ""
         pending_after_turn: list[PendingConfirmation] = []
+        pending_error: RuntimeError | None = None
+        tool_calls_seen = False
+        last_invocation_id: str | None = None
+        last_model: str | None = None
 
         with inference_profile_context(inference_profile):
             async for event in self.runner.run_async(
@@ -377,8 +427,20 @@ class AdkRuntime:
                 new_message=new_message,
                 state_delta=state,
             ):
-                self._raise_on_event_error(event)
-                for function_call in event.get_function_calls():
+                if event.invocation_id:
+                    last_invocation_id = event.invocation_id
+                if event.model_version:
+                    last_model = event.model_version
+                event_function_calls = event.get_function_calls()
+                tool_calls_seen = tool_calls_seen or bool(event_function_calls)
+                if pending_error is None:
+                    pending_error = self._build_event_error(
+                        event,
+                        inference_profile=inference_profile,
+                        tool_calls_seen=tool_calls_seen,
+                    )
+
+                for function_call in event_function_calls:
                     if function_call.name != _CONFIRMATION_FUNCTION:
                         continue
                     args = function_call.args or {}
@@ -430,12 +492,27 @@ class AdkRuntime:
                         else:
                             content_parts.append(event_content)
 
+        if pending_error is not None:
+            raise pending_error
+
         final_thoughts = " ".join(thoughts_parts).strip() or partial_thoughts
         final_content = " ".join(content_parts).strip() or partial_content
         if pending_after_turn:
             final_content = _format_confirmation(
                 pending_after_turn[0],
                 pending_count=len(pending_after_turn),
+            )
+
+        if not final_content:
+            model = last_model or (
+                inference_profile.model if inference_profile else None
+            )
+            raise EmptyModelResponseError(
+                "ADK runner returned no usable model content.",
+                model=model,
+                provider=_provider_from_model(model),
+                invocation_id=last_invocation_id,
+                tool_calls_seen=tool_calls_seen,
             )
 
         return TurnResponse(
@@ -465,6 +542,8 @@ class AdkRuntime:
         )
 
         streaming_config = RunConfig(streaming_mode=StreamingMode.SSE)
+        pending_error: RuntimeError | None = None
+        tool_calls_seen = False
 
         with inference_profile_context(inference_profile):
             async for event in self.runner.run_async(
@@ -474,7 +553,14 @@ class AdkRuntime:
                 run_config=streaming_config,
                 state_delta=state,
             ):
-                self._raise_on_event_error(event)
+                event_function_calls = event.get_function_calls()
+                tool_calls_seen = tool_calls_seen or bool(event_function_calls)
+                if pending_error is None:
+                    pending_error = self._build_event_error(
+                        event,
+                        inference_profile=inference_profile,
+                        tool_calls_seen=tool_calls_seen,
+                    )
 
                 if event.content and event.content.parts:
                     event_thoughts = " ".join(
@@ -494,6 +580,9 @@ class AdkRuntime:
                             content=event_content,
                             is_partial=True,
                         )
+
+        if pending_error is not None:
+            raise pending_error
 
         yield StreamChunk(
             thoughts="",
@@ -572,13 +661,29 @@ class AdkRuntime:
             state=session_state,
         )
 
-    def _raise_on_event_error(self, event: Event) -> None:
-        if not event.error_message:
-            return
+    def _build_event_error(
+        self,
+        event: Event,
+        *,
+        inference_profile: InferenceProfile | None,
+        tool_calls_seen: bool,
+    ) -> RuntimeError | None:
+        if not event.error_message and event.error_code != MODEL_RETURNED_NO_CONTENT:
+            return None
 
         error_code = event.error_code or "unknown_error"
-        msg = f"ADK runner error ({error_code}): {event.error_message}"
-        raise RuntimeError(msg)
+        error_message = event.error_message or "The model returned no content."
+        msg = f"ADK runner error ({error_code}): {error_message}"
+        if error_code == MODEL_RETURNED_NO_CONTENT:
+            model, provider = _model_metadata(event, inference_profile)
+            return EmptyModelResponseError(
+                msg,
+                model=model,
+                provider=provider,
+                invocation_id=event.invocation_id or None,
+                tool_calls_seen=tool_calls_seen,
+            )
+        return RuntimeError(msg)
 
 
 def create_adk_runtime(
