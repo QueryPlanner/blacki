@@ -445,7 +445,7 @@ class TelegramBot:
                 await self.api.send_message(
                     chat_id=chat_id,
                     text=(
-                        "✅ The photo was saved for 90 days, but the sandbox is "
+                        "✅ The photo was saved in durable storage, but the sandbox is "
                         "unavailable. Ask me to restore it later."
                     ),
                     message_thread_id=message_thread_id,
@@ -548,14 +548,23 @@ class TelegramBot:
         from blacki.user_files.service import IngestResult, sanitize_display_name
 
         if user_files_enabled():
-            ingest = await get_user_file_service().ingest(
-                owner_id=owner_id,
-                display_name=display_name,
-                media_kind=media_kind,
-                mime_type=mime_type,
-                telegram_file_unique_id=telegram_file_unique_id,
-                data=data,
-            )
+            try:
+                ingest = await get_user_file_service().ingest(
+                    owner_id=owner_id,
+                    display_name=display_name,
+                    media_kind=media_kind,
+                    mime_type=mime_type,
+                    telegram_file_unique_id=telegram_file_unique_id,
+                    data=data,
+                )
+            except Exception:
+                logger.exception("Durable file service initialization failed")
+                ingest = IngestResult(
+                    None,
+                    "temporary",
+                    "R2 storage is misconfigured; this attachment is available "
+                    "only temporarily.",
+                )
         else:
             ingest = IngestResult(None, "temporary")
 
@@ -1136,7 +1145,7 @@ class TelegramBot:
                     await self.api.send_message(
                         chat_id=chat_id,
                         text=(
-                            "✅ The attachment was saved for 90 days, but the "
+                            "✅ The attachment was saved in durable storage, but the "
                             "sandbox is unavailable. Ask me to restore it later."
                         ),
                         message_thread_id=message_thread_id,

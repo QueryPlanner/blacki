@@ -204,6 +204,37 @@ async def test_service_ingest_deduplicate_restore_and_delete(
 
 
 @pytest.mark.asyncio
+async def test_service_replaces_expired_duplicate_hash(
+    storage: SqliteUserFileStorage, config: R2FileConfig
+) -> None:
+    """An expired row must not block the same bytes from becoming available."""
+    digest = hashlib.sha256(b"data").hexdigest()
+    await storage.add(
+        _record(
+            object_id="expired-object",
+            r2_key="expired-key",
+            owner_id="sender-1",
+            sha256=digest,
+            expires_at="2000-01-01T00:00:00+00:00",
+        )
+    )
+    service = UserFileService(config, storage, FakeObjectStore())
+
+    result = await service.ingest(
+        owner_id="sender-1",
+        display_name="fresh.pdf",
+        media_kind="document",
+        mime_type="application/pdf",
+        telegram_file_unique_id="fresh",
+        data=b"data",
+    )
+
+    assert result.status == "stored"
+    assert result.stored_file is not None
+    assert result.stored_file.object_id != "expired-object"
+
+
+@pytest.mark.asyncio
 async def test_service_temporary_orphan_and_integrity_failures(
     storage: SqliteUserFileStorage, config: R2FileConfig
 ) -> None:

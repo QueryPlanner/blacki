@@ -3775,6 +3775,43 @@ async def test_attachment_materialization_uses_opaque_unique_path(
 
 
 @pytest.mark.asyncio
+async def test_invalid_r2_configuration_falls_back_to_sandbox(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """Broken optional R2 settings must not prevent temporary processing."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    sandbox = MagicMock()
+    sandbox.files.write_file = AsyncMock()
+    manager = MagicMock()
+    manager.config.enabled = True
+    manager.get_or_create_sandbox = AsyncMock(return_value={"sandbox": sandbox})
+    with (
+        patch("blacki.user_files.user_files_enabled", return_value=True),
+        patch(
+            "blacki.user_files.get_user_file_service",
+            side_effect=ValueError("missing credentials"),
+        ),
+        patch("blacki.sandbox.manager.get_sandbox_manager", return_value=manager),
+    ):
+        ingest, path, error = await bot._store_and_materialize_attachment(
+            state={"user_id": "chat"},
+            owner_id="123",
+            display_name="report.pdf",
+            media_kind="document",
+            mime_type="application/pdf",
+            telegram_file_unique_id="unique",
+            data=b"data",
+        )
+
+    assert ingest.status == "temporary"
+    assert ingest.warning is not None and "misconfigured" in ingest.warning
+    assert path == "/workspace/uploads/report.pdf"
+    assert error is None
+    sandbox.files.write_file.assert_awaited_once_with(path, b"data")
+
+
+@pytest.mark.asyncio
 async def test_photo_saved_without_sandbox_reports_restore_option(
     telegram_config: TelegramConfig,
     runtime_recorder: RecordingRuntime,
@@ -3807,7 +3844,10 @@ async def test_photo_saved_without_sandbox_reports_restore_option(
         sender_user_id=7,
     )
     assert api.send_message.await_count == 2
-    assert "saved for 90 days" in api.send_message.await_args_list[-1].kwargs["text"]
+    assert (
+        "saved in durable storage"
+        in api.send_message.await_args_list[-1].kwargs["text"]
+    )
     assert runtime_recorder.run_user_turn_calls == []
 
 
@@ -3876,7 +3916,10 @@ async def test_file_saved_without_sandbox_reports_restore_option(
             sender_user_id=7,
         )
     assert api.send_message.await_count == 2
-    assert "saved for 90 days" in api.send_message.await_args_list[-1].kwargs["text"]
+    assert (
+        "saved in durable storage"
+        in api.send_message.await_args_list[-1].kwargs["text"]
+    )
 
 
 @pytest.mark.asyncio

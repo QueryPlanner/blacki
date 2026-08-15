@@ -183,6 +183,7 @@ class UserFileService:
     ) -> IngestResult:
         now = datetime.now(UTC)
         now_iso = now.isoformat()
+        await self.storage.cleanup_expired(now_iso)
         existing = await self.storage.get_by_hash(owner_id, digest, now_iso)
         if existing is not None:
             await self.storage.touch_duplicate(
