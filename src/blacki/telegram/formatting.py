@@ -5,6 +5,7 @@ which requires special handling for reserved characters.
 """
 
 import re
+import unicodedata
 
 MARKDOWN_SPECIAL_CHARS = frozenset("_*[]()~`>#+-=|{}.!\\")
 
@@ -215,19 +216,25 @@ def _split_table_row(line: str) -> list[str] | None:
     """Split a Markdown table row without treating escaped/code pipes as delimiters."""
     cells: list[str] = []
     current: list[str] = []
-    in_inline_code = False
+    code_delimiter_length: int | None = None
     has_pipe = False
     index = 0
 
     while index < len(line):
         character = line[index]
         if character == "`":
-            in_inline_code = not in_inline_code
-            current.append(character)
-            index += 1
+            run_start = index
+            while index < len(line) and line[index] == "`":
+                index += 1
+            run_length = index - run_start
+            current.extend("`" * run_length)
+            if code_delimiter_length is None:
+                code_delimiter_length = run_length
+            elif run_length == code_delimiter_length:
+                code_delimiter_length = None
             continue
 
-        if character == "|" and not in_inline_code:
+        if character == "|" and code_delimiter_length is None:
             backslashes = 0
             preceding = index - 1
             while preceding >= 0 and line[preceding] == "\\":
@@ -249,9 +256,23 @@ def _split_table_row(line: str) -> list[str] | None:
     cells.append("".join(current).strip())
     if line.lstrip().startswith("|") and cells:
         cells.pop(0)
-    if line.rstrip().endswith("|") and cells:
+    if _has_unescaped_trailing_pipe(line) and cells:
         cells.pop()
     return cells or None
+
+
+def _has_unescaped_trailing_pipe(line: str) -> bool:
+    """Return whether the row ends with an unescaped table delimiter."""
+    stripped = line.rstrip()
+    if not stripped.endswith("|"):
+        return False
+
+    backslashes = 0
+    preceding = len(stripped) - 2
+    while preceding >= 0 and stripped[preceding] == "\\":
+        backslashes += 1
+        preceding -= 1
+    return backslashes % 2 == 0
 
 
 def _render_table(rows: list[list[str]]) -> list[str]:
@@ -262,19 +283,35 @@ def _render_table(rows: list[list[str]]) -> list[str]:
         for row in rows
     ]
     widths = [
-        max(1, max(len(row[column]) for row in normalized_rows))
+        max(1, max(_display_width(row[column]) for row in normalized_rows))
         for column in range(column_count)
     ]
 
     def render_row(row: list[str]) -> str:
         return " | ".join(
-            cell.ljust(width) for cell, width in zip(row, widths, strict=True)
+            _pad_cell(cell, width) for cell, width in zip(row, widths, strict=True)
         ).rstrip()
 
     rendered = [render_row(normalized_rows[0])]
     rendered.append("-+-".join("-" * width for width in widths))
     rendered.extend(render_row(row) for row in normalized_rows[1:])
     return rendered
+
+
+def _display_width(text: str) -> int:
+    """Return the approximate monospace display width of Unicode text."""
+    width = 0
+    for character in text:
+        category = unicodedata.category(character)
+        if unicodedata.combining(character) or category in {"Cf", "Mn", "Me"}:
+            continue
+        width += 2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+    return width
+
+
+def _pad_cell(cell: str, width: int) -> str:
+    """Pad a table cell to a target display width."""
+    return cell + " " * max(0, width - _display_width(cell))
 
 
 def _convert_bold(text: str) -> str:

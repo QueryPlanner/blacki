@@ -1063,6 +1063,49 @@ The file handles model selection dynamically:
             "-----------+--------\na|b        | \\`x|y\\`\n```"
         )
 
+    def test_format_for_telegram_preserves_escaped_trailing_cell_pipe(self) -> None:
+        """Keep an escaped pipe when it is the final cell character."""
+        text = "Name | Value\n--- | ---\nAlpha | a\\|"
+
+        assert (
+            format_for_telegram(text)
+            == "```\nName  | Value\n------+------\nAlpha | a|\n```"
+        )
+
+    def test_format_for_telegram_matches_multi_backtick_code_spans(self) -> None:
+        """Keep pipes inside code spans delimited by multiple backticks."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| ``a|b`` | literal |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nExpression | Meaning\n"
+            "-----------+--------\n\\`\\`a|b\\`\\`    | literal\n```"
+        )
+
+    def test_format_for_telegram_ignores_pipes_in_mixed_backtick_runs(
+        self,
+    ) -> None:
+        """Keep pipes inside longer spans with shorter inner backtick runs."""
+        text = "| Expression | Meaning |\n| --- | --- |\n| ``a `|` b`` | literal |"
+
+        assert format_for_telegram(text) == (
+            "```\nExpression  | Meaning\n"
+            "------------+--------\n\\`\\`a \\`|\\` b\\`\\` | literal\n```"
+        )
+
+    def test_format_for_telegram_pads_unicode_table_cells_by_display_width(
+        self,
+    ) -> None:
+        """Align CJK and combining characters in monospaced table output."""
+        text = "| Word | Other |\n| --- | --- |\n| 猫 | é |\n| Dog | long |"
+
+        formatted = format_for_telegram(text)
+
+        assert formatted == (
+            "```\nWord | Other\n-----+------\n猫   | é\nDog  | long\n```"
+        )
+
     def test_format_for_telegram_does_not_convert_existing_code_tables(self) -> None:
         """Leave already fenced tables unchanged."""
         text = "```\n| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n```"
