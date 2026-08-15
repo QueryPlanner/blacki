@@ -437,7 +437,8 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
         "down --remove-orphans",
         "mv .env.next .env",
         "-f compose.yaml -f compose.prod.yaml up -d",
-        '"$HOST_PORT" "$PROMOTED_CONTAINER_ID" "Promoted deployment"',
+        '"$HOST_BIND_IP" "$HOST_PORT"',
+        '"$PROMOTED_CONTAINER_ID" "Promoted deployment"',
         "DEPLOYMENT_HEALTHY=true",
         "docker image prune -af",
     )
@@ -478,7 +479,12 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
     assert 'printf \'IMAGE="%s"\\n\' "$IMAGE_NAME"' in workflow
     assert 'printf \'DEPLOY_SHA="%s"\\n\' "$DEPLOY_SHA"' in workflow
+    assert "HOST_BIND_IP: ${{ secrets.HOST_BIND_IP }}" in workflow
     assert "HOST_BIND_IP=$(" in workflow
+    assert "DEPLOY_HOST_BIND_IP=$(" in workflow
+    assert '"$DEPLOY_ENV_FILE"' in workflow
+    assert 'curl -sf "http://${ACTIVE_HOST_BIND_IP}:${HOST_PORT}/ready"' in workflow
+    assert 'curl -sf "http://${host}:${port}/ready"' in workflow
     assert "HOST_BIND_IP=127.0.0.1" in workflow
     assert 'printf \'HOST_BIND_IP="%s"\\n\' "$HOST_BIND_IP"' in workflow
     assert 'SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"' in workflow
@@ -493,6 +499,24 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     ):
         assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
         assert f'{setting}="${{{setting}}}"' not in workflow
+
+
+def test_production_deployment_serializes_host_bind_secret() -> None:
+    """The private interface secret must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    assert deploy_step["env"]["HOST_BIND_IP"] == "${{ secrets.HOST_BIND_IP }}"
+    assert "HOST_BIND_IP" in writer_names
+    assert 'HOST_BIND_IP="$DEPLOY_HOST_BIND_IP"' in deploy_script
 
 
 def test_production_deployment_shell_is_valid_bash() -> None:
