@@ -1,0 +1,12 @@
+{
+  "name": "blacki-dashboard-assets",
+  "private": true,
+  "scripts": {
+    "build": "tailwindcss -i src/blacki/dashboard/dashboard.css -o src/blacki/dashboard/static/dashboard.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.1.18",
+    "daisyui": "5.5.5",
+    "tailwindcss": "4.1.18"
+  }
+}
