@@ -12,7 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 from google.genai import types
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator, StreamChunk, TurnResponse
+from blacki.adk_runtime import (
+    AdkRuntime,
+    EmptyModelResponseError,
+    SessionLocator,
+    StreamChunk,
+    TurnResponse,
+)
 from blacki.inference import InferenceProfile
 from blacki.reminders.storage import Reminder
 from blacki.telegram import TelegramConfig
@@ -44,8 +50,10 @@ class RecordingRuntime:
         self.run_user_turn_response = "Test response"
         self.run_user_turn_thoughts = ""
         self.run_user_turn_error: Exception | None = None
+        self.run_user_turn_side_effects: list[str | Exception] = []
         self.create_next_session_error: Exception | None = None
         self.run_user_turn_calls: list[dict[str, Any]] = []
+        self.rewind_empty_model_response_calls: list[dict[str, Any]] = []
         self.create_next_session_calls: list[dict[str, Any]] = []
         self.closed = False
 
@@ -67,9 +75,24 @@ class RecordingRuntime:
                 "inference_profile": inference_profile,
             }
         )
+        if self.run_user_turn_side_effects:
+            result = self.run_user_turn_side_effects.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
         if self.run_user_turn_error is not None:
             raise self.run_user_turn_error
         return self.run_user_turn_response
+
+    async def rewind_empty_model_response(
+        self,
+        *,
+        locator: SessionLocator,
+        invocation_id: str,
+    ) -> None:
+        self.rewind_empty_model_response_calls.append(
+            {"locator": locator, "invocation_id": invocation_id}
+        )
 
     async def run_user_turn_with_thoughts(
         self,
@@ -1325,6 +1348,135 @@ class TestTelegramBotMessageHandling:
         call_args = mock_api.send_message.call_args
         assert "error" in call_args.kwargs["text"].lower()
 
+    @pytest.mark.asyncio
+    async def test_handle_message_retries_empty_model_response_once(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A transient empty model response is retried with the same input."""
+        caplog.set_level(logging.WARNING)
+        runtime_recorder.run_user_turn_side_effects = [
+            EmptyModelResponseError(
+                "empty response",
+                model="openrouter/test-model",
+                provider="openrouter",
+                invocation_id="empty-invocation",
+            ),
+            "Recovered response",
+        ]
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=None,
+            user_message="same user message",
+        )
+
+        assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert runtime_recorder.rewind_empty_model_response_calls == [
+            {
+                "locator": SessionLocator(
+                    user_id="telegram-chat-123456789",
+                    session_id_prefix="telegram-chat-123456789",
+                ),
+                "invocation_id": "empty-invocation",
+            }
+        ]
+        assert [
+            call["message_text"] for call in runtime_recorder.run_user_turn_calls
+        ] == ["same user message", "same user message"]
+        assert "Recovered response" in mock_api.send_message.call_args.kwargs["text"]
+        assert "model=openrouter/test-model" in caplog.text
+        assert "provider=openrouter" in caplog.text
+        assert "conversation_id=chat-123456789" in caplog.text
+        assert "invocation_id=empty-invocation" in caplog.text
+        assert "retry_count=1" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_handle_message_sends_fallback_after_one_empty_response_retry(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Two empty responses do not cause an unbounded retry loop."""
+        caplog.set_level(logging.WARNING)
+        runtime_recorder.run_user_turn_side_effects = [
+            EmptyModelResponseError(
+                "empty response",
+                model="openrouter/test-model",
+                provider="openrouter",
+                invocation_id="empty-invocation-1",
+            ),
+            EmptyModelResponseError(
+                "empty response",
+                model="openrouter/test-model",
+                provider="openrouter",
+                invocation_id="empty-invocation-2",
+            ),
+        ]
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=77,
+            user_message="empty twice",
+        )
+
+        assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert "empty response" in mock_api.send_message.call_args.kwargs["text"]
+        assert mock_api.send_message.call_args.kwargs["message_thread_id"] == 77
+        assert len(runtime_recorder.rewind_empty_model_response_calls) == 1
+        assert "retry_count=1" in caplog.text
+        assert "empty-invocation-2" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_handle_message_does_not_retry_after_tool_call_empty_response(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Do not repeat a turn when a tool may already have executed."""
+        caplog.set_level(logging.WARNING)
+        runtime_recorder.run_user_turn_side_effects = [
+            EmptyModelResponseError(
+                "empty response after tool call",
+                model="openrouter/test-model",
+                provider="openrouter",
+                invocation_id="tool-invocation",
+                tool_calls_seen=True,
+            )
+        ]
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock(return_value=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_message(
+            chat_id=123456789,
+            message_thread_id=None,
+            user_message="do not repeat tools",
+        )
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        assert runtime_recorder.rewind_empty_model_response_calls == []
+        assert "retryable=False" in caplog.text
+
 
 class TestTelegramBotLifecycle:
     """Tests for Telegram bot lifecycle."""
@@ -1687,6 +1839,27 @@ class TestCommandErrors:
         bot._api = mock_api
 
         await bot._handle_command(mock_message, "/start")
+
+    @pytest.mark.asyncio
+    async def test_start_command_escapes_markdown_v2_reserved_characters(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """The static welcome message is valid MarkdownV2."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_command(mock_message, "/start")
+
+        call_kwargs = mock_api.send_message.call_args.kwargs
+        assert r"Hello\!" in call_kwargs["text"]
+        assert r"assistant\." in call_kwargs["text"]
+        assert r"/help \-" in call_kwargs["text"]
+        assert call_kwargs["parse_mode"] == ParseMode.MARKDOWN_V2
 
     @pytest.mark.asyncio
     async def test_help_command_api_error(
@@ -3305,6 +3478,7 @@ class TestHandleFileUpload:
             mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "Sandbox is not enabled" in call_kwargs["text"]
+        assert r"enabled\." in call_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_upload_success(
