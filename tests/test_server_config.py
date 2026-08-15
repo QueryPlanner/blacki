@@ -53,6 +53,32 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     assert call_kwargs["lifespan"] is server.lifespan
 
 
+def test_server_always_mounts_dashboard(
+    mock_dependencies: MagicMock,
+) -> None:
+    """The private dashboard is mounted without a feature flag."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    assert _has_route(server.app, "/dashboard")
+
+
+def _has_route(app: FastAPI, path: str) -> bool:
+    """Find a path in FastAPI's direct or included router entries."""
+    pending = list(app.routes)
+    while pending:
+        route = pending.pop()
+        if getattr(route, "path", None) == path:
+            return True
+        pending.extend(getattr(route, "routes", ()))
+        original_router = getattr(route, "original_router", None)
+        if original_router is not None:
+            pending.extend(getattr(original_router, "routes", ()))
+    return False
+
+
 @pytest.mark.parametrize(
     "setting",
     ["ZEPTO_MCP_ENABLED", "KOKORO_TTS_BASE_URL"],

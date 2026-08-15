@@ -14,6 +14,9 @@ python -m blacki.server
 `src/blacki/server.py` creates a FastAPI application with Google ADK's
 `get_fast_api_app`, initializes SQLite-backed storage, optionally starts
 Telegram long polling, and exposes `/live`, `/ready`, and `/health`.
+It also mounts the package-backed private observability dashboard at
+`/dashboard` with APIs for aggregate statistics, users, sessions, local logs,
+and local traces.
 
 `src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or a
 LiteLLM/OpenRouter model from the environment, registers tools, and assembles
@@ -40,6 +43,15 @@ certificate, or inbound application port.
 FastAPI listens on port 8080 inside the container. Docker Compose maps that port
 to `127.0.0.1:8080` on the host by default. The web interface is disabled in
 the VPS samples and can be reached securely through an SSH tunnel when enabled.
+
+The dashboard is always available on the local server. Keep the production
+Compose overlay's `127.0.0.1:${HOST_PORT:-8080}:8080` binding and use Tailscale
+Serve on the host to provide tailnet-only HTTPS access:
+`tailscale serve --bg localhost:${HOST_PORT:-8080}`. The `--bg` flag keeps the
+Serve configuration across host reboots and service restarts; it remains
+tailnet-only. Configure Tailscale ACLs and device restrictions for the operator
+devices. Do not use Tailscale Funnel or publish the port publicly because the
+dashboard contains private user chats.
 
 ## Persistence boundaries
 
@@ -137,4 +149,7 @@ The default deployment is not a public web application:
 - `.dockerignore` excludes secrets and runtime state from image builds.
 
 Public web access, authentication, TLS termination, and reverse-proxy
-configuration are intentionally separate architectural decisions.
+configuration are intentionally separate architectural decisions. Tailscale
+Serve supplies the private reverse proxy for the dashboard; the
+application deliberately does not implement HTTP Basic auth, cookies, or
+Tailscale identity-header authentication.

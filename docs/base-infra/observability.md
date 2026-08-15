@@ -110,3 +110,32 @@ incident.
 If the application cannot create its log directory or file handler, it reports
 the error and continues with stdout logging. Treat that as degraded
 observability, not a successful persistence setup.
+
+## Private dashboard
+
+The server always mounts the read-only operator dashboard at `/dashboard`. It
+reads the local ADK session database, application JSON logs, and JSON Lines
+traces from the same persistent volumes. The dashboard can filter users and
+sessions and inspect individual conversations and traces;
+Telegram `/reset` starts the next versioned ADK session and leaves earlier
+session rows available. The append-only log and trace files are not deleted by
+`/reset`, so the dashboard continues to show that history.
+
+This is an admin-only, private-data surface. The application does not add
+HTTP Basic auth, cookies, or Tailscale identity-header authentication. Keep
+the existing production Compose loopback binding and restrict access with
+Tailscale ACLs and device posture. On the host running Blacki, Tailscale Serve
+can reverse proxy the loopback service to your tailnet over HTTPS:
+
+```bash
+tailscale serve --bg localhost:${HOST_PORT:-8080}
+```
+
+The `--bg` flag keeps the Serve configuration across host reboots and service
+restarts while the endpoint remains tailnet-only. Use `tailscale serve`, never
+`tailscale funnel`, for this dashboard. Funnel is public internet exposure and
+is not an acceptable boundary for conversation logs. The current command syntax
+is documented in the official
+[Tailscale Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+Do not bind the production Compose port to `0.0.0.0`; Serve should be the only
+remote entry point.

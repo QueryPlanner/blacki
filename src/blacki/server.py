@@ -19,6 +19,7 @@ from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
 from .container import AppContainer, close_container, init_container
+from .dashboard.routes import create_dashboard_router
 from .privacy import configure_private_tool_privacy
 from .utils import (
     ConfigurationError,
@@ -199,6 +200,8 @@ app: FastAPI = get_fast_api_app(
     reload_agents=env.reload_agents,
     lifespan=lifespan,
 )
+
+app.include_router(create_dashboard_router(env))
 
 
 @app.get("/live")

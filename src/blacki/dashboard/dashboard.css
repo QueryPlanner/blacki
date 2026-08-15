@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: light --default, dark --prefersdark;
+  logs: false;
+}
+
+@source "./templates";
+@source "./static";
+
+:root {
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+body {
+  text-rendering: optimizeLegibility;
+}
+
+button,
+a,
+input,
+select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 3px;
+}
+
+.dashboard-shell {
+  background-image: radial-gradient(circle at 84% 0%, color-mix(in oklab, var(--color-info) 9%, transparent), transparent 30rem);
+}
+
+[data-theme="dark"] .dashboard-shell {
+  background-image: radial-gradient(circle at 84% 0%, color-mix(in oklab, var(--color-info) 12%, transparent), transparent 30rem);
+}
+
+.card-border {
+  border-width: 1px;
+}
+
+.timeline [data-depth="1"] {
+  margin-left: 1.25rem;
+}
+
+@media (max-width: 639px) {
+  .timeline .timeline-start {
+    width: 4.5rem;
+  }
+
+  .timeline .timeline-end {
+    padding-left: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
