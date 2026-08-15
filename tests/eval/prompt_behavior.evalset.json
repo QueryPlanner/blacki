@@ -222,6 +222,73 @@
         "user_id": "prompt-eval-user",
         "state": {}
       }
+    },
+    {
+      "eval_id": "prior_file_analysis_restores_opaque_id",
+      "conversation": [
+        {
+          "invocation_id": "prompt-files-1",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Analyze my prior PDF with object ID 0123456789abcdef0123456789abcdef. Call restore_user_file exactly once with that opaque ID before attempting to read it."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "restore_user_file",
+                "args": {
+                  "object_id": "0123456789abcdef0123456789abcdef"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "telegram-chat-eval",
+        "state": {
+          "telegram_sender_user_id_for_eval": "4242"
+        }
+      }
+    },
+    {
+      "eval_id": "ambiguous_filename_lists_before_selection",
+      "conversation": [
+        {
+          "invocation_id": "prompt-files-2",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "I have more than one prior file named report.pdf. Call list_user_files exactly once with query report.pdf and limit 10. Do not restore or guess an object until I choose from the returned IDs."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "list_user_files",
+                "args": {
+                  "query": "report.pdf",
+                  "limit": 10
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "blacki",
+        "user_id": "telegram-chat-eval",
+        "state": {
+          "telegram_sender_user_id_for_eval": "4242"
+        }
+      }
     }
   ]
 }

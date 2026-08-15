@@ -275,6 +275,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
         DeclarativeDbPlugin,
         StoredPreferencesPlugin,
     )
+    from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
 
     plugins: list[BasePlugin] = [
         TelegramModelOverridePlugin(name="telegram_model_override"),
@@ -282,6 +283,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
         DomainPolicyPlugin(name="domain_policy"),
         DeclarativeDbPlugin(name="declarative_db"),
         StoredPreferencesPlugin(name="stored_preferences"),
+        *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         ResponsePolicyPlugin(name="response_policy"),
     ]
     if not private_tool_privacy_enabled():

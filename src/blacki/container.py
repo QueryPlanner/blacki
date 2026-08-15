@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from blacki.calories.storage import SqliteCalorieStorage
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
     from blacki.reminders.storage import SqliteReminderStorage
+    from blacki.user_files.storage import SqliteUserFileStorage
     from blacki.utils.preferences import SqlitePreferencesStorage
     from blacki.workouts.storage import SqliteWorkoutStorage
 
@@ -138,6 +139,9 @@ class AppContainer:
     _declarative_db_storage: SqliteDeclarativeDbStorage | None = field(
         default=None, init=False, repr=False
     )
+    _user_file_storage: SqliteUserFileStorage | None = field(
+        default=None, init=False, repr=False
+    )
 
     @classmethod
     async def create(cls, sqlite_path: str | Path) -> Self:
@@ -182,6 +186,10 @@ class AppContainer:
             await self._declarative_db_storage.close()
             self._declarative_db_storage = None
 
+        if self._user_file_storage is not None:
+            await self._user_file_storage.close()
+            self._user_file_storage = None
+
     async def initialize_all_storages(self) -> None:
         """Initialize all storage instances.
 
@@ -193,6 +201,7 @@ class AppContainer:
         await self.workout_storage.initialize()
         await self.preferences_storage.initialize()
         await self.declarative_db_storage.initialize()
+        await self.user_file_storage.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -245,3 +254,12 @@ class AppContainer:
                 self.conn, self._lock
             )
         return self._declarative_db_storage
+
+    @property
+    def user_file_storage(self) -> SqliteUserFileStorage:
+        """Get or create the durable user-file catalog."""
+        if self._user_file_storage is None:
+            from blacki.user_files.storage import SqliteUserFileStorage
+
+            self._user_file_storage = SqliteUserFileStorage(self.conn, self._lock)
+        return self._user_file_storage

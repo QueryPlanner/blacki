@@ -6,8 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from google.genai import types
 
@@ -41,6 +40,9 @@ from .types import (
     Update,
 )
 
+if TYPE_CHECKING:
+    from blacki.user_files import IngestResult
+
 logger = logging.getLogger(__name__)
 
 POLLING_TIMEOUT = 30
@@ -48,6 +50,7 @@ _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_TELEGRAM_FILE_BYTES = 20 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
 
@@ -308,12 +311,14 @@ class TelegramBot:
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             user_message=user_message,
+            sender_user_id=message.from_user.id if message.from_user else None,
         )
 
     async def _route_non_text_message(self, message: Message) -> None:
         """Route a non-text message to the appropriate handler."""
         chat_id = message.chat.id
         message_thread_id = message.message_thread_id
+        sender_user_id = message.from_user.id if message.from_user else None
 
         if message.photo:
             photo = max(message.photo, key=lambda item: item.width * item.height)
@@ -321,23 +326,41 @@ class TelegramBot:
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
                 file_id=photo.file_id,
+                file_unique_id=photo.file_unique_id,
                 file_size=photo.file_size,
                 caption=message.caption,
+                sender_user_id=sender_user_id,
             )
             return
 
         if message.document:
             file_id = message.document.file_id
+            file_unique_id = message.document.file_unique_id
             file_name = message.document.file_name or "document"
+            file_size = message.document.file_size
+            mime_type = message.document.mime_type
+            media_kind = "document"
         elif message.audio:
             file_id = message.audio.file_id
+            file_unique_id = message.audio.file_unique_id
             file_name = message.audio.file_name or "audio.mp3"
+            file_size = message.audio.file_size
+            mime_type = message.audio.mime_type
+            media_kind = "audio"
         elif message.video:
             file_id = message.video.file_id
+            file_unique_id = message.video.file_unique_id
             file_name = message.video.file_name or "video.mp4"
+            file_size = message.video.file_size
+            mime_type = message.video.mime_type
+            media_kind = "video"
         elif message.voice:
             file_id = message.voice.file_id
+            file_unique_id = message.voice.file_unique_id
             file_name = "voice.ogg"
+            file_size = message.voice.file_size
+            mime_type = message.voice.mime_type
+            media_kind = "voice"
         else:
             logger.debug("Unsupported non-text message from chat %s", chat_id)
             return
@@ -346,8 +369,13 @@ class TelegramBot:
             chat_id=chat_id,
             message_thread_id=message_thread_id,
             file_id=file_id,
+            file_unique_id=file_unique_id,
             file_name=file_name,
+            file_size=file_size,
+            mime_type=mime_type,
+            media_kind=media_kind,
             caption=message.caption,
+            sender_user_id=sender_user_id,
         )
 
     async def _handle_photo_upload(
@@ -358,6 +386,8 @@ class TelegramBot:
         file_id: str,
         file_size: int | None,
         caption: str | None,
+        file_unique_id: str | None = None,
+        sender_user_id: int | None = None,
     ) -> None:
         """Download a Telegram photo and send it to ADK as native image input."""
         if file_size is not None and file_size > _MAX_NATIVE_IMAGE_BYTES:
@@ -376,6 +406,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            sender_user_id=sender_user_id,
         )
 
         try:
@@ -397,11 +428,38 @@ class TelegramBot:
             if not image_bytes.startswith(_JPEG_MAGIC):
                 raise ValueError("Telegram photo is not a JPEG image")
 
+            ingest, sandbox_path, sandbox_error = await self._shield_attachment_ingest(
+                state=state,
+                owner_id=str(sender_user_id) if sender_user_id is not None else None,
+                display_name=f"photo-{file_unique_id or file_id}.jpg",
+                media_kind="photo",
+                mime_type="image/jpeg",
+                telegram_file_unique_id=file_unique_id,
+                data=image_bytes,
+            )
+            if ingest.warning:
+                await self._send_storage_warning(
+                    chat_id, message_thread_id, ingest.warning
+                )
+            if sandbox_error and ingest.stored_file is not None:
+                await self.api.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "✅ The photo was saved for 90 days, but the sandbox is "
+                        "unavailable. Ask me to restore it later."
+                    ),
+                    message_thread_id=message_thread_id,
+                )
+                return
+
             prompt = (
                 caption.strip()
                 if caption and caption.strip()
                 else _DEFAULT_IMAGE_PROMPT
             )
+            message_text = prompt
+            if sandbox_path:
+                message_text = f"{prompt}\nSandbox working copy: {sandbox_path}"
             user_parts = (
                 types.Part.from_text(text=prompt),
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
@@ -412,7 +470,7 @@ class TelegramBot:
                     user_id=session_identity.user_id,
                     session_id_prefix=session_identity.session_id_prefix,
                 ),
-                message_text=prompt,
+                message_text=message_text,
                 state=state,
                 user_parts=user_parts,
                 inference_profile=profile,
@@ -441,6 +499,87 @@ class TelegramBot:
         await self.api.send_message(
             chat_id=chat_id,
             text=text,
+            message_thread_id=message_thread_id,
+        )
+
+    async def _shield_attachment_ingest(
+        self,
+        *,
+        state: dict[str, str],
+        owner_id: str | None,
+        display_name: str,
+        media_kind: str,
+        mime_type: str | None,
+        telegram_file_unique_id: str | None,
+        data: bytes,
+    ) -> tuple["IngestResult", str | None, str | None]:
+        """Finish durable storage and sandbox materialization before cancellation."""
+        task = asyncio.create_task(
+            self._store_and_materialize_attachment(
+                state=state,
+                owner_id=owner_id,
+                display_name=display_name,
+                media_kind=media_kind,
+                mime_type=mime_type,
+                telegram_file_unique_id=telegram_file_unique_id,
+                data=data,
+            )
+        )
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    async def _store_and_materialize_attachment(
+        self,
+        *,
+        state: dict[str, str],
+        owner_id: str | None,
+        display_name: str,
+        media_kind: str,
+        mime_type: str | None,
+        telegram_file_unique_id: str | None,
+        data: bytes,
+    ) -> tuple["IngestResult", str | None, str | None]:
+        """Persist an attachment when configured and create its sandbox copy."""
+        from blacki.sandbox.manager import get_sandbox_manager
+        from blacki.user_files import get_user_file_service, user_files_enabled
+        from blacki.user_files.service import IngestResult, sanitize_display_name
+
+        if user_files_enabled():
+            ingest = await get_user_file_service().ingest(
+                owner_id=owner_id,
+                display_name=display_name,
+                media_kind=media_kind,
+                mime_type=mime_type,
+                telegram_file_unique_id=telegram_file_unique_id,
+                data=data,
+            )
+        else:
+            ingest = IngestResult(None, "temporary")
+
+        manager = get_sandbox_manager()
+        if not manager.config.enabled:
+            return ingest, None, "Sandbox is disabled"
+        result = await manager.get_or_create_sandbox(state)
+        sandbox = result.get("sandbox")
+        if sandbox is None:
+            return ingest, None, str(result.get("error") or "Sandbox is unavailable")
+        safe_name = sanitize_display_name(display_name)
+        if ingest.stored_file is not None:
+            safe_name = f"{ingest.stored_file.object_id}-{safe_name}"
+        sandbox_path = f"/workspace/uploads/{safe_name}"
+        await sandbox.files.write_file(sandbox_path, data)
+        return ingest, sandbox_path, None
+
+    async def _send_storage_warning(
+        self, chat_id: int, message_thread_id: int | None, warning: str
+    ) -> None:
+        """Send a plain-text warning without leaking attachment metadata."""
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ {warning}",
             message_thread_id=message_thread_id,
         )
 
@@ -930,9 +1069,23 @@ class TelegramBot:
         file_id: str,
         file_name: str,
         caption: str | None,
+        file_unique_id: str | None = None,
+        file_size: int | None = None,
+        mime_type: str | None = None,
+        media_kind: str = "document",
+        sender_user_id: int | None = None,
     ) -> None:
         """Handle incoming file uploads, save to sandbox, and message agent."""
         from blacki.sandbox.manager import get_sandbox_manager
+        from blacki.user_files import user_files_enabled
+
+        if not user_files_enabled() and not get_sandbox_manager().config.enabled:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sandbox is not enabled, so the file cannot be processed.",
+                message_thread_id=message_thread_id,
+            )
+            return
 
         session_identity = self._build_session_identity(
             chat_id=str(chat_id),
@@ -942,20 +1095,12 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            sender_user_id=sender_user_id,
         )
 
-        manager = get_sandbox_manager()
-
-        if not manager.config.enabled:
-            await self.api.send_message(
-                chat_id=chat_id,
-                text="❌ Sandbox is not enabled. Cannot process file uploads\\.",
-                message_thread_id=message_thread_id,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
-            return
-
         try:
+            if file_size is not None and file_size > _MAX_TELEGRAM_FILE_BYTES:
+                raise ValueError("Telegram attachment exceeds the 20 MB limit")
             await self.api.send_chat_action(
                 chat_id=chat_id,
                 action="upload_document",
@@ -968,17 +1113,36 @@ class TelegramBot:
                 raise Exception("Failed to get file_path from Telegram API")
 
             file_bytes = await self.api.download_file(file_path_api)
+            if not file_bytes:
+                raise ValueError("Telegram returned an empty attachment")
+            if len(file_bytes) > _MAX_TELEGRAM_FILE_BYTES:
+                raise ValueError("Telegram attachment exceeds the 20 MB limit")
 
-            result = await manager.get_or_create_sandbox(state)
-            sandbox = result.get("sandbox")
-            error = result.get("error")
-
-            if error or not sandbox:
-                raise Exception(f"Failed to access sandbox: {error}")
-
-            safe_name = Path(file_name).name
-            sandbox_path = f"/workspace/uploads/{safe_name}"
-            await sandbox.files.write_file(sandbox_path, file_bytes)
+            ingest, sandbox_path, sandbox_error = await self._shield_attachment_ingest(
+                state=state,
+                owner_id=str(sender_user_id) if sender_user_id is not None else None,
+                display_name=file_name,
+                media_kind=media_kind,
+                mime_type=mime_type,
+                telegram_file_unique_id=file_unique_id,
+                data=file_bytes,
+            )
+            if ingest.warning:
+                await self._send_storage_warning(
+                    chat_id, message_thread_id, ingest.warning
+                )
+            if sandbox_path is None:
+                if ingest.stored_file is not None:
+                    await self.api.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            "✅ The attachment was saved for 90 days, but the "
+                            "sandbox is unavailable. Ask me to restore it later."
+                        ),
+                        message_thread_id=message_thread_id,
+                    )
+                    return
+                raise RuntimeError(sandbox_error or "Sandbox is unavailable")
 
             user_message = (
                 f"User uploaded a file which has been saved to "
@@ -1025,6 +1189,7 @@ class TelegramBot:
         chat_id: int,
         message_thread_id: int | None,
         user_message: str,
+        sender_user_id: int | None = None,
     ) -> None:
         """Handle a regular text message with typing + final response."""
         session_identity = self._build_session_identity(
@@ -1045,6 +1210,7 @@ class TelegramBot:
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
+                sender_user_id=sender_user_id,
             )
             profile = await self._load_chat_profile(chat_id)
             final_response = await self.runtime.run_user_turn(
@@ -1211,6 +1377,7 @@ class TelegramBot:
         chat_id: str,
         message_thread_id: int | None,
         conversation_key: str,
+        sender_user_id: int | None = None,
     ) -> dict[str, str]:
         """Build explicit session state for ADK callbacks and observability."""
         session_state: dict[str, str] = {
@@ -1220,6 +1387,8 @@ class TelegramBot:
         }
         if message_thread_id is not None:
             session_state["telegram_thread_id"] = str(message_thread_id)
+        if sender_user_id is not None:
+            session_state["temp:telegram_sender_user_id"] = str(sender_user_id)
         return session_state
 
 

@@ -177,6 +177,49 @@ class TestBuildTools:
         assert "send_text_to_speech" not in {tool.__name__ for tool in worker_tools}
         assert "send_text_to_speech" not in {tool.__name__ for tool in default_tools}
 
+    def test_r2_file_tools_are_telegram_root_only(self) -> None:
+        """Durable file tools must never reach public or worker agents."""
+        config = ToolConfig(weather_enabled=False, r2_files_enabled=True)
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+
+        root_names = {
+            getattr(tool, "name", getattr(tool, "__name__", "")) for tool in root_tools
+        }
+        worker_names = {
+            getattr(tool, "name", getattr(tool, "__name__", ""))
+            for tool in worker_tools
+        }
+        assert {
+            "list_user_files",
+            "restore_user_file",
+            "delete_user_file",
+        } <= root_names
+        assert worker_names.isdisjoint(
+            {
+                "list_user_files",
+                "restore_user_file",
+                "delete_user_file",
+            }
+        )
+
+    def test_invalid_r2_file_tools_degrade_cleanly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An optional file-tool import failure should fail closed."""
+        with patch(
+            "blacki.user_files.create_user_file_tools",
+            side_effect=ValueError("invalid R2 settings"),
+        ):
+            tools = build_tools(
+                ToolConfig(weather_enabled=False, r2_files_enabled=True),
+                include_user_scoped_tools=True,
+            )
+        assert "list_user_files" not in {
+            getattr(tool, "__name__", "") for tool in tools
+        }
+        assert "Durable R2 file tools disabled" in caplog.text
+
     def test_invalid_kokoro_tts_config_disables_only_tts(
         self,
         caplog: pytest.LogCaptureFixture,

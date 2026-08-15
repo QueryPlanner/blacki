@@ -28,7 +28,9 @@ _active_invocations = 0
 async def _ensure_eval_container(*, callback_context: Any) -> None:
     """Initialize the real storage container once for stateful eval cases."""
     global _active_invocations
-    del callback_context
+    eval_sender = callback_context.state.get("telegram_sender_user_id_for_eval")
+    if eval_sender is not None:
+        callback_context.state["temp:telegram_sender_user_id"] = str(eval_sender)
     async with _container_lock:
         try:
             get_container()
@@ -128,4 +130,4 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
     return eval_agent
 
 
-root_agent = create_eval_agent()
+root_agent = create_eval_agent(create_agent(include_user_scoped_tools=True))

@@ -44,6 +44,7 @@ class ToolConfig:
     zepto_mcp_enabled: bool = False
     zepto_mcp_config_dir: Path = Path("data/credentials/zepto-mcp-remote")
     zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
+    r2_files_enabled: bool = False
 
 
 def build_tools(
@@ -98,6 +99,9 @@ def build_tools(
                 voice=config.kokoro_tts_voice,
             )
         )
+
+    if include_user_scoped_tools and config.r2_files_enabled:
+        tools.extend(_build_user_file_tools())
 
     tools.extend(_build_memory_tools())
 
@@ -316,6 +320,18 @@ def _build_tts_tools(*, base_url: str, voice: str) -> list[Any]:
         return []
 
 
+def _build_user_file_tools() -> list[Any]:
+    """Build private Telegram sender-scoped durable file tools."""
+    try:
+        from blacki.user_files import create_user_file_tools
+
+        logger.info("Durable R2 file tools enabled for the Telegram root agent")
+        return create_user_file_tools()
+    except (ImportError, ValueError) as exc:
+        logger.warning("Durable R2 file tools disabled: %s", exc)
+        return []
+
+
 def _build_declarative_db_tools() -> list[Any]:
     """Build declarative database tools."""
     try:
@@ -386,4 +402,6 @@ def build_tool_config_from_env() -> ToolConfig:
             ).strip()
         ),
         zepto_mcp_allowed_chat_ids=allowed_zepto_chat_ids,
+        r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
+        in ("true", "1", "yes"),
     )

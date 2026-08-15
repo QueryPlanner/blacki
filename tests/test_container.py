@@ -230,6 +230,8 @@ class TestAppContainer:
         _ = container.workout_storage
         _ = container.preferences_storage
         _ = container.declarative_db_storage
+        user_files = container.user_file_storage
+        user_files.close = AsyncMock()
 
         await container._close_storages()
 
@@ -238,6 +240,8 @@ class TestAppContainer:
         assert container._workout_storage is None
         assert container._preferences_storage is None
         assert container._declarative_db_storage is None
+        assert container._user_file_storage is None
+        user_files.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_close_storages_partial(self, conn, lock) -> None:
@@ -268,11 +272,13 @@ class TestAppContainer:
         calorie = container.calorie_storage
         workout = container.workout_storage
         preferences = container.preferences_storage
+        user_files = container.user_file_storage
 
         reminder.initialize = AsyncMock()
         calorie.initialize = AsyncMock()
         workout.initialize = AsyncMock()
         preferences.initialize = AsyncMock()
+        user_files.initialize = AsyncMock()
 
         await container.initialize_all_storages()
 
@@ -280,6 +286,7 @@ class TestAppContainer:
         calorie.initialize.assert_called_once()
         workout.initialize.assert_called_once()
         preferences.initialize.assert_called_once()
+        user_files.initialize.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_creates_container_with_connection(self) -> None:
