@@ -116,6 +116,43 @@ alias `/health` treat SQLite as critical and return HTTP 503 during startup or
 when the database is unavailable. Optional Mem0 memory is deliberately not a
 readiness dependency.
 
+## Secure dashboard access over Tailscale
+
+The read-only dashboard is available at `/dashboard` in the production image.
+The default bind remains loopback. To make it reachable directly from your
+tailnet, set the server's Tailscale IPv4 address in `.env`:
+
+```dotenv
+HOST_BIND_IP=100.x.y.z
+HOST_PORT=8080
+```
+
+Recreate the service after changing `.env`:
+
+```bash
+docker compose -f compose.yaml -f compose.prod.yaml config --quiet
+docker compose -f compose.yaml -f compose.prod.yaml up -d
+```
+
+Then open `http://100.x.y.z:8080/dashboard` from an allowed Tailscale device.
+This binds Docker to that specific host interface; it does not bind the port
+to every interface. The dashboard contains private conversations and has no
+application authentication, so restrict it with Tailscale ACLs and device
+policy. Never set `HOST_BIND_IP=0.0.0.0`.
+
+If you prefer HTTPS while keeping Docker on loopback, leave `HOST_BIND_IP` at
+its default and use Tailscale Serve on the VPS:
+
+```bash
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
+```
+
+The first line reads the configured host port from `.env` and falls back to
+8080 when it is absent. Run it from the Blacki repository directory.
+
+Do not use Tailscale Funnel for this dashboard.
+
 ## Secure browser access
 
 The ADK web interface is a development interface and is disabled in the VPS
@@ -132,9 +169,9 @@ sample. To inspect it temporarily:
 3. Open `http://127.0.0.1:8080` locally.
 4. Return to the production overlay when finished.
 
-The supported overlays cannot be changed to a public bind through `.env`.
-An authenticated reverse proxy is a separate deployment decision and is
-outside this guide.
+The ADK web interface is a development surface. Keep it disabled in production
+and use an authenticated reverse proxy only as a separate, deliberate
+deployment decision.
 
 ## Use a prebuilt image only when verified
 

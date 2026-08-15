@@ -41,17 +41,25 @@ certificate, or inbound application port.
 ### HTTP and ADK web interface
 
 FastAPI listens on port 8080 inside the container. Docker Compose maps that port
-to `127.0.0.1:8080` on the host by default. The web interface is disabled in
-the VPS samples and can be reached securely through an SSH tunnel when enabled.
+to `${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8080}` on the host in the
+production overlay. It remains loopback-only by default. The web interface is
+disabled in the VPS samples and can be reached securely through an SSH tunnel
+when enabled.
 
-The dashboard is always available on the local server. Keep the production
-Compose overlay's `127.0.0.1:${HOST_PORT:-8080}:8080` binding and use Tailscale
-Serve on the host to provide tailnet-only HTTPS access:
-`tailscale serve --bg localhost:${HOST_PORT:-8080}`. The `--bg` flag keeps the
-Serve configuration across host reboots and service restarts; it remains
-tailnet-only. Configure Tailscale ACLs and device restrictions for the operator
-devices. Do not use Tailscale Funnel or publish the port publicly because the
-dashboard contains private user chats.
+The dashboard is always available on the local server. Set `HOST_BIND_IP` to
+the server's Tailscale IPv4 address for direct tailnet access, or keep the
+loopback bind and use Tailscale Serve for tailnet-only HTTPS access from the
+repository directory:
+
+```bash
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
+```
+
+The `--bg` flag keeps the Serve configuration across host reboots and service
+restarts; it remains tailnet-only. Configure Tailscale ACLs and device
+restrictions for the operator devices. Do not use Tailscale Funnel or set
+`HOST_BIND_IP=0.0.0.0` because the dashboard contains private user chats.
 
 ## Persistence boundaries
 
@@ -142,14 +150,14 @@ initialize it.
 The default deployment is not a public web application:
 
 - the host port binds to loopback;
-- the production Compose overlay defeats public-bind and development-feature
-  overrides;
+- the production Compose overlay disables the web interface and reload by
+  default;
 - Telegram needs outbound HTTPS only;
 - secrets live in an ignored `.env` file; and
 - `.dockerignore` excludes secrets and runtime state from image builds.
 
 Public web access, authentication, TLS termination, and reverse-proxy
-configuration are intentionally separate architectural decisions. Tailscale
-Serve supplies the private reverse proxy for the dashboard; the
-application deliberately does not implement HTTP Basic auth, cookies, or
+configuration are intentionally separate architectural decisions. A direct
+Tailscale bind or Tailscale Serve can provide private network reachability, but
+the application deliberately does not implement HTTP Basic auth, cookies, or
 Tailscale identity-header authentication.

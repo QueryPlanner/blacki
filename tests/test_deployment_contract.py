@@ -86,6 +86,7 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert values["TELEGRAM_ENABLED"] == "true"
     assert values["TELEGRAM_BOT_TOKEN"] == "replace-me"  # noqa: S105
     assert "BIND_ADDRESS" not in values
+    assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
@@ -100,6 +101,7 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     assert "GOOGLE_API_KEY" not in values
     assert values["TELEGRAM_ENABLED"] == "false"
     assert "TELEGRAM_BOT_TOKEN" not in values
+    assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["HOST"] == "127.0.0.1"
     assert values["ZEPTO_MCP_ENABLED"] == "false"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
@@ -476,6 +478,9 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
     assert 'printf \'IMAGE="%s"\\n\' "$IMAGE_NAME"' in workflow
     assert 'printf \'DEPLOY_SHA="%s"\\n\' "$DEPLOY_SHA"' in workflow
+    assert "HOST_BIND_IP=$(" in workflow
+    assert "HOST_BIND_IP=127.0.0.1" in workflow
+    assert 'printf \'HOST_BIND_IP="%s"\\n\' "$HOST_BIND_IP"' in workflow
     assert 'SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"' in workflow
     assert "source /tmp/deploy.env" not in workflow
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
@@ -643,6 +648,36 @@ def test_development_overlay_is_loopback_only() -> None:
     assert service["environment"]["SERVE_WEB_INTERFACE"] == "true"
     assert service["environment"]["RELOAD_AGENTS"] == "true"
     assert service["ports"][0]["host_ip"] == "127.0.0.1"
+
+
+def test_production_overlay_supports_a_specific_tailscale_bind() -> None:
+    """Operators can publish only the host's private Tailscale interface."""
+    assert DOCKER_EXECUTABLE is not None
+    result = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [
+            DOCKER_EXECUTABLE,
+            "compose",
+            "--env-file",
+            ".env.minimal",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.prod.yaml",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": ".env.minimal",
+            "HOST_BIND_IP": "100.64.0.42",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    service = yaml.safe_load(result.stdout)["services"]["agent"]
+
+    assert service["ports"][0]["host_ip"] == "100.64.0.42"
 
 
 def test_owner_deployment_cannot_run_from_a_fork() -> None:
