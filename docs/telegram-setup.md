@@ -53,6 +53,38 @@ OpenInference logging. Tool notifications may show that speech synthesis is
 running, but never include the text being spoken. ADK session history still
 retains the model's tool call and arguments.
 
+### Optional Connect Google Health
+
+Blacki can read normalized health summaries after a user completes Google OAuth
+from a private Telegram chat. This is intentionally named **Connect Google
+Health**: Blacki does not request Apple ID credentials, access HealthKit, scrape
+Fitbit, or receive arbitrary Apple Health records. The user must first configure
+an Apple Health-to-Google Health/Fitbit-compatible import path if their account
+and app version support it.
+
+Configure the Google Cloud OAuth web client and the `GOOGLE_HEALTH_*` values in
+[Configuration](base-infra/environment-variables.md), then set the callback URL
+to the exact public HTTPS URL. In Telegram:
+
+1. Send `/connect_health` in a private chat.
+2. Open the one-time Google authorization link and grant only the requested
+   read-only categories.
+3. Return to Telegram and use `/health_refresh` for an on-demand sync or
+   `/health_summary` for the latest stored records.
+4. Use `/disconnect_health`, then confirm the button, to revoke the token
+   best-effort and delete Blacki's stored token, normalized records, and pending
+   OAuth state.
+
+The background sync runs every 12 hours by default and fetches a bounded recent
+window so late device imports can replace earlier daily records. Missing values
+are omitted rather than guessed. Stored data is limited to normalized daily
+activity, workout, sleep, heart-rate, weight, and body-fat summaries; raw
+Google payloads and provider IDs are not persisted in the summary table.
+
+Google Health availability does not prove that a particular Apple Health metric
+was imported. Test the desired categories on a non-production account before
+promising steps, workouts, sleep, or heart-rate coverage to users.
+
 ## 3. Start or recreate the service
 
 Docker Compose:
@@ -82,6 +114,10 @@ Open the bot in Telegram and send:
 | `/model` | Open the model and thinking settings panel |
 | `/thinking` | Open the supported reasoning-effort choices for the active model |
 | `/reset` | Start a fresh conversation session |
+| `/connect_health` | Send a Google Health authorization link |
+| `/health_refresh` | Fetch recent Google Health data (rate limited) |
+| `/health_summary` | Show normalized daily records and trends |
+| `/disconnect_health` | Confirm disconnection and local health-data deletion |
 
 Then send a normal message and confirm the model responds. Blacki does not
 currently implement a `/clear` command.

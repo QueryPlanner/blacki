@@ -35,6 +35,15 @@ the ADK application plugins.
    tool is enabled and selected, it synthesizes a bounded MP3 in memory and
    sends it directly to the same chat or topic through Telegram `sendAudio`.
 
+For a private chat with the optional Google Health connector, `/connect_health`
+creates a short-lived one-time OAuth state and sends a Google authorization URL.
+The HTTPS callback consumes the state, exchanges the code, resolves Google's
+server-side identity, and stores only an encrypted refresh token plus safe
+connection metadata. A bounded background job refreshes and reads recent data,
+normalizes it into daily SQLite records, and the Telegram commands and
+`get_health_summary` tool read those normalized records. Tokens, raw provider
+payloads, and provider identifiers never travel through Telegram messages.
+
 Long polling is outbound. It does not require a public webhook, domain, TLS
 certificate, or inbound application port.
 
@@ -74,6 +83,7 @@ Blacki uses different stores for different responsibilities:
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
 | Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
+| Google Health refresh tokens and normalized summaries | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
 
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
@@ -94,7 +104,8 @@ Optional tools follow the project's cloud-first principle:
 - grocery shopping can use Zepto's hosted MCP server for one allowlisted,
   shared account;
 - vector memory can use Qdrant Cloud; and
-- code execution can use an OpenSandbox server.
+- code execution can use an OpenSandbox server; and
+- health summaries can use Google Health API after private Telegram OAuth.
 
 Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
@@ -117,6 +128,14 @@ files are plaintext protected by a `0700` directory and `0600` file
 permissions; they are not encrypted. Shopping prompts, tool calls, and results
 remain in the local ADK session database and are sent to the configured model
 as part of normal agent execution.
+
+Google Health is a separate read-only boundary. It uses the current Google
+Health API, not the legacy Fitbit Web API. The connector requests only current
+read-only activity/fitness, measurements, and sleep scopes; it handles missing
+or partially imported categories as unavailable. Health commands reject group
+chats, and the summary tool requires private Telegram session state.
+`/disconnect_health` requires an explicit inline-button confirmation before
+local deletion.
 
 ### Sandbox credential threat model
 

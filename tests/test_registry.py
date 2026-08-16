@@ -177,6 +177,19 @@ class TestBuildTools:
         assert "send_text_to_speech" not in {tool.__name__ for tool in worker_tools}
         assert "send_text_to_speech" not in {tool.__name__ for tool in default_tools}
 
+    def test_google_health_tool_is_telegram_root_only(self) -> None:
+        """Google Health must never reach the public or delegated worker agent."""
+        config = ToolConfig(
+            weather_enabled=False,
+            google_health_enabled=True,
+        )
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+
+        assert "get_health_summary" in {tool.__name__ for tool in root_tools}
+        assert "get_health_summary" not in {tool.__name__ for tool in worker_tools}
+
     def test_invalid_kokoro_tts_config_disables_only_tts(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -394,6 +407,23 @@ class TestBuildToolConfigFromEnv:
 
         assert config.kokoro_tts_base_url == "http://100.77.130.71:8880"
         assert config.kokoro_tts_voice == "hf_alpha"
+
+    def test_google_health_settings_enable_private_tool(self) -> None:
+        """A complete Google Health secret set enables the Telegram tool."""
+        from cryptography.fernet import Fernet
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GOOGLE_HEALTH_CLIENT_ID": "id",
+                "GOOGLE_HEALTH_CLIENT_SECRET": "secret",
+                "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+            },
+            clear=True,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.google_health_enabled is True
 
     def test_empty_kokoro_voice_uses_default(self) -> None:
         """An empty voice setting should retain the verified default voice."""

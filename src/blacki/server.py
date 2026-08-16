@@ -13,7 +13,7 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
@@ -48,6 +48,42 @@ setup_tracing()
 
 _telegram_bot = None
 _container: AppContainer | None = None
+_google_health_service = None
+_google_health_scheduler = None
+
+
+async def _start_google_health() -> None:
+    """Initialize the optional Google Health connector and its scheduler."""
+    global _google_health_scheduler, _google_health_service
+
+    if _container is None:
+        logger.info("Google Health connector not started (no container)")
+        return
+
+    from .health.config import GoogleHealthConfig, GoogleHealthConfigurationError
+    from .health.scheduler import GoogleHealthScheduler
+    from .health.service import GoogleHealthService
+
+    try:
+        config = GoogleHealthConfig.from_environment()
+    except GoogleHealthConfigurationError:
+        logger.exception("Google Health configuration is invalid; connector disabled")
+        return
+    if config is None:
+        logger.info("Google Health connector not configured")
+        return
+
+    service = GoogleHealthService(config, _container.google_health_storage)
+    scheduler = GoogleHealthScheduler(service)
+    try:
+        await scheduler.start()
+    except Exception:
+        logger.exception("Google Health scheduler failed to start")
+        await service.close()
+        return
+    _google_health_service = service
+    _google_health_scheduler = scheduler
+    logger.info("Google Health connector initialized")
 
 
 async def _start_telegram_bot() -> None:
@@ -78,7 +114,11 @@ async def _start_telegram_bot() -> None:
             create_agent(include_user_scoped_tools=True),
         )
         adk_runtime = create_adk_runtime(env, agent_app=telegram_app)
-        _telegram_bot = TelegramBot(telegram_config, adk_runtime)
+        _telegram_bot = TelegramBot(
+            telegram_config,
+            adk_runtime,
+            google_health_service=_google_health_service,
+        )
         logger.info("Telegram bot instance created")
 
         await _telegram_bot.start_polling()
@@ -135,6 +175,24 @@ async def _stop_reminder_scheduler() -> None:
         logger.exception("Error stopping reminder scheduler")
 
 
+async def _stop_google_health() -> None:
+    """Stop the optional health scheduler and close its HTTP client."""
+    global _google_health_scheduler, _google_health_service
+
+    if _google_health_scheduler is not None:
+        try:
+            await _google_health_scheduler.stop()
+        except Exception:
+            logger.exception("Error stopping Google Health scheduler")
+    if _google_health_service is not None:
+        try:
+            await _google_health_service.close()
+        except Exception:
+            logger.exception("Error closing Google Health client")
+    _google_health_scheduler = None
+    _google_health_service = None
+
+
 AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
 
 DEFAULT_SQLITE_PATH = str(Path(AGENT_DIR) / ".adk" / "tools.db")
@@ -154,6 +212,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     _container = await init_container(sqlite_path)
     try:
         await _container.initialize_all_storages()
+        await _start_google_health()
 
         logger.info("Validating configuration...")
         try:
@@ -170,6 +229,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await _start_telegram_bot()
         yield
     finally:
+        await _stop_google_health()
         await _stop_reminder_scheduler()
         await _stop_telegram_bot()
 
@@ -202,6 +262,71 @@ app: FastAPI = get_fast_api_app(
 )
 
 app.include_router(create_dashboard_router(env))
+
+
+@app.get(
+    "/integrations/google-health/callback",
+    response_class=HTMLResponse,
+)
+async def google_health_callback(
+    state: str | None = None,
+    code: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    """Complete Google OAuth without returning provider data to the browser."""
+    if _google_health_service is None:
+        return HTMLResponse(
+            "<h1>Google Health is not configured</h1>",
+            status_code=503,
+        )
+
+    from .health.client import GoogleHealthApiError
+    from .health.service import GoogleHealthOAuthError
+
+    try:
+        completion = await _google_health_service.complete_authorization(
+            state=state or "",
+            code=code,
+            error=error,
+        )
+    except GoogleHealthOAuthError:
+        return HTMLResponse(
+            "<h1>Google Health authorization could not be completed</h1>",
+            status_code=400,
+        )
+    except GoogleHealthApiError as exc:
+        logger.exception(
+            "Google Health provider rejected OAuth completion: "
+            "status_code=%s error_code=%s",
+            exc.status_code,
+            exc.error_code,
+        )
+        return HTMLResponse(
+            "<h1>Google Health authorization could not be completed</h1>",
+            status_code=502,
+        )
+    except Exception:
+        logger.exception("Unexpected Google Health OAuth callback failure")
+        return HTMLResponse(
+            "<h1>Google Health authorization could not be completed</h1>",
+            status_code=500,
+        )
+
+    if _telegram_bot is not None:
+        try:
+            await _telegram_bot.notify_health_connection(
+                completion.telegram_user_id,
+                connected=completion.connected,
+            )
+        except Exception:
+            logger.exception("Failed to notify Telegram after Google Health OAuth")
+
+    title = (
+        "Google Health connected"
+        if completion.connected
+        else "Google Health authorization cancelled"
+    )
+    return HTMLResponse(f"<h1>{title}</h1><p>You can return to Telegram.</p>")
 
 
 @app.get("/live")

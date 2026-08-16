@@ -106,6 +106,29 @@ Kokoro process on another Tailscale host; configure that host's Tailscale IP or
 MagicDNS name instead. Plain HTTP is suitable only across a trusted private
 network such as the encrypted Tailscale connection.
 
+### Google Health connector
+
+The optional connector is enabled when all three required values are present.
+It is exposed only to the Telegram root agent and only accepts private-chat
+identities.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GOOGLE_HEALTH_CLIENT_ID` | unset | Server-side Google OAuth web-client ID |
+| `GOOGLE_HEALTH_CLIENT_SECRET` | unset | Server-side Google OAuth web-client secret |
+| `GOOGLE_HEALTH_REDIRECT_URI` | `http://127.0.0.1:8080/integrations/google-health/callback` | OAuth callback; use HTTPS in production |
+| `GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY` | unset | Fernet key used to encrypt refresh tokens at rest |
+| `GOOGLE_HEALTH_SYNC_INTERVAL_HOURS` | `12` | Background sync interval |
+| `GOOGLE_HEALTH_MANUAL_REFRESH_COOLDOWN_SECONDS` | `3600` | Per-user on-demand refresh cooldown |
+| `GOOGLE_HEALTH_OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of one-time OAuth state |
+
+Blacki requests the current Google Health read-only activity/fitness,
+health-metrics/measurements, and sleep scopes. Do not paste the client secret
+or Fernet key into logs, chat, or source control. The callback URL must exactly
+match the Google Cloud OAuth client configuration. The Apple Health-to-Google
+Health or Fitbit import step is configured separately by the user and may be
+incomplete; Blacki does not access HealthKit directly.
+
 ## Search and browser tools
 
 | Variable | Default | Purpose |
