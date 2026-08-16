@@ -579,6 +579,29 @@ def test_production_deployment_serializes_kokoro_tts_settings() -> None:
         assert setting in writer_names
 
 
+def test_production_deployment_serializes_google_health_settings() -> None:
+    """Google Health OAuth secrets must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    for setting in (
+        "GOOGLE_HEALTH_CLIENT_ID",
+        "GOOGLE_HEALTH_CLIENT_SECRET",
+        "GOOGLE_HEALTH_REDIRECT_URI",
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ):
+        assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
+        assert setting in writer_names
+
+
 def test_ci_startup_smoke_shell_is_valid_bash() -> None:
     """The production-image startup check must remain valid executable Bash."""
     assert BASH_EXECUTABLE is not None

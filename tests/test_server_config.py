@@ -527,3 +527,214 @@ async def test_readiness_reports_degraded_database(
         "checks": {"database": "unhealthy"},
     }
     assert b"db secret" not in response.body
+
+
+@pytest.mark.asyncio
+async def test_google_health_callback_requires_configuration(
+    mock_dependencies: MagicMock,
+) -> None:
+    """The callback fails closed when the optional connector is disabled."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    server._google_health_service = None
+    response = await server.google_health_callback(state="state", code="code")
+
+    assert response.status_code == 503
+    assert b"not configured" in response.body
+
+
+@pytest.mark.asyncio
+async def test_google_health_callback_completes_and_notifies(
+    mock_dependencies: MagicMock,
+) -> None:
+    """The callback consumes OAuth through the service and notifies Telegram."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.health.service import OAuthCompletion
+
+    service = MagicMock()
+    service.complete_authorization = AsyncMock(
+        return_value=OAuthCompletion("telegram-chat-42", connected=True)
+    )
+    bot = MagicMock()
+    bot.notify_health_connection = AsyncMock()
+    server._google_health_service = service
+    server._telegram_bot = bot
+    try:
+        response = await server.google_health_callback(
+            state="state", code="code", error=None
+        )
+    finally:
+        server._google_health_service = None
+        server._telegram_bot = None
+
+    assert response.status_code == 200
+    assert b"connected" in response.body
+    service.complete_authorization.assert_awaited_once_with(
+        state="state", code="code", error=None
+    )
+    bot.notify_health_connection.assert_awaited_once_with(
+        "telegram-chat-42", connected=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_google_health_callback_handles_cancel_and_safe_errors(
+    mock_dependencies: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cancellation and provider/state errors never expose payloads."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.health.client import GoogleHealthApiError
+    from blacki.health.service import GoogleHealthOAuthError, OAuthCompletion
+
+    service = MagicMock()
+    server._google_health_service = service
+    try:
+        service.complete_authorization = AsyncMock(
+            return_value=OAuthCompletion("telegram-chat-42", connected=False)
+        )
+        response = await server.google_health_callback(
+            state="state", code=None, error="access_denied"
+        )
+        assert response.status_code == 200
+        assert b"cancelled" in response.body
+
+        service.complete_authorization = AsyncMock(
+            side_effect=GoogleHealthOAuthError("state secret")
+        )
+        response = await server.google_health_callback(state="bad", code="code")
+        assert response.status_code == 400
+        assert b"state secret" not in response.body
+
+        service.complete_authorization = AsyncMock(
+            side_effect=GoogleHealthApiError(
+                "provider error", status_code=400, error_code="ACCOUNT_NOT_LINKED"
+            )
+        )
+        with caplog.at_level("ERROR", logger="blacki.server"):
+            response = await server.google_health_callback(state="bad", code="code")
+        assert response.status_code == 502
+        assert b"provider error" not in response.body
+        assert "status_code=400 error_code=ACCOUNT_NOT_LINKED" in caplog.text
+
+        service.complete_authorization = AsyncMock(
+            side_effect=RuntimeError("unexpected secret")
+        )
+        response = await server.google_health_callback(state="bad", code="code")
+        assert response.status_code == 500
+        assert b"unexpected secret" not in response.body
+
+        from blacki.health.service import OAuthCompletion
+
+        service.complete_authorization = AsyncMock(
+            return_value=OAuthCompletion("telegram-chat-42", connected=True)
+        )
+        bot = MagicMock()
+        bot.notify_health_connection = AsyncMock(side_effect=RuntimeError("notify"))
+        server._telegram_bot = bot
+        response = await server.google_health_callback(state="state", code="code")
+        assert response.status_code == 200
+    finally:
+        server._google_health_service = None
+        server._telegram_bot = None
+
+
+@pytest.mark.asyncio
+async def test_google_health_start_and_stop_are_optional(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Startup tolerates absent, invalid, failing, and valid optional config."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    from cryptography.fernet import Fernet
+
+    import blacki.server as server
+    from blacki.health.config import GoogleHealthConfigurationError
+    from blacki.health.scheduler import GoogleHealthScheduler
+
+    server._container = None
+    await server._start_google_health()
+
+    server._container = MagicMock()
+    with patch(
+        "blacki.health.config.GoogleHealthConfig.from_environment",
+        return_value=None,
+    ):
+        await server._start_google_health()
+    assert server._google_health_service is None
+
+    with patch(
+        "blacki.health.config.GoogleHealthConfig.from_environment",
+        side_effect=GoogleHealthConfigurationError("bad config"),
+    ):
+        await server._start_google_health()
+    assert server._google_health_service is None
+
+    config_values = {
+        "client_id": "id",
+        "client_secret": "secret",
+        "redirect_uri": "https://example.test/callback",
+        "token_encryption_key": Fernet.generate_key().decode(),
+    }
+    with (
+        patch(
+            "blacki.health.config.GoogleHealthConfig.from_environment",
+            return_value=__import__(
+                "blacki.health.config", fromlist=["GoogleHealthConfig"]
+            ).GoogleHealthConfig(**config_values),
+        ),
+        patch.object(GoogleHealthScheduler, "start", new=AsyncMock()),
+    ):
+        await server._start_google_health()
+    assert getattr(server, "_google_health_service", None) is not None
+    assert getattr(server, "_google_health_scheduler", None) is not None
+    await server._stop_google_health()
+    assert getattr(server, "_google_health_service", object()) is None
+
+    with (
+        patch(
+            "blacki.health.config.GoogleHealthConfig.from_environment",
+            return_value=__import__(
+                "blacki.health.config", fromlist=["GoogleHealthConfig"]
+            ).GoogleHealthConfig(**config_values),
+        ),
+        patch.object(
+            GoogleHealthScheduler,
+            "start",
+            new=AsyncMock(side_effect=RuntimeError("scheduler")),
+        ),
+    ):
+        await server._start_google_health()
+    assert server._google_health_service is None
+    server._container = None
+
+
+@pytest.mark.asyncio
+async def test_google_health_stop_suppresses_scheduler_and_client_errors(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Shutdown clears health globals even when optional resources fail."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    scheduler = MagicMock()
+    scheduler.stop = AsyncMock(side_effect=RuntimeError("scheduler"))
+    service = MagicMock()
+    service.close = AsyncMock(side_effect=RuntimeError("client"))
+    server._google_health_scheduler = scheduler
+    server._google_health_service = service
+    await server._stop_google_health()
+    assert getattr(server, "_google_health_scheduler", object()) is None
+    assert getattr(server, "_google_health_service", object()) is None

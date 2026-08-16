@@ -120,6 +120,17 @@ def test_router_does_not_describe_disabled_tools() -> None:
     assert build_domain_instruction("Log my lunch", frozenset()) == ""
 
 
+def test_health_policy_is_enabled_only_for_health_tool() -> None:
+    assert select_domain_policy_names(
+        "Show my Google Health sleep summary", {"get_health_summary"}
+    ) == ("health",)
+    instruction = build_domain_instruction(
+        "Show my Google Health sleep summary", {"get_health_summary"}
+    )
+    assert "read-only wellness summary source" in instruction
+    assert "never infer, diagnose" in instruction
+
+
 class TestDomainPolicyAssembly:
     """Verify conditional policy content for behavior-sensitive requests."""
 

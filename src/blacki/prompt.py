@@ -104,6 +104,19 @@ time instead of guessing it, and use the shared temporal context for its date.
 </reminder_policy>"""
 
 
+HEALTH_POLICY = """\
+<google_health_policy>
+Google Health is a read-only wellness summary source. Use get_health_summary
+only for the authenticated user's private Telegram data. Never request Apple ID
+credentials, Fitbit credentials, raw provider payloads, ECG data, medication or
+clinical records, or another user's health information. Omit missing metrics;
+never infer, diagnose, or present wellness observations as medical advice. The
+Apple Health import path is user-configured and may be incomplete, so describe
+the source as Google Health and explain that absence does not prove absence in
+Apple Health.
+</google_health_policy>"""
+
+
 DOMAIN_PATTERNS = {
     "nutrition": re.compile(
         r"\b(?:ate|eaten|eating|drank|drink|food|meal|breakfast|lunch|dinner|"
@@ -122,6 +135,12 @@ DOMAIN_PATTERNS = {
     "search": re.compile(
         r"\b(?:latest|current|news|recent|today|as of|verify|verified|search|"
         r"look up|source|sources|citation|citations)\b",
+        re.IGNORECASE,
+    ),
+    "health": re.compile(
+        r"\b(?:health|steps?|distance|active\s+(?:minutes?|zone)|sleep|"
+        r"resting\s+heart|heart\s+rate|body\s*fat|weight|fitbit|google\s+health|"
+        r"health\s+summary)\b",
         re.IGNORECASE,
     ),
 }
@@ -153,6 +172,7 @@ DOMAIN_TOOL_NAMES = {
     ),
     "reminder": frozenset({"schedule_reminder", "list_reminders", "cancel_reminder"}),
     "search": frozenset({"exa_search", "brave_search"}),
+    "health": frozenset({"get_health_summary"}),
 }
 
 LEGACY_WORKOUT_TOOL_NAMES = frozenset(
@@ -211,7 +231,7 @@ def select_domain_policy_names(
 ) -> tuple[str, ...]:
     """Select request-relevant domains that also have enabled tools."""
     selected = []
-    for domain in ("nutrition", "workout", "reminder", "search"):
+    for domain in ("nutrition", "workout", "reminder", "search", "health"):
         if (
             DOMAIN_PATTERNS[domain].search(user_text)
             and DOMAIN_TOOL_NAMES[domain] & available_tool_names
@@ -240,6 +260,8 @@ def build_domain_instruction(
             blocks.append(REMINDER_POLICY)
         elif domain == "search":  # pragma: no branch - search is the final domain
             blocks.append(_build_search_policy(available_tool_names))
+        elif domain == "health":  # pragma: no branch - health is the final domain
+            blocks.append(HEALTH_POLICY)
     return "\n\n".join(blocks)
 
 

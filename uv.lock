@@ -240,6 +240,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
     { name = "apscheduler" },
+    { name = "cryptography" },
     { name = "dateparser" },
     { name = "google-adk", extra = ["mcp"] },
     { name = "google-auth" },
@@ -281,6 +282,7 @@ docs = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "apscheduler", specifier = ">=3.11.0,<4.0.0" },
+    { name = "cryptography", specifier = ">=46.0.0,<47.0.0" },
     { name = "dateparser", specifier = ">=1.2.0,<2.0.0" },
     { name = "google-adk", extras = ["mcp"], specifier = "==2.5.0" },
     { name = "google-auth", specifier = ">=2.40.3,<3.0.0" },

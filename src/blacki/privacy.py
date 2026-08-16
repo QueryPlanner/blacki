@@ -12,7 +12,7 @@ from google.adk.tools.tool_context import ToolContext
 
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _ZEPTO_TOOL_PREFIX = "zepto_"
-_PRIVATE_TOOL_NAMES = frozenset({"send_text_to_speech"})
+_PRIVATE_TOOL_NAMES = frozenset({"get_health_summary", "send_text_to_speech"})
 
 
 def zepto_mcp_enabled() -> bool:
@@ -25,9 +25,16 @@ def kokoro_tts_enabled() -> bool:
     return bool(os.getenv("KOKORO_TTS_BASE_URL", "").strip())
 
 
+def google_health_enabled() -> bool:
+    """Return whether a complete Google Health connector is configured."""
+    from .health.config import google_health_configured_from_environment
+
+    return google_health_configured_from_environment()
+
+
 def private_tool_privacy_enabled() -> bool:
     """Return whether any configured tool needs content-level redaction."""
-    return zepto_mcp_enabled() or kokoro_tts_enabled()
+    return zepto_mcp_enabled() or kokoro_tts_enabled() or google_health_enabled()
 
 
 def configure_zepto_privacy() -> bool:

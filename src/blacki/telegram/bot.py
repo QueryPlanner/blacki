@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from collections.abc import Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -13,6 +14,13 @@ from typing import cast
 from google.genai import types
 
 from blacki.adk_runtime import AdkRuntime, EmptyModelResponseError, SessionLocator
+from blacki.health.config import telegram_chat_id_for_health_user
+from blacki.health.service import (
+    GoogleHealthOAuthError,
+    GoogleHealthService,
+    SyncResult,
+    format_health_summary,
+)
 from blacki.inference import (
     InferenceProfile,
     ReasoningConfig,
@@ -35,6 +43,7 @@ from .streaming import split_long_message
 from .types import (
     BotCommand,
     CallbackQuery,
+    ChatType,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -52,6 +61,25 @@ _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
+
+
+def _format_health_sync_result(result: SyncResult) -> str:
+    """Render a provider-sync result without exposing IDs or error payloads."""
+    if result.status == "not_connected":
+        return "Google Health is not connected. Use /connect_health first."
+    if result.status == "reauthorization_required":
+        return (
+            "Google Health needs authorization again. Use /connect_health to reconnect."
+        )
+    if result.status == "rate_limited":
+        return "A Google Health refresh was requested recently. Please try again later."
+    if result.status == "success":
+        return (
+            f"Google Health refreshed {result.days_upserted} day(s) from "
+            f"{result.records_fetched} record(s)."
+        )
+    return "Google Health could not be refreshed right now. Please try again later."
+
 
 MODEL_CHOICES = {
     "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),
@@ -102,15 +130,20 @@ class TelegramBot:
         self,
         config: TelegramConfig,
         runtime: AdkRuntime,
+        google_health_service: GoogleHealthService | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
         self.runtime = runtime
+        self.google_health_service = google_health_service
         self._api: TelegramApiClient | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
+            "telegram_chat_type", default=None
+        )
         self._capabilities_resolver: OpenRouterModelCapabilitiesResolver | None = None
 
     @property
@@ -179,6 +212,27 @@ class TelegramBot:
                 description="Set reasoning effort for this chat",
             ),
         ]
+        if self.google_health_service is not None:
+            commands.extend(
+                [
+                    BotCommand(
+                        command="connect_health",
+                        description="Connect Google Health read-only data",
+                    ),
+                    BotCommand(
+                        command="health_summary",
+                        description="Show your Google Health summary",
+                    ),
+                    BotCommand(
+                        command="health_refresh",
+                        description="Refresh Google Health data",
+                    ),
+                    BotCommand(
+                        command="disconnect_health",
+                        description="Disconnect and delete Google Health data",
+                    ),
+                ]
+            )
         try:
             await self.api.set_my_commands(commands)
             logger.info("Registered Telegram bot commands")
@@ -293,24 +347,27 @@ class TelegramBot:
             return
 
         message = update.message
+        token = self._chat_type_context.set(message.chat.type)
+        try:
+            if message.text is None:
+                await self._route_non_text_message(message)
+                return
 
-        if message.text is None:
-            await self._route_non_text_message(message)
-            return
+            chat_id = message.chat.id
+            message_thread_id = message.message_thread_id
+            user_message = message.text
 
-        chat_id = message.chat.id
-        message_thread_id = message.message_thread_id
-        user_message = message.text
+            if user_message.startswith("/"):
+                await self._handle_command(message, user_message)
+                return
 
-        if user_message.startswith("/"):
-            await self._handle_command(message, user_message)
-            return
-
-        await self._handle_message(
-            chat_id=chat_id,
-            message_thread_id=message_thread_id,
-            user_message=user_message,
-        )
+            await self._handle_message(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                user_message=user_message,
+            )
+        finally:
+            self._chat_type_context.reset(token)
 
     async def _route_non_text_message(self, message: Message) -> None:
         """Route a non-text message to the appropriate handler."""
@@ -360,6 +417,7 @@ class TelegramBot:
         file_id: str,
         file_size: int | None,
         caption: str | None,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Download a Telegram photo and send it to ADK as native image input."""
         if file_size is not None and file_size > _MAX_NATIVE_IMAGE_BYTES:
@@ -378,6 +436,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            chat_type=chat_type or self._chat_type_context.get(),
         )
 
         try:
@@ -457,6 +516,204 @@ class TelegramBot:
             await self._send_model_menu(chat_id, message.message_thread_id)
         elif command == "/thinking":
             await self._send_thinking_menu(chat_id, message.message_thread_id)
+        elif command == "/connect_health":
+            await self._connect_health(message)
+        elif command == "/health_summary":
+            await self._send_health_summary(message)
+        elif command == "/health_refresh":
+            await self._refresh_health(message)
+        elif command == "/disconnect_health":
+            await self._request_health_disconnect(message)
+
+    async def _connect_health(self, message: Message) -> None:
+        """Send a short-lived Google authorization link to a private chat."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
+        try:
+            url = await service.begin_authorization(f"telegram-chat-{message.chat.id}")
+            await self.api.send_message(
+                chat_id=message.chat.id,
+                text=(
+                    "Google Health connection is read-only. It can summarize "
+                    "data that reaches Google Health from Fitbit-compatible sources. "
+                    "Blacki does not receive Apple ID credentials or raw Apple Health "
+                    "records. Authorize only if you want this private chat to read "
+                    "the selected health categories."
+                ),
+                message_thread_id=message.message_thread_id,
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [
+                            InlineKeyboardButton(
+                                text="Connect Google Health",
+                                url=url,
+                                callback_data=None,
+                            )
+                        ]
+                    ]
+                ),
+                protect_content=True,
+            )
+        except (GoogleHealthOAuthError, ValueError):
+            logger.exception("Failed to create Google Health authorization link")
+            await self._send_health_text(
+                message,
+                "Google Health is not available for this chat right now.",
+            )
+
+    async def _send_health_summary(self, message: Message) -> None:
+        """Send the latest normalized health summary without provider access."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
+        try:
+            summary = await service.summary(f"telegram-chat-{message.chat.id}")
+            await self._send_health_text(message, format_health_summary(summary))
+        except GoogleHealthOAuthError:
+            await self._send_health_text(
+                message,
+                "Google Health summaries are available only in a private chat.",
+            )
+        except Exception:
+            logger.exception("Failed to read Google Health summary")
+            await self._send_health_text(
+                message,
+                "I couldn't read your Google Health summary right now.",
+            )
+
+    async def _refresh_health(self, message: Message) -> None:
+        """Fetch a bounded window of provider data and show the result."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
+        try:
+            result = await service.refresh_user(f"telegram-chat-{message.chat.id}")
+            if result.status == "success":
+                summary = await service.summary(f"telegram-chat-{message.chat.id}")
+                text = format_health_summary(summary)
+            else:
+                text = _format_health_sync_result(result)
+            await self._send_health_text(message, text)
+        except GoogleHealthOAuthError:
+            await self._send_health_text(
+                message,
+                "Google Health refreshes are available only in a private chat.",
+            )
+        except Exception:
+            logger.exception("Failed to refresh Google Health data")
+            await self._send_health_text(
+                message,
+                "I couldn't refresh your Google Health data right now.",
+            )
+
+    async def _request_health_disconnect(self, message: Message) -> None:
+        """Ask for a final Telegram click before deleting local health data."""
+        if not await self._health_command_ready(message):
+            return
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "Disconnect Google Health and delete Blacki's stored health "
+                "data for this chat? This cannot be undone locally."
+            ),
+            message_thread_id=message.message_thread_id,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Disconnect and delete data",
+                            callback_data="health:disconnect",
+                        ),
+                        InlineKeyboardButton(
+                            text="Cancel",
+                            callback_data="health:cancel",
+                        ),
+                    ]
+                ]
+            ),
+            protect_content=True,
+        )
+
+    async def _health_command_ready(self, message: Message) -> bool:
+        """Require a configured connector and a private Telegram chat."""
+        if message.chat.type != ChatType.PRIVATE:
+            await self._send_health_text(
+                message,
+                "Google Health is available only in a private Telegram chat.",
+            )
+            return False
+        if self.google_health_service is None:
+            await self._send_health_text(
+                message,
+                "Google Health is not configured on this Blacki server yet.",
+            )
+            return False
+        return True
+
+    async def _send_health_text(self, message: Message, text: str) -> None:
+        """Send private health content with Telegram forwarding protection."""
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=text,
+            message_thread_id=message.message_thread_id,
+            protect_content=True,
+        )
+
+    async def _handle_health_callback(self, query: CallbackQuery) -> None:
+        """Handle the explicit disconnect confirmation from a private chat."""
+        if query.message is None:
+            await self.api.answer_callback_query(query.id, text="Confirmation expired")
+            return
+        chat = query.message.chat
+        if chat.type != ChatType.PRIVATE or query.from_user.id != chat.id:
+            await self.api.answer_callback_query(query.id, text="Not authorized")
+            return
+        if self.google_health_service is None:
+            await self.api.answer_callback_query(query.id, text="Not configured")
+            return
+        if query.data == "health:cancel":
+            await self.api.answer_callback_query(query.id, text="Cancelled")
+            return
+
+        await self.api.answer_callback_query(query.id, text="Disconnecting…")
+        try:
+            deleted = await self.google_health_service.disconnect(
+                f"telegram-chat-{chat.id}"
+            )
+            text = (
+                "Google Health was disconnected and stored health data was deleted."
+                if deleted
+                else "Google Health was already disconnected."
+            )
+            await self._send_health_text(query.message, text)
+        except Exception:
+            logger.exception("Failed to disconnect Google Health")
+            await self._send_health_text(
+                query.message,
+                "I couldn't finish disconnecting Google Health. Please try again.",
+            )
+
+    async def notify_health_connection(
+        self, telegram_user_id: str, *, connected: bool
+    ) -> None:
+        """Notify the originating private chat after OAuth callback completion."""
+        chat_id = telegram_chat_id_for_health_user(telegram_user_id)
+        if chat_id is None:
+            return
+        text = (
+            "Google Health is connected. Use /health_refresh for a fresh sync or "
+            "/health_summary to read the latest stored records."
+            if connected
+            else (
+                "Google Health authorization was cancelled. No credentials were stored."
+            )
+        )
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=text,
+            protect_content=True,
+        )
 
     async def _send_model_menu(
         self, chat_id: int, message_thread_id: int | None
@@ -590,6 +847,9 @@ class TelegramBot:
     async def _handle_callback_query(self, query: CallbackQuery) -> None:
         """Handle incoming callback query."""
         data = query.data or ""
+        if data.startswith("health:"):
+            await self._handle_health_callback(query)
+            return
         action, value = self._parse_settings_callback(data)
         if action is None:
             await self.api.answer_callback_query(query.id, text="Unknown action")
@@ -840,6 +1100,15 @@ class TelegramBot:
 
     async def _send_start_message(self, chat_id: int) -> None:
         """Send the start/welcome message."""
+        health_commands = ""
+        if self.google_health_service is not None:
+            health_commands = (
+                "\n"
+                "/connect_health - Connect Google Health read-only data\n"
+                "/health_summary - Show the latest health summary\n"
+                "/health_refresh - Refresh health data\n"
+                "/disconnect_health - Disconnect and delete health data"
+            )
         text = escape_markdown_plain(
             "👋 Hello! I'm blacki, your AI assistant.\n\n"
             "I run through the same ADK agent as the web interface, so our "
@@ -849,6 +1118,7 @@ class TelegramBot:
             "/reset - Start a fresh conversation session\n"
             "/model - Choose the model and thinking settings\n"
             "/thinking - Choose supported reasoning effort"
+            f"{health_commands}"
         )
         try:
             await self.api.send_message(
@@ -861,6 +1131,14 @@ class TelegramBot:
 
     async def _send_help_message(self, chat_id: int) -> None:
         """Send the help message."""
+        health_commands = ""
+        if self.google_health_service is not None:
+            health_commands = (
+                "• /connect_health \\- Connect Google Health read-only data\n"
+                "• /health_summary \\- Show the latest health summary\n"
+                "• /health_refresh \\- Refresh health data\n"
+                "• /disconnect_health \\- Disconnect and delete health data\n"
+            )
         text = (
             "🤖 *blacki \\- AI Assistant*\n\n"
             "I'm powered by the same Google ADK runtime used by the HTTP app\\.\n\n"
@@ -869,7 +1147,8 @@ class TelegramBot:
             "• /help \\- Show this help message\n"
             "• /reset \\- Start a fresh conversation session\n"
             "• /model \\- Choose the model and thinking settings\n"
-            "• /thinking \\- Choose supported reasoning effort\n\n"
+            "• /thinking \\- Choose supported reasoning effort\n"
+            f"{health_commands}\n"
             "*Features:*\n"
             "• Conversation history is tied to this chat\n"
             "• Topic threads can keep separate sessions\n"
@@ -929,6 +1208,7 @@ class TelegramBot:
         file_id: str,
         file_name: str,
         caption: str | None,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Handle incoming file uploads, save to sandbox, and message agent."""
         from blacki.sandbox.manager import get_sandbox_manager
@@ -941,6 +1221,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            chat_type=chat_type or self._chat_type_context.get(),
         )
 
         manager = get_sandbox_manager()
@@ -1090,6 +1371,7 @@ class TelegramBot:
         chat_id: int,
         message_thread_id: int | None,
         user_message: str,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Handle a regular text message with typing + final response."""
         session_identity = self._build_session_identity(
@@ -1110,6 +1392,7 @@ class TelegramBot:
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
+                chat_type=chat_type or self._chat_type_context.get(),
             )
             profile = await self._load_chat_profile(chat_id)
             final_response = await self._run_user_turn_with_retry(
@@ -1282,6 +1565,7 @@ class TelegramBot:
         chat_id: str,
         message_thread_id: int | None,
         conversation_key: str,
+        chat_type: ChatType | None = None,
     ) -> dict[str, str]:
         """Build explicit session state for ADK callbacks and observability."""
         session_state: dict[str, str] = {
@@ -1291,16 +1575,19 @@ class TelegramBot:
         }
         if message_thread_id is not None:
             session_state["telegram_thread_id"] = str(message_thread_id)
+        if chat_type is not None:
+            session_state["telegram_chat_type"] = chat_type.value
         return session_state
 
 
 def create_telegram_bot(
     config: TelegramConfig,
     runtime: AdkRuntime,
+    google_health_service: GoogleHealthService | None = None,
 ) -> TelegramBot | None:
     """Create a Telegram bot instance if configured."""
     if not config.is_configured():
         logger.info("Telegram bot not configured, skipping initialization")
         return None
 
-    return TelegramBot(config, runtime)
+    return TelegramBot(config, runtime, google_health_service)

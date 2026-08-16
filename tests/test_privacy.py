@@ -52,6 +52,7 @@ def test_private_tool_identification_uses_zepto_prefix() -> None:
     assert is_private_tool(_tool("zepto_search_products")) is True
     assert is_private_tool(_tool("send_text_to_speech")) is True
     assert is_private_tool(_tool("search_products")) is False
+    assert is_private_tool(_tool("get_health_summary")) is True
 
 
 def test_kokoro_tts_enables_content_redaction(
@@ -59,6 +60,12 @@ def test_kokoro_tts_enables_content_redaction(
 ) -> None:
     monkeypatch.setenv("ZEPTO_MCP_ENABLED", "false")
     monkeypatch.delenv("KOKORO_TTS_BASE_URL", raising=False)
+    for name in (
+        "GOOGLE_HEALTH_CLIENT_ID",
+        "GOOGLE_HEALTH_CLIENT_SECRET",
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
     assert kokoro_tts_enabled() is False
     assert private_tool_privacy_enabled() is False
     assert configure_private_tool_privacy() is False
