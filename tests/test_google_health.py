@@ -50,6 +50,7 @@ from blacki.health.service import (
     GoogleHealthOAuthError,
     GoogleHealthService,
     _build_trends,
+    _date_window,
     format_health_summary,
 )
 from blacki.health.storage import (
@@ -950,7 +951,7 @@ async def test_health_service_oauth_and_summary(
     await health_storage.upsert_connection(
         telegram_user_id="telegram-chat-42",
         encrypted_refresh_token=encrypted,
-        health_user_id="old-health-id",
+        health_user_id="health-id",
         legacy_fitbit_user_id=None,
         scopes=GOOGLE_HEALTH_SCOPES,
     )
@@ -1047,6 +1048,199 @@ async def test_health_service_oauth_and_summary(
     )
     assert service._decrypt_existing_token(invalid_connection) is None
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_health_service_does_not_reuse_token_for_new_identity(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    """A different Google account cannot inherit the previous refresh token."""
+    config = _config()
+    client = create_autospec(GoogleHealthClient, instance=True, spec_set=True)
+    client.exchange_code = AsyncMock(
+        return_value=GoogleTokenResponse("new-access", 3600, None, ())
+    )
+    client.get_identity = AsyncMock(
+        return_value=GoogleHealthIdentity("new-health-id", None)
+    )
+    service = GoogleHealthService(config, health_storage, client=client)
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token=config.cipher.encrypt("old-refresh"),
+        health_user_id="old-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    url = await service.begin_authorization("telegram-chat-42")
+    state = parse_qs(urlsplit(url).query)["state"][0]
+
+    with pytest.raises(GoogleHealthOAuthError, match="refresh token"):
+        await service.complete_authorization(state=state, code="code", error=None)
+
+    client.exchange_code.assert_awaited_once_with("code")
+    client.get_identity.assert_awaited_once_with("new-access")
+    stored = await health_storage.get_connection("telegram-chat-42")
+    assert stored is not None
+    assert stored.health_user_id == "old-health-id"
+    assert config.cipher.decrypt(stored.encrypted_refresh_token or "") == "old-refresh"
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_health_storage_replaces_identity_and_window_atomically(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    """Account replacement clears identity-bound data and metadata safely."""
+    now = datetime(2026, 8, 16, tzinfo=UTC)
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="old-token",
+        health_user_id="old-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    await health_storage.upsert_daily_summaries(
+        "telegram-chat-42",
+        [
+            {"date": "2026-08-15", "steps": 100},
+        ],
+    )
+    await health_storage.mark_synced("telegram-chat-42")
+    assert await health_storage.claim_manual_refresh(
+        "telegram-chat-42", cooldown_seconds=3600, now=now
+    ) == (True, None)
+
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="new-token",
+        health_user_id="new-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    replaced = await health_storage.get_connection("telegram-chat-42")
+    assert replaced is not None
+    assert replaced.health_user_id == "new-health-id"
+    assert replaced.last_synced_at is None
+    assert replaced.last_refresh_requested_at is None
+    assert (
+        await health_storage.get_daily_summaries(
+            "telegram-chat-42", start_date="2026-08-15", end_date="2026-08-21"
+        )
+        == []
+    )
+
+    await health_storage.mark_synced("telegram-chat-42")
+    assert await health_storage.claim_manual_refresh(
+        "telegram-chat-42", cooldown_seconds=3600, now=now
+    ) == (True, None)
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="same-token",
+        health_user_id="new-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    same_identity = await health_storage.get_connection("telegram-chat-42")
+    assert same_identity is not None
+    assert same_identity.last_synced_at is not None
+    assert same_identity.last_refresh_requested_at is not None
+
+    await health_storage.upsert_daily_summaries(
+        "telegram-chat-42",
+        [
+            {"date": "2026-08-20", "steps": 200},
+            {"date": "2026-08-21", "steps": 300},
+        ],
+    )
+    await health_storage.replace_daily_summaries(
+        "telegram-chat-42",
+        [{"date": "", "steps": 999}],
+        start_date="2026-08-20",
+        end_date="2026-08-21",
+    )
+    assert await health_storage.get_daily_summaries(
+        "telegram-chat-42", start_date="2026-08-20", end_date="2026-08-22"
+    ) == [{"date": "2026-08-21", "steps": 300}]
+
+
+@pytest.mark.asyncio
+async def test_health_storage_replacement_rolls_back_on_failure(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    """Identity replacement does not partially delete data on write failure."""
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="old-token",
+        health_user_id="old-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    await health_storage.upsert_daily_summaries(
+        "telegram-chat-42", [{"date": "2026-08-15", "steps": 100}]
+    )
+    await health_storage.conn.execute(
+        """
+        CREATE TRIGGER fail_google_health_connection_insert
+        BEFORE INSERT ON google_health_connections
+        BEGIN
+            SELECT RAISE(ABORT, 'connection write failed');
+        END
+        """
+    )
+    try:
+        with pytest.raises(aiosqlite.IntegrityError, match="connection write failed"):
+            await health_storage.upsert_connection(
+                telegram_user_id="telegram-chat-42",
+                encrypted_refresh_token="new-token",
+                health_user_id="new-health-id",
+                legacy_fitbit_user_id=None,
+                scopes=GOOGLE_HEALTH_SCOPES,
+            )
+    finally:
+        await health_storage.conn.execute(
+            "DROP TRIGGER fail_google_health_connection_insert"
+        )
+
+    stored = await health_storage.get_connection("telegram-chat-42")
+    assert stored is not None and stored.health_user_id == "old-health-id"
+    assert await health_storage.get_daily_summaries(
+        "telegram-chat-42", start_date="2026-08-15", end_date="2026-08-16"
+    ) == [{"date": "2026-08-15", "steps": 100}]
+
+
+@pytest.mark.asyncio
+async def test_health_storage_window_replacement_rolls_back_on_failure(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    """Window reconciliation restores deleted rows if replacement insertion fails."""
+    await health_storage.upsert_daily_summaries(
+        "telegram-chat-42", [{"date": "2026-08-15", "steps": 100}]
+    )
+    await health_storage.conn.execute(
+        """
+        CREATE TRIGGER fail_google_health_summary_insert
+        BEFORE INSERT ON google_health_daily_summaries
+        BEGIN
+            SELECT RAISE(ABORT, 'summary write failed');
+        END
+        """
+    )
+    try:
+        with pytest.raises(aiosqlite.IntegrityError, match="summary write failed"):
+            await health_storage.replace_daily_summaries(
+                "telegram-chat-42",
+                [{"date": "2026-08-15", "steps": 200}],
+                start_date="2026-08-15",
+                end_date="2026-08-16",
+            )
+    finally:
+        await health_storage.conn.execute(
+            "DROP TRIGGER fail_google_health_summary_insert"
+        )
+
+    assert await health_storage.get_daily_summaries(
+        "telegram-chat-42", start_date="2026-08-15", end_date="2026-08-16"
+    ) == [{"date": "2026-08-15", "steps": 100}]
 
 
 @pytest.mark.asyncio
@@ -1194,6 +1388,10 @@ async def test_health_service_sync_failure_modes(
         return []
 
     client.list_data_points = AsyncMock(side_effect=list_points)
+    stale_date, _ = _date_window(7)
+    await health_storage.upsert_daily_summaries(
+        "telegram-chat-42", [{"date": stale_date, "steps": 1}]
+    )
     result = await service.sync_user("telegram-chat-42", days=7)
     assert result.status == "success"
     assert result.records_fetched == 1
@@ -1201,6 +1399,7 @@ async def test_health_service_sync_failure_modes(
     summary = await service.summary("telegram-chat-42", days=7)
     assert summary["status"] == "success"
     assert summary["days"][0]["steps"] == 8420
+    assert all(day["date"] != stale_date for day in summary["days"])
     assert (await service.refresh_user("telegram-chat-42")).status == "success"
     assert (await service.refresh_user("telegram-chat-42")).status == "rate_limited"
 

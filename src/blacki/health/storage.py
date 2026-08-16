@@ -133,31 +133,68 @@ class SqliteGoogleHealthStorage(SqlStorage):
         """Create or replace a connected account without storing plaintext tokens."""
         connected_at = _iso(now_utc())
         async with self._lock:
-            await self._conn.execute(
-                """
-                INSERT INTO google_health_connections (
-                    telegram_user_id, encrypted_refresh_token, health_user_id,
-                    legacy_fitbit_user_id, scopes_json, status, connected_at,
-                    last_synced_at, last_refresh_requested_at, last_sync_error
-                ) VALUES (?, ?, ?, ?, ?, 'connected', ?, NULL, NULL, NULL)
-                ON CONFLICT (telegram_user_id) DO UPDATE SET
-                    encrypted_refresh_token = excluded.encrypted_refresh_token,
-                    health_user_id = excluded.health_user_id,
-                    legacy_fitbit_user_id = excluded.legacy_fitbit_user_id,
-                    scopes_json = excluded.scopes_json,
-                    status = 'connected',
-                    connected_at = excluded.connected_at,
-                    last_sync_error = NULL
-                """,
-                (
-                    telegram_user_id,
-                    encrypted_refresh_token,
-                    health_user_id,
-                    legacy_fitbit_user_id,
-                    json.dumps(sorted(scopes)),
-                    connected_at,
-                ),
-            )
+            await self._conn.execute("BEGIN")
+            try:
+                existing = await self._fetch_one(
+                    """
+                    SELECT health_user_id
+                    FROM google_health_connections
+                    WHERE telegram_user_id = ?
+                    """,
+                    (telegram_user_id,),
+                )
+                identity_changed = (
+                    existing is not None
+                    and str(existing["health_user_id"]) != health_user_id
+                )
+                if identity_changed:
+                    await self._conn.execute(
+                        "DELETE FROM google_health_daily_summaries "
+                        "WHERE telegram_user_id = ?",
+                        (telegram_user_id,),
+                    )
+
+                await self._conn.execute(
+                    """
+                    INSERT INTO google_health_connections (
+                        telegram_user_id, encrypted_refresh_token, health_user_id,
+                        legacy_fitbit_user_id, scopes_json, status, connected_at,
+                        last_synced_at, last_refresh_requested_at, last_sync_error
+                    ) VALUES (?, ?, ?, ?, ?, 'connected', ?, NULL, NULL, NULL)
+                    ON CONFLICT (telegram_user_id) DO UPDATE SET
+                        encrypted_refresh_token = excluded.encrypted_refresh_token,
+                        health_user_id = excluded.health_user_id,
+                        legacy_fitbit_user_id = excluded.legacy_fitbit_user_id,
+                        scopes_json = excluded.scopes_json,
+                        status = 'connected',
+                        connected_at = excluded.connected_at,
+                        last_synced_at = CASE
+                            WHEN google_health_connections.health_user_id
+                                != excluded.health_user_id
+                            THEN NULL
+                            ELSE google_health_connections.last_synced_at
+                        END,
+                        last_refresh_requested_at = CASE
+                            WHEN google_health_connections.health_user_id
+                                != excluded.health_user_id
+                            THEN NULL
+                            ELSE google_health_connections.last_refresh_requested_at
+                        END,
+                        last_sync_error = NULL
+                    """,
+                    (
+                        telegram_user_id,
+                        encrypted_refresh_token,
+                        health_user_id,
+                        legacy_fitbit_user_id,
+                        json.dumps(sorted(scopes)),
+                        connected_at,
+                    ),
+                )
+                await self._conn.execute("COMMIT")
+            except Exception:
+                await self._conn.execute("ROLLBACK")
+                raise
 
     async def get_connection(self, telegram_user_id: str) -> HealthConnection | None:
         """Return one connection without decrypting its token."""
@@ -289,6 +326,51 @@ class SqliteGoogleHealthStorage(SqlStorage):
                 """,
                 rows,
             )
+
+    async def replace_daily_summaries(
+        self,
+        telegram_user_id: str,
+        summaries: list[Mapping[str, Any]],
+        *,
+        start_date: str,
+        end_date: str,
+    ) -> None:
+        """Replace all normalized records inside one successful sync window."""
+        now = _iso(now_utc())
+        rows: list[tuple[str, str, str, str]] = []
+        for summary in summaries:
+            summary_date = summary.get("date")
+            if not isinstance(summary_date, str) or not summary_date:
+                continue
+            rows.append(
+                (telegram_user_id, summary_date, json.dumps(dict(summary)), now)
+            )
+
+        async with self._lock:
+            await self._conn.execute("BEGIN")
+            try:
+                await self._conn.execute(
+                    """
+                    DELETE FROM google_health_daily_summaries
+                    WHERE telegram_user_id = ?
+                      AND summary_date >= ?
+                      AND summary_date < ?
+                    """,
+                    (telegram_user_id, start_date, end_date),
+                )
+                if rows:
+                    await self._conn.executemany(
+                        """
+                        INSERT INTO google_health_daily_summaries
+                            (telegram_user_id, summary_date, summary_json, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        rows,
+                    )
+                await self._conn.execute("COMMIT")
+            except Exception:
+                await self._conn.execute("ROLLBACK")
+                raise
 
     async def get_daily_summaries(
         self,

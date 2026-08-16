@@ -118,14 +118,18 @@ class GoogleHealthService:
             raise GoogleHealthOAuthError("OAuth authorization code is missing")
 
         token_response = await self.client.exchange_code(code)
+        identity = await self.client.get_identity(token_response.access_token)
         refresh_token = token_response.refresh_token
         if refresh_token is None:
             existing = await self.storage.get_connection(user_id)
-            refresh_token = self._decrypt_existing_token(existing)
+            if (
+                existing is not None
+                and existing.health_user_id == identity.health_user_id
+            ):
+                refresh_token = self._decrypt_existing_token(existing)
         if refresh_token is None:
             raise GoogleHealthOAuthError("Google did not return a refresh token")
 
-        identity = await self.client.get_identity(token_response.access_token)
         await self.storage.upsert_connection(
             telegram_user_id=user_id,
             encrypted_refresh_token=self.config.cipher.encrypt(refresh_token),
@@ -285,8 +289,11 @@ class GoogleHealthService:
             records_fetched += len(points)
 
         normalized_days = normalize_data_points(data_by_type)
-        await self.storage.upsert_daily_summaries(
-            user_id, [day.to_dict() for day in normalized_days]
+        await self.storage.replace_daily_summaries(
+            user_id,
+            [day.to_dict() for day in normalized_days],
+            start_date=start_time[:10],
+            end_date=end_time[:10],
         )
         await self.storage.mark_synced(user_id)
         logger.info(
