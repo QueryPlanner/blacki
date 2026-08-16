@@ -26,6 +26,7 @@ from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
     TelegramBot,
     TelegramSessionIdentity,
+    _BufferedAlbum,
     create_telegram_bot,
 )
 from blacki.telegram.formatting import (
@@ -40,7 +41,7 @@ from blacki.telegram.streaming import (
     _merge_stream_text,
     split_long_message,
 )
-from blacki.telegram.types import BotCommand, Message, ParseMode, Update
+from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
 
 
 class RecordingRuntime:
@@ -3840,3 +3841,1315 @@ class TestTelegramBotScheduledReminders:
         assert len(runtime_recorder.run_user_turn_calls) == 0
         mock_api.send_chat_action.assert_not_called()
         mock_api.send_message.assert_not_called()
+
+
+class TestTelegramBotPhotoAlbums:
+    """Tests for multiple photo album (media_group_id) buffering and execution."""
+
+    @pytest.mark.asyncio
+    async def test_album_media_group_id_parsed_and_isolated(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album messages with different media_group_id, chat, or thread are
+        isolated."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/photo.jpg"})
+        mock_api.download_file = AsyncMock(
+            return_value=b"\xff\xd8\xffvalid-jpeg-image-bytes"
+        )
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg1 = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 100, "type": "private"},
+                "media_group_id": "group-A",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                        "file_size": 1000,
+                    }
+                ],
+            }
+        )
+        msg2 = Message.model_validate(
+            {
+                "message_id": 2,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 100, "type": "private"},
+                "message_thread_id": 5,
+                "media_group_id": "group-A",
+                "photo": [
+                    {
+                        "file_id": "p2",
+                        "file_unique_id": "u2",
+                        "width": 100,
+                        "height": 100,
+                        "file_size": 1000,
+                    }
+                ],
+            }
+        )
+        msg3 = Message.model_validate(
+            {
+                "message_id": 3,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 200, "type": "group"},
+                "media_group_id": "group-A",
+                "photo": [
+                    {
+                        "file_id": "p3",
+                        "file_unique_id": "u3",
+                        "width": 100,
+                        "height": 100,
+                        "file_size": 1000,
+                    }
+                ],
+            }
+        )
+
+        task1 = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg1.model_dump()})
+            )
+        )
+        task2 = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 2, "message": msg2.model_dump()})
+            )
+        )
+        task3 = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 3, "message": msg3.model_dump()})
+            )
+        )
+
+        # Let the tasks register into album buffers
+        await asyncio.sleep(0.05)
+
+        assert (100, None, "group-A") in bot._album_buffers
+        assert (100, 5, "group-A") in bot._album_buffers
+        assert (200, None, "group-A") in bot._album_buffers
+
+        # Flush all albums
+        for album in list(bot._album_buffers.values()):
+            bot._flush_album(album)
+
+        await asyncio.gather(task1, task2, task3)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_album_single_polling_response(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album messages arriving together in one batch result in one turn."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_response = "Album response"
+
+        img1 = b"\xff\xd8\xffimage1"
+        img2 = b"\xff\xd8\xffimage2"
+        img3 = b"\xff\xd8\xffimage3"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            side_effect=lambda fid: {"file_path": f"photos/{fid}.jpg"}
+        )
+        mock_api.download_file = AsyncMock(
+            side_effect=lambda fpath: (
+                img1 if "p1" in fpath else (img2 if "p2" in fpath else img3)
+            )
+        )
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        messages = [
+            Message.model_validate(
+                {
+                    "message_id": 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-1",
+                    "caption": "Trip photos",
+                    "photo": [
+                        {
+                            "file_id": "p1",
+                            "file_unique_id": "u1",
+                            "width": 100,
+                            "height": 100,
+                        }
+                    ],
+                }
+            ),
+            Message.model_validate(
+                {
+                    "message_id": 2,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-1",
+                    "photo": [
+                        {
+                            "file_id": "p2",
+                            "file_unique_id": "u2",
+                            "width": 100,
+                            "height": 100,
+                        }
+                    ],
+                }
+            ),
+            Message.model_validate(
+                {
+                    "message_id": 3,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-1",
+                    "photo": [
+                        {
+                            "file_id": "p3",
+                            "file_unique_id": "u3",
+                            "width": 100,
+                            "height": 100,
+                        }
+                    ],
+                }
+            ),
+        ]
+
+        tasks = [
+            asyncio.create_task(
+                bot._safe_handle_update(
+                    Update.model_validate(
+                        {"update_id": i + 1, "message": msg.model_dump()}
+                    )
+                )
+            )
+            for i, msg in enumerate(messages)
+        ]
+
+        await asyncio.sleep(0.05)
+        # Verify 3 messages buffered
+        album = bot._album_buffers.get((123, None, "album-1"))
+        assert album is not None
+        assert len(album.messages) == 3
+
+        # Let debounce expire
+        await asyncio.sleep(0.6)
+        await asyncio.gather(*tasks)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["message_text"] == "Trip photos"
+        parts = call["user_parts"]
+        assert parts is not None
+        assert len(parts) == 4  # 1 text + 3 images
+        assert parts[0].text == "Trip photos"
+        assert parts[1].inline_data.data == img1
+        assert parts[2].inline_data.data == img2
+        assert parts[3].inline_data.data == img3
+
+    @pytest.mark.asyncio
+    async def test_album_split_across_polling_responses(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album messages split across getUpdates intervals are collected together."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_response = "Album response"
+
+        img1 = b"\xff\xd8\xffimage1"
+        img2 = b"\xff\xd8\xffimage2"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            side_effect=lambda fid: {"file_path": f"photos/{fid}.jpg"}
+        )
+        mock_api.download_file = AsyncMock(
+            side_effect=lambda fpath: img1 if "p1" in fpath else img2
+        )
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg1 = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-split",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+        msg2 = Message.model_validate(
+            {
+                "message_id": 2,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-split",
+                "photo": [
+                    {
+                        "file_id": "p2",
+                        "file_unique_id": "u2",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        task1 = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg1.model_dump()})
+            )
+        )
+        # Receive second update before debounce (0.5s) expires, e.g. at 0.2s
+        await asyncio.sleep(0.2)
+        task2 = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 2, "message": msg2.model_dump()})
+            )
+        )
+
+        # Wait for debounce after msg2 to complete
+        await asyncio.sleep(0.6)
+        await asyncio.gather(task1, task2)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["message_text"] == "Describe this image."
+        parts = call["user_parts"]
+        assert len(parts) == 3
+        assert parts[0].text == "Describe this image."
+        assert parts[1].inline_data.data == img1
+        assert parts[2].inline_data.data == img2
+
+    @pytest.mark.asyncio
+    async def test_album_max_wait_timeout(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album buffer flushes when max wait timeout is reached."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        img = b"\xff\xd8\xffimage"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/p.jpg"})
+        mock_api.download_file = AsyncMock(return_value=img)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-timeout",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        album = bot._album_buffers.get((123, None, "album-timeout"))
+        assert album is not None
+
+        # Simulate max wait triggering directly
+        bot._flush_album(album)
+        await task
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_album_exceeds_max_photos_limit(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album with more than 10 photos is rejected with error."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        messages = [
+            Message.model_validate(
+                {
+                    "message_id": i + 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-too-many",
+                    "photo": [
+                        {
+                            "file_id": f"p{i}",
+                            "file_unique_id": f"u{i}",
+                            "width": 10,
+                            "height": 10,
+                        }
+                    ],
+                }
+            )
+            for i in range(11)
+        ]
+
+        tasks = [
+            asyncio.create_task(
+                bot._safe_handle_update(
+                    Update.model_validate(
+                        {"update_id": i + 1, "message": msg.model_dump()}
+                    )
+                )
+            )
+            for i, msg in enumerate(messages)
+        ]
+
+        await asyncio.sleep(0.05)
+        album = bot._album_buffers.get((123, None, "album-too-many"))
+        assert album is not None
+        bot._flush_album(album)
+        await asyncio.gather(*tasks)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        mock_api.send_message.assert_awaited_once()
+        assert "too many photos" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_album_exceeds_aggregate_reported_bytes(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album exceeding 20 MB in reported file size is rejected before download."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        messages = [
+            Message.model_validate(
+                {
+                    "message_id": i + 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-heavy",
+                    "photo": [
+                        {
+                            "file_id": f"p{i}",
+                            "file_unique_id": f"u{i}",
+                            "width": 100,
+                            "height": 100,
+                            "file_size": 8 * 1024 * 1024,
+                        }
+                    ],
+                }
+            )
+            for i in range(3)  # 3 * 8MB = 24MB > 20MB
+        ]
+
+        tasks = [
+            asyncio.create_task(
+                bot._safe_handle_update(
+                    Update.model_validate(
+                        {"update_id": i + 1, "message": msg.model_dump()}
+                    )
+                )
+            )
+            for i, msg in enumerate(messages)
+        ]
+
+        await asyncio.sleep(0.05)
+        album = bot._album_buffers.get((123, None, "album-heavy"))
+        assert album is not None
+        bot._flush_album(album)
+        await asyncio.gather(*tasks)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        mock_api.get_file.assert_not_awaited()
+        assert "too large" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_album_exceeds_aggregate_downloaded_bytes(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album exceeding 20 MB during actual download is rejected safely."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(
+            side_effect=lambda fid: {"file_path": f"photos/{fid}.jpg"}
+        )
+        # 3 downloads of 7.5 MB = 22.5 MB > 20 MB limit
+        large_chunk = b"\xff\xd8\xff" + b"x" * (7500000 - 3)
+        mock_api.download_file = AsyncMock(return_value=large_chunk)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        messages = [
+            Message.model_validate(
+                {
+                    "message_id": i + 1,
+                    "date": "2024-01-01T00:00:00Z",
+                    "chat": {"id": 123, "type": "private"},
+                    "media_group_id": "album-download-overflow",
+                    "photo": [
+                        {
+                            "file_id": f"p{i}",
+                            "file_unique_id": f"u{i}",
+                            "width": 100,
+                            "height": 100,
+                        }
+                    ],
+                }
+            )
+            for i in range(3)
+        ]
+
+        tasks = [
+            asyncio.create_task(
+                bot._safe_handle_update(
+                    Update.model_validate(
+                        {"update_id": i + 1, "message": msg.model_dump()}
+                    )
+                )
+            )
+            for i, msg in enumerate(messages)
+        ]
+
+        await asyncio.sleep(0.05)
+        album = bot._album_buffers.get((123, None, "album-download-overflow"))
+        assert album is not None
+        bot._flush_album(album)
+        await asyncio.gather(*tasks)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_album_and_subsequent_text_ordering(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Text arriving after an album turn starts cancels/supersedes or
+        runs in order."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        img = b"\xff\xd8\xffimage"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/p.jpg"})
+        mock_api.download_file = AsyncMock(return_value=img)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        album_msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-seq",
+                "caption": "Album caption",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        album_task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate(
+                    {"update_id": 1, "message": album_msg.model_dump()}
+                )
+            )
+        )
+        await asyncio.sleep(0.6)  # Album debounce flushes and starts turn
+        await album_task
+
+        # Now send text message
+        text_msg = Message.model_validate(
+            {
+                "message_id": 2,
+                "date": "2024-01-01T00:00:01Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": "Subsequent text message",
+            }
+        )
+        await bot._safe_handle_update(
+            Update.model_validate({"update_id": 2, "message": text_msg.model_dump()})
+        )
+
+        assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert (
+            runtime_recorder.run_user_turn_calls[0]["message_text"] == "Album caption"
+        )
+        assert (
+            runtime_recorder.run_user_turn_calls[1]["message_text"]
+            == "Subsequent text message"
+        )
+
+    @pytest.mark.asyncio
+    async def test_album_failure_cleans_buffer_and_privacy_logs(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Album errors do not leak caption or image data to logs and
+        clear buffer state."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        runtime_recorder.run_user_turn_error = RuntimeError("model error")
+
+        private_caption = "secret-album-caption-value"
+        private_bytes = b"\xff\xd8\xffsecret-image-content"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/photo.jpg"})
+        mock_api.download_file = AsyncMock(return_value=private_bytes)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-secret",
+                "caption": private_caption,
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                        "file_size": len(private_bytes),
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.6)
+        await task
+
+        assert private_caption not in caplog.text
+        assert "secret-image-content" not in caplog.text
+        assert len(bot._album_buffers) == 0
+
+    @pytest.mark.asyncio
+    async def test_bot_stop_cleans_all_album_buffers(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Stopping the bot cancels in-flight albums and clears buffer state."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.close = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-stopping",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(bot._album_buffers) == 1
+        await bot.stop()
+        assert len(bot._album_buffers) == 0
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_album_single_photo_oversize_reported(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album member with photo exceeding 10 MB reported size is rejected."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-single-oversize",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                        "file_size": 10 * 1024 * 1024 + 1,
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.6)
+        await task
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        assert "too large" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("file_info", "downloaded"),
+        [
+            ({}, None),
+            ({"file_path": "photos/empty.jpg"}, b""),
+            ({"file_path": "photos/not-jpeg.jpg"}, b"not a jpeg"),
+            (
+                {"file_path": "photos/too-large.jpg"},
+                b"\xff\xd8\xff" + b"x" * (10 * 1024 * 1024),
+            ),
+        ],
+    )
+    async def test_album_rejects_invalid_downloads(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        file_info: dict[str, str],
+        downloaded: bytes | None,
+    ) -> None:
+        """Album rejects missing path, empty bytes, non-JPEG, or single
+        >10MB downloads."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value=file_info)
+        mock_api.download_file = AsyncMock(return_value=downloaded)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-invalid-dl",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.6)
+        await task
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_album_caption_whitespace_falls_back_to_default_prompt(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Whitespace-only captions fall back to default image prompt."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        img = b"\xff\xd8\xffimage"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/p.jpg"})
+        mock_api.download_file = AsyncMock(return_value=img)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-whitespace-caption",
+                "caption": "   ",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate({"update_id": 1, "message": msg.model_dump()})
+            )
+        )
+        await asyncio.sleep(0.6)
+        await task
+
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+        call = runtime_recorder.run_user_turn_calls[0]
+        assert call["message_text"] == "Describe this image."
+        parts = call["user_parts"]
+        assert parts is not None
+        assert parts[0].text == "Describe this image."
+        assert parts[1].inline_data.data == img
+
+    @pytest.mark.asyncio
+    async def test_album_empty_photos_list_rejected(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Album message with empty photos list triggers safe error response."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="empty-photos",
+            chat_type=ChatType.PRIVATE,
+            messages=[
+                Message.model_validate(
+                    {
+                        "message_id": 1,
+                        "date": "2024-01-01T00:00:00Z",
+                        "chat": {"id": 123, "type": "private"},
+                        "media_group_id": "empty-photos",
+                        "photo": [],
+                    }
+                )
+            ],
+        )
+
+        await bot._handle_album_turn(album)
+
+        assert len(runtime_recorder.run_user_turn_calls) == 0
+        assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_album_followed_by_text_during_debounce_preserves_order(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Regression test for Codex P1: a text update arriving during the album
+        debounce window must not be dropped, and turns must execute in order."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        img = b"\xff\xd8\xffimage"
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/p.jpg"})
+        mock_api.download_file = AsyncMock(return_value=img)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        album_msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "album-p1",
+                "caption": "Album caption",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 100,
+                        "height": 100,
+                    }
+                ],
+            }
+        )
+        text_msg = Message.model_validate(
+            {
+                "message_id": 2,
+                "date": "2024-01-01T00:00:01Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": "Text during debounce",
+            }
+        )
+
+        album_task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate(
+                    {"update_id": 1, "message": album_msg.model_dump()}
+                )
+            )
+        )
+        # Yield briefly so album message is registered into buffer but not yet flushed
+        await asyncio.sleep(0.05)
+        assert (123, None, "album-p1") in bot._album_buffers
+
+        # Send text message during debounce window
+        text_task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate(
+                    {"update_id": 2, "message": text_msg.model_dump()}
+                )
+            )
+        )
+
+        # Wait for debounce and both updates to complete
+        await asyncio.gather(album_task, text_task)
+
+        # Assert text was not dropped and update order is preserved
+        assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert (
+            runtime_recorder.run_user_turn_calls[0]["message_text"] == "Album caption"
+        )
+        assert (
+            runtime_recorder.run_user_turn_calls[1]["message_text"]
+            == "Text during debounce"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_album_buffer_branches(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _cleanup_album_buffer when handles are None or future is done/None."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        loop = asyncio.get_running_loop()
+        done_future: asyncio.Future[None] = loop.create_future()
+        done_future.set_result(None)
+
+        album1 = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="clean-1",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            debounce_handle=None,
+            max_wait_task=None,
+            future=done_future,
+        )
+        bot._album_buffers[(123, None, "clean-1")] = album1
+        bot._cleanup_album_buffer(album1)
+        assert (123, None, "clean-1") not in bot._album_buffers
+
+        album2 = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="clean-2",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            debounce_handle=None,
+            max_wait_task=None,
+            future=None,
+        )
+        bot._album_buffers[(123, None, "clean-2")] = album2
+        bot._cleanup_album_buffer(album2)
+        assert (123, None, "clean-2") not in bot._album_buffers
+
+    @pytest.mark.asyncio
+    async def test_buffer_album_message_branches(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _buffer_album_message when debounce_handle or future is None."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "media_group_id": "branch-buf",
+                "photo": [
+                    {
+                        "file_id": "p1",
+                        "file_unique_id": "u1",
+                        "width": 10,
+                        "height": 10,
+                    }
+                ],
+            }
+        )
+
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="branch-buf",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            debounce_handle=None,
+            future=None,
+        )
+        bot._album_buffers[(123, None, "branch-buf")] = album
+
+        await bot._buffer_album_message(msg)
+        assert len(album.messages) == 1
+        assert album.debounce_handle is not None
+        album.debounce_handle.cancel()
+
+    @pytest.mark.asyncio
+    async def test_album_max_wait_triggers_flush(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _album_max_wait completing its sleep and triggering flush."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="max-wait-flush",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+        )
+        bot._album_buffers[(123, None, "max-wait-flush")] = album
+
+        with patch("blacki.telegram.bot._ALBUM_MAX_WAIT_SECONDS", 0.01):
+            await bot._album_max_wait(album)
+
+        assert album.processed is True
+        assert (123, None, "max-wait-flush") not in bot._album_buffers
+
+    @pytest.mark.asyncio
+    async def test_flush_album_branches(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _flush_album with already processed album and None handles."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        album_processed = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="flushed-already",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            processed=True,
+        )
+        bot._flush_album(album_processed)
+
+        album_none_handles = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="none-handles",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            debounce_handle=None,
+            max_wait_task=None,
+        )
+        bot._flush_album(album_none_handles)
+        assert album_none_handles.processed is True
+
+    @pytest.mark.asyncio
+    async def test_process_flushed_album_cancels_older_task(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _process_flushed_album cancels older in-flight conversation task."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "photos/p.jpg"})
+        mock_api.download_file = AsyncMock(return_value=b"\xff\xd8\xffimage")
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        async def slow_turn() -> None:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.01)
+                raise
+
+        older_task = asyncio.create_task(slow_turn())
+        conversation_key = "chat-123"
+        bot._conversation_tasks[conversation_key] = older_task
+        bot._conversation_task_seqs[conversation_key] = 1
+
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="album-cancel-older",
+            chat_type=ChatType.PRIVATE,
+            messages=[
+                Message.model_validate(
+                    {
+                        "message_id": 2,
+                        "date": "2024-01-01T00:00:00Z",
+                        "chat": {"id": 123, "type": "private"},
+                        "media_group_id": "album-cancel-older",
+                        "caption": "Album turn",
+                        "photo": [
+                            {
+                                "file_id": "p1",
+                                "file_unique_id": "u1",
+                                "width": 100,
+                                "height": 100,
+                            }
+                        ],
+                    }
+                )
+            ],
+            created_seq=2,
+        )
+
+        await bot._process_flushed_album(album)
+        assert older_task.cancelled()
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_process_flushed_album_branches(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _process_flushed_album when current_task is None, cancelled,
+        or replaced."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+        bot._handle_album_turn = AsyncMock()  # type: ignore[method-assign]
+
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="flushed-branch",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=None,
+            created_seq=1,
+        )
+
+        # Branch 1: current_task is None
+        with patch("asyncio.current_task", return_value=None):
+            await bot._process_flushed_album(album)
+
+        # Branch 2: Cancellation during turn
+        async def mock_handle_slow(*args: Any, **kwargs: Any) -> None:
+            await asyncio.sleep(10)
+
+        bot._handle_album_turn = mock_handle_slow  # type: ignore[method-assign]
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        album2 = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="flushed-cancel",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=future,
+            created_seq=2,
+        )
+
+        album_task = asyncio.create_task(bot._process_flushed_album(album2))
+        await asyncio.sleep(0.01)
+        album_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await album_task
+        assert future.done()
+
+        # Branch 3: Task replaced in finally block
+        async def mock_handle_replace(*args: Any, **kwargs: Any) -> None:
+            # Replace conversation task before finishing
+            bot._conversation_tasks["chat-123"] = asyncio.create_task(
+                asyncio.sleep(0.1)
+            )
+
+        bot._handle_album_turn = mock_handle_replace  # type: ignore[method-assign]
+        album3 = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="flushed-replace",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=None,
+            created_seq=3,
+        )
+        await bot._process_flushed_album(album3)
+        assert "chat-123" in bot._conversation_tasks
+        bot._conversation_tasks["chat-123"].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await bot._conversation_tasks["chat-123"]
+
+    @pytest.mark.asyncio
+    async def test_safe_handle_update_active_album_future_branches(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Test _safe_handle_update active album buffer with None future or error."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        # Case 1: active album with future=None
+        album_no_future = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="no-fut",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=None,
+        )
+        bot._album_buffers[(123, None, "no-fut")] = album_no_future
+
+        text_msg = Message.model_validate(
+            {
+                "message_id": 1,
+                "date": "2024-01-01T00:00:00Z",
+                "chat": {"id": 123, "type": "private"},
+                "text": "Hello text",
+            }
+        )
+        await bot._safe_handle_update(
+            Update.model_validate({"update_id": 1, "message": text_msg.model_dump()})
+        )
+        assert len(runtime_recorder.run_user_turn_calls) == 1
+
+        # Case 2: active album with failing future
+        loop = asyncio.get_running_loop()
+        err_future: asyncio.Future[None] = loop.create_future()
+        err_future.set_exception(RuntimeError("album failed"))
+        album_err_future = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="err-fut",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=err_future,
+        )
+        bot._album_buffers[(123, None, "err-fut")] = album_err_future
+
+        await bot._safe_handle_update(
+            Update.model_validate({"update_id": 2, "message": text_msg.model_dump()})
+        )
+        assert len(runtime_recorder.run_user_turn_calls) == 2
+
+        # Case 3: active album future cancelled while current_task is cancelling
+        cancel_future: asyncio.Future[None] = loop.create_future()
+        album_cancelling = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="cancel-fut",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=cancel_future,
+        )
+        bot._album_buffers[(123, None, "cancel-fut")] = album_cancelling
+
+        task = asyncio.create_task(
+            bot._safe_handle_update(
+                Update.model_validate(
+                    {"update_id": 3, "message": text_msg.model_dump()}
+                )
+            )
+        )
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        bot._album_buffers.pop((123, None, "cancel-fut"), None)
+
+        # Case 4: active album future cancelled while current_task is NOT cancelling
+        cancelled_fut: asyncio.Future[None] = loop.create_future()
+        cancelled_fut.cancel()
+        album_pre_cancelled = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="pre-cancelled-fut",
+            chat_type=ChatType.PRIVATE,
+            messages=[],
+            future=cancelled_fut,
+        )
+        bot._album_buffers[(123, None, "pre-cancelled-fut")] = album_pre_cancelled
+
+        await bot._safe_handle_update(
+            Update.model_validate({"update_id": 4, "message": text_msg.model_dump()})
+        )
+        assert len(runtime_recorder.run_user_turn_calls) == 3

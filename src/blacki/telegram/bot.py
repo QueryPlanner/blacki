@@ -61,6 +61,26 @@ _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
+_MAX_ALBUM_PHOTOS = 10
+_MAX_ALBUM_BYTES = 20 * 1024 * 1024
+_ALBUM_DEBOUNCE_SECONDS = 0.5
+_ALBUM_MAX_WAIT_SECONDS = 2.0
+
+
+@dataclass(slots=True)
+class _BufferedAlbum:
+    """In-memory buffer for a Telegram media group (photo album)."""
+
+    chat_id: int
+    message_thread_id: int | None
+    media_group_id: str
+    chat_type: ChatType | None
+    messages: list[Message]
+    debounce_handle: asyncio.TimerHandle | None = None
+    max_wait_task: asyncio.Task[None] | None = None
+    future: asyncio.Future[None] | None = None
+    processed: bool = False
+    created_seq: int = 0
 
 
 def _format_health_sync_result(result: SyncResult) -> str:
@@ -140,6 +160,9 @@ class TelegramBot:
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._conversation_task_seqs: dict[str, int] = {}
+        self._album_buffers: dict[tuple[int, int | None, str], _BufferedAlbum] = {}
+        self._update_counter: int = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
             "telegram_chat_type", default=None
@@ -179,6 +202,9 @@ class TelegramBot:
             self._polling_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._polling_task
+
+        for album in list(self._album_buffers.values()):
+            self._cleanup_album_buffer(album)
 
         for task in list(self._background_tasks):
             task.cancel()
@@ -297,6 +323,32 @@ class TelegramBot:
                     return
                 await asyncio.sleep(min(5 * consecutive_errors, 60))
 
+    def _cleanup_album_buffer(self, album: _BufferedAlbum) -> None:
+        """Cancel and remove timers and tasks for a buffered album."""
+        key = (album.chat_id, album.message_thread_id, album.media_group_id)
+        self._album_buffers.pop(key, None)
+
+        if album.debounce_handle is not None:
+            album.debounce_handle.cancel()
+            album.debounce_handle = None
+
+        if album.max_wait_task is not None:
+            album.max_wait_task.cancel()
+            album.max_wait_task = None
+
+        if album.future is not None and not album.future.done():
+            album.future.cancel()
+
+    def _get_active_album_buffers(
+        self, chat_id: int, message_thread_id: int | None
+    ) -> list[_BufferedAlbum]:
+        """Return active album buffers for the given conversation."""
+        return [
+            album
+            for (cid, tid, _), album in self._album_buffers.items()
+            if cid == chat_id and tid == message_thread_id and not album.processed
+        ]
+
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
         if update.callback_query:
@@ -310,6 +362,11 @@ class TelegramBot:
         if update.message is None:
             return
 
+        # Check if this update is part of a photo album
+        if update.message.photo and update.message.media_group_id is not None:
+            await self._buffer_album_message(update.message)
+            return
+
         chat_id = update.message.chat.id
         message_thread_id = update.message.message_thread_id
         conversation_key = self._build_conversation_key(
@@ -317,8 +374,27 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
+        self._update_counter += 1
+        current_seq = self._update_counter
+
+        for active_album in self._get_active_album_buffers(chat_id, message_thread_id):
+            if active_album.future is not None:
+                try:
+                    await asyncio.shield(active_album.future)
+                except asyncio.CancelledError:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling() > 0:
+                        raise
+                except Exception as exc:
+                    logger.debug("Album buffer wait suppressed error: %s", exc)
+
         existing_task = self._conversation_tasks.get(conversation_key)
-        if existing_task is not None and not existing_task.done():
+        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        if (
+            existing_task is not None
+            and not existing_task.done()
+            and current_seq >= existing_seq
+        ):
             logger.info(
                 "Cancelling in-flight turn for conversation %s", conversation_key
             )
@@ -327,10 +403,15 @@ class TelegramBot:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
+            self._conversation_task_seqs[conversation_key] = current_seq
 
         try:
             # Wait for the superseded task to fully clean up before starting
-            if existing_task is not None and not existing_task.done():
+            if (
+                existing_task is not None
+                and not existing_task.done()
+                and current_seq >= existing_seq
+            ):
                 await asyncio.wait([existing_task])
 
             await self._handle_update(update)
@@ -340,6 +421,255 @@ class TelegramBot:
         finally:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
+                self._conversation_task_seqs.pop(conversation_key, None)
+
+    async def _buffer_album_message(self, message: Message) -> None:
+        """Buffer an incoming album message with debounce and max-wait."""
+        chat_id = message.chat.id
+        message_thread_id = message.message_thread_id
+        media_group_id = cast(str, message.media_group_id)
+        key = (chat_id, message_thread_id, media_group_id)
+
+        self._update_counter += 1
+        current_seq = self._update_counter
+
+        album = self._album_buffers.get(key)
+        if album is None:
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[None] = loop.create_future()
+            album = _BufferedAlbum(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                media_group_id=media_group_id,
+                chat_type=message.chat.type,
+                messages=[message],
+                future=future,
+                created_seq=current_seq,
+            )
+            self._album_buffers[key] = album
+
+            # Schedule max wait timer
+            max_wait_task = asyncio.create_task(self._album_max_wait(album))
+            self._background_tasks.add(max_wait_task)
+            max_wait_task.add_done_callback(self._background_tasks.discard)
+            album.max_wait_task = max_wait_task
+        else:
+            album.messages.append(message)
+            if album.debounce_handle is not None:
+                album.debounce_handle.cancel()
+
+        # Set or reset debounce timer
+        loop = asyncio.get_running_loop()
+        album.debounce_handle = loop.call_later(
+            _ALBUM_DEBOUNCE_SECONDS,
+            self._on_album_debounce_expired,
+            album,
+        )
+
+        try:
+            if album.future is not None:
+                await asyncio.shield(album.future)
+        except asyncio.CancelledError:
+            raise
+
+    async def _album_max_wait(self, album: _BufferedAlbum) -> None:
+        """Flush album buffer after maximum wait timeout."""
+        try:
+            await asyncio.sleep(_ALBUM_MAX_WAIT_SECONDS)
+            self._flush_album(album)
+        except asyncio.CancelledError:
+            pass
+
+    def _on_album_debounce_expired(self, album: _BufferedAlbum) -> None:
+        """Handle debounce timer expiration by flushing the album."""
+        self._flush_album(album)
+
+    def _flush_album(self, album: _BufferedAlbum) -> None:
+        """Flush buffered album messages into a conversation turn."""
+        if album.processed:
+            return
+        album.processed = True
+
+        key = (album.chat_id, album.message_thread_id, album.media_group_id)
+        self._album_buffers.pop(key, None)
+
+        if album.debounce_handle is not None:
+            album.debounce_handle.cancel()
+            album.debounce_handle = None
+        if album.max_wait_task is not None:
+            album.max_wait_task.cancel()
+            album.max_wait_task = None
+
+        task = asyncio.create_task(self._process_flushed_album(album))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _process_flushed_album(self, album: _BufferedAlbum) -> None:
+        """Enqueue flushed album as a conversation turn, respecting cancellation."""
+        chat_id = album.chat_id
+        message_thread_id = album.message_thread_id
+        conversation_key = self._build_conversation_key(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+
+        existing_task = self._conversation_tasks.get(conversation_key)
+        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        if (
+            existing_task is not None
+            and not existing_task.done()
+            and album.created_seq >= existing_seq
+        ):
+            logger.info(
+                "Cancelling in-flight turn for conversation %s", conversation_key
+            )
+            existing_task.cancel()
+
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._conversation_tasks[conversation_key] = current_task
+            self._conversation_task_seqs[conversation_key] = album.created_seq
+
+        try:
+            if (
+                existing_task is not None
+                and not existing_task.done()
+                and album.created_seq >= existing_seq
+            ):
+                await asyncio.wait([existing_task])
+
+            await self._handle_album_turn(album)
+        except asyncio.CancelledError:
+            logger.info("Message turn superseded for conversation %s", conversation_key)
+            raise
+        finally:
+            if self._conversation_tasks.get(conversation_key) is current_task:
+                self._conversation_tasks.pop(conversation_key, None)
+                self._conversation_task_seqs.pop(conversation_key, None)
+            if album.future is not None and not album.future.done():
+                album.future.set_result(None)
+
+    async def _handle_album_turn(self, album: _BufferedAlbum) -> None:
+        """Download album images and run a single ADK turn."""
+        chat_id = album.chat_id
+        message_thread_id = album.message_thread_id
+        messages = album.messages
+
+        if len(messages) > _MAX_ALBUM_PHOTOS:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text=(
+                    f"❌ The album contains too many photos "
+                    f"({_MAX_ALBUM_PHOTOS} maximum)."
+                ),
+            )
+            return
+
+        # Check total reported size before download
+        total_reported_size = 0
+        photo_items: list[tuple[str, int | None]] = []
+        caption: str | None = None
+
+        for msg in messages:
+            if msg.caption and msg.caption.strip() and caption is None:
+                caption = msg.caption.strip()
+            if not msg.photo:
+                await self._send_photo_error(
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    text="❌ Sorry, I failed to process the photo.",
+                )
+                return
+            best_photo = max(msg.photo, key=lambda item: item.width * item.height)
+            if best_photo.file_size is not None:
+                if best_photo.file_size > _MAX_NATIVE_IMAGE_BYTES:
+                    await self._send_photo_error(
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        text="❌ The photo is too large to process (10 MB maximum).",
+                    )
+                    return
+                total_reported_size += best_photo.file_size
+            photo_items.append((best_photo.file_id, best_photo.file_size))
+
+        if total_reported_size > _MAX_ALBUM_BYTES:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ The album is too large to process (20 MB maximum).",
+            )
+            return
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+            chat_type=album.chat_type,
+        )
+
+        try:
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
+
+            downloaded_images: list[bytes] = []
+            total_downloaded_bytes = 0
+
+            for file_id, _ in photo_items:
+                file_info = await self.api.get_file(file_id)
+                file_path_api = file_info.get("file_path")
+                if not file_path_api:
+                    raise ValueError("Telegram did not return a photo file path")
+
+                image_bytes = await self.api.download_file(file_path_api)
+                if not image_bytes:
+                    raise ValueError("Telegram returned an empty photo")
+                if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
+                    raise ValueError("Telegram photo exceeds the 10 MB limit")
+                if not image_bytes.startswith(_JPEG_MAGIC):
+                    raise ValueError("Telegram photo is not a JPEG image")
+
+                total_downloaded_bytes += len(image_bytes)
+                if total_downloaded_bytes > _MAX_ALBUM_BYTES:
+                    raise ValueError("Album total downloaded size exceeds limit")
+
+                downloaded_images.append(image_bytes)
+
+            prompt = caption if caption is not None else _DEFAULT_IMAGE_PROMPT
+
+            parts: list[types.Part] = [types.Part.from_text(text=prompt)]
+            for img_bytes in downloaded_images:
+                parts.append(
+                    types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+                )
+
+            profile = await self._load_chat_profile(chat_id)
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
+                message_text=prompt,
+                state=state,
+                user_parts=parts,
+                inference_profile=profile,
+            )
+            await self._send_final_response(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                response_text=final_response,
+            )
+        except Exception:
+            logger.exception("Failed to handle Telegram photo album")
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ Sorry, I failed to process the photo.",
+            )
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""
