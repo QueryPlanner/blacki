@@ -80,6 +80,7 @@ class _BufferedAlbum:
     max_wait_task: asyncio.Task[None] | None = None
     future: asyncio.Future[None] | None = None
     processed: bool = False
+    created_seq: int = 0
 
 
 def _format_health_sync_result(result: SyncResult) -> str:
@@ -159,7 +160,9 @@ class TelegramBot:
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._conversation_task_seqs: dict[str, int] = {}
         self._album_buffers: dict[tuple[int, int | None, str], _BufferedAlbum] = {}
+        self._update_counter: int = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
             "telegram_chat_type", default=None
@@ -336,6 +339,16 @@ class TelegramBot:
         if album.future is not None and not album.future.done():
             album.future.cancel()
 
+    def _get_active_album_buffers(
+        self, chat_id: int, message_thread_id: int | None
+    ) -> list[_BufferedAlbum]:
+        """Return active album buffers for the given conversation."""
+        return [
+            album
+            for (cid, tid, _), album in self._album_buffers.items()
+            if cid == chat_id and tid == message_thread_id and not album.processed
+        ]
+
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
         if update.callback_query:
@@ -361,8 +374,27 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
+        self._update_counter += 1
+        current_seq = self._update_counter
+
+        for active_album in self._get_active_album_buffers(chat_id, message_thread_id):
+            if active_album.future is not None:
+                try:
+                    await asyncio.shield(active_album.future)
+                except asyncio.CancelledError:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling() > 0:
+                        raise
+                except Exception as exc:
+                    logger.debug("Album buffer wait suppressed error: %s", exc)
+
         existing_task = self._conversation_tasks.get(conversation_key)
-        if existing_task is not None and not existing_task.done():
+        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        if (
+            existing_task is not None
+            and not existing_task.done()
+            and current_seq >= existing_seq
+        ):
             logger.info(
                 "Cancelling in-flight turn for conversation %s", conversation_key
             )
@@ -371,10 +403,15 @@ class TelegramBot:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
+            self._conversation_task_seqs[conversation_key] = current_seq
 
         try:
             # Wait for the superseded task to fully clean up before starting
-            if existing_task is not None and not existing_task.done():
+            if (
+                existing_task is not None
+                and not existing_task.done()
+                and current_seq >= existing_seq
+            ):
                 await asyncio.wait([existing_task])
 
             await self._handle_update(update)
@@ -384,6 +421,7 @@ class TelegramBot:
         finally:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
+                self._conversation_task_seqs.pop(conversation_key, None)
 
     async def _buffer_album_message(self, message: Message) -> None:
         """Buffer an incoming album message with debounce and max-wait."""
@@ -391,6 +429,9 @@ class TelegramBot:
         message_thread_id = message.message_thread_id
         media_group_id = cast(str, message.media_group_id)
         key = (chat_id, message_thread_id, media_group_id)
+
+        self._update_counter += 1
+        current_seq = self._update_counter
 
         album = self._album_buffers.get(key)
         if album is None:
@@ -403,6 +444,7 @@ class TelegramBot:
                 chat_type=message.chat.type,
                 messages=[message],
                 future=future,
+                created_seq=current_seq,
             )
             self._album_buffers[key] = album
 
@@ -472,7 +514,12 @@ class TelegramBot:
         )
 
         existing_task = self._conversation_tasks.get(conversation_key)
-        if existing_task is not None and not existing_task.done():
+        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        if (
+            existing_task is not None
+            and not existing_task.done()
+            and album.created_seq >= existing_seq
+        ):
             logger.info(
                 "Cancelling in-flight turn for conversation %s", conversation_key
             )
@@ -481,9 +528,14 @@ class TelegramBot:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
+            self._conversation_task_seqs[conversation_key] = album.created_seq
 
         try:
-            if existing_task is not None and not existing_task.done():
+            if (
+                existing_task is not None
+                and not existing_task.done()
+                and album.created_seq >= existing_seq
+            ):
                 await asyncio.wait([existing_task])
 
             await self._handle_album_turn(album)
@@ -493,6 +545,7 @@ class TelegramBot:
         finally:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
+                self._conversation_task_seqs.pop(conversation_key, None)
             if album.future is not None and not album.future.done():
                 album.future.set_result(None)
 
