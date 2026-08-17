@@ -15,6 +15,7 @@ from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 
 from .callbacks import (
     LoggingCallbacks,
+    notify_telegram_after_agent,
     notify_telegram_after_model,
     notify_telegram_before_tool,
     telegram_tool_notifications_enabled,
@@ -210,14 +211,16 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
 
     before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
     after_model_callbacks: list[Any] = [logging_callbacks.after_model]
+    after_agent_callbacks: list[Any] = [logging_callbacks.after_agent]
 
     if telegram_tool_notifications_enabled():
         logger.info(
             "Telegram tool notifications enabled; "
-            "registering before_tool and after_model callbacks"
+            "registering before_tool, after_model, and after_agent callbacks"
         )
         before_tool_callbacks.append(notify_telegram_before_tool)
         after_model_callbacks.append(notify_telegram_after_model)
+        after_agent_callbacks.append(notify_telegram_after_agent)
 
     sub_agents: list[BaseAgent] = []
     if _task_worker_enabled():
@@ -232,7 +235,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
                 ),
                 mode="task",
                 before_agent_callback=logging_callbacks.before_agent,
-                after_agent_callback=logging_callbacks.after_agent,
+                after_agent_callback=after_agent_callbacks.copy(),
                 model=_build_model(),
                 instruction=return_instruction_task_worker(),
                 tools=worker_tools,
@@ -247,7 +250,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         name="blacki",
         description=return_description_root(),
         before_agent_callback=logging_callbacks.before_agent,
-        after_agent_callback=logging_callbacks.after_agent,
+        after_agent_callback=after_agent_callbacks,
         model=_build_model(),
         instruction=return_instruction_root(),
         tools=agent_tools,

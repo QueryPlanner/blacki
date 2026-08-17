@@ -316,12 +316,16 @@ def _merge_stream_text(
     return current_text + incoming_text
 
 
-def _is_message_not_modified(error: TelegramApiError) -> bool:
+def is_message_not_modified_error(error: TelegramApiError) -> bool:
+    """Return True if the error indicates the Telegram message was not modified."""
     if error.error_code != 400:
         return False
 
     error_message = str(error).lower()
     return MESSAGE_NOT_MODIFIED_ERROR in error_message
+
+
+_is_message_not_modified = is_message_not_modified_error
 
 
 _get_open_entities = get_open_markdown_entities
