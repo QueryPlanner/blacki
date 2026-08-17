@@ -267,7 +267,6 @@ async def test_start_telegram_bot_starts_polling_and_tolerates_scheduler_failure
     server.env.telegram_enabled = True
     cast(Any, server.env).is_telegram_configured = True
     server.env.telegram_bot_token = "test-token"  # noqa: S105 - inert fixture value
-    server.env.telegram_tool_notifications = False
     bot = MagicMock()
     bot.start_polling = AsyncMock()
     scheduler_error = RuntimeError("scheduler failed") if scheduler_fails else None
@@ -319,7 +318,6 @@ async def test_start_telegram_bot_propagates_polling_failure(
     server.env.telegram_enabled = True
     cast(Any, server.env).is_telegram_configured = True
     server.env.telegram_bot_token = "test-token"  # noqa: S105 - inert fixture value
-    server.env.telegram_tool_notifications = False
     bot = MagicMock()
     bot.start_polling = AsyncMock(side_effect=RuntimeError("polling failed"))
 

@@ -6,13 +6,12 @@ Telegram tool notifications for Telegram-backed sessions.
 """
 
 import asyncio
-import functools
 import logging
 import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_request import LlmRequest
@@ -21,9 +20,8 @@ from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
 from .privacy import is_private_tool, private_tool_privacy_enabled
-from .telegram import TelegramConfig
 from .telegram.api import TelegramApiClient, TelegramApiError
-from .telegram.formatting import escape_markdown, format_for_telegram
+from .telegram.formatting import format_for_telegram
 from .telegram.progress import describe_tool
 from .telegram.streaming import is_message_not_modified_error
 from .telegram.types import ParseMode
@@ -42,6 +40,7 @@ _INTERMEDIATE_NOTIFY_LOCK = asyncio.Lock()
 @dataclass
 class _LiveStatusSession:
     message_id: int | None = None
+    started_at: float = field(default_factory=time.monotonic)
     last_sent_text: str = ""
     last_sent_time: float = 0.0
     pending_preamble: str | None = None
@@ -51,6 +50,24 @@ class _LiveStatusSession:
 _LIVE_STATUS_SESSIONS: dict[tuple[int, int | None, str | None], _LiveStatusSession] = {}
 _MAX_LIVE_STATUS_SESSIONS = 8192
 _LIVE_STATUS_LOCK = asyncio.Lock()
+
+
+def telegram_live_tool_progress_enabled() -> bool:
+    """Return whether Telegram is configured to receive live tool progress."""
+    return os.environ.get("TELEGRAM_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    } and bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip())
+
+
+def _format_elapsed_duration(seconds: float) -> str:
+    """Format a non-negative duration for the terminal live-status message."""
+    total_seconds = max(1, int(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes}m {remaining_seconds}s"
+    return f"{remaining_seconds}s"
 
 
 async def _get_or_create_live_status_session(
@@ -238,72 +255,7 @@ async def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
         _INTERMEDIATE_NOTIFY_LAST.clear()
     async with _LIVE_STATUS_LOCK:
         _LIVE_STATUS_SESSIONS.clear()
-    _telegram_tool_progress_mode_impl.cache_clear()
-    _telegram_tool_notifications_enabled_impl.cache_clear()
     _schedule_shared_notify_client_close_for_tests()
-
-
-@functools.lru_cache(maxsize=32)
-def _telegram_tool_progress_mode_impl(
-    telegram_enabled: str | None,
-    telegram_bot_token: str | None,
-    telegram_tool_notifications: str | None,
-    telegram_tool_progress_mode: str | None,
-) -> Literal["off", "messages", "live"]:
-    """Return the resolved progress mode for this env snapshot."""
-    raw_dict: dict[str, Any] = {}
-    if telegram_enabled is not None and telegram_enabled != "":
-        raw_dict["TELEGRAM_ENABLED"] = telegram_enabled
-    if telegram_bot_token is not None and telegram_bot_token != "":
-        raw_dict["TELEGRAM_BOT_TOKEN"] = telegram_bot_token
-    if telegram_tool_notifications is not None and telegram_tool_notifications != "":
-        raw_dict["TELEGRAM_TOOL_NOTIFICATIONS"] = telegram_tool_notifications
-    if telegram_tool_progress_mode is not None and telegram_tool_progress_mode != "":
-        raw_dict["TELEGRAM_TOOL_PROGRESS_MODE"] = telegram_tool_progress_mode
-
-    try:
-        cfg = TelegramConfig.model_validate(raw_dict)
-    except Exception:
-        return "off"
-    return cfg.tool_progress_mode()
-
-
-def telegram_tool_progress_mode() -> Literal["off", "messages", "live"]:
-    """Return the active Telegram tool progress notification mode."""
-    return _telegram_tool_progress_mode_impl(
-        os.environ.get("TELEGRAM_ENABLED"),
-        os.environ.get("TELEGRAM_BOT_TOKEN"),
-        os.environ.get("TELEGRAM_TOOL_NOTIFICATIONS"),
-        os.environ.get("TELEGRAM_TOOL_PROGRESS_MODE"),
-    )
-
-
-@functools.lru_cache(maxsize=32)
-def _telegram_tool_notifications_enabled_impl(
-    telegram_enabled: str | None,
-    telegram_bot_token: str | None,
-    telegram_tool_notifications: str | None,
-    telegram_tool_progress_mode: str | None = None,
-) -> bool:
-    """Return whether Telegram tool notifications are on for this env snapshot."""
-    return (
-        _telegram_tool_progress_mode_impl(
-            telegram_enabled,
-            telegram_bot_token,
-            telegram_tool_notifications,
-            telegram_tool_progress_mode,
-        )
-        != "off"
-    )
-
-
-def telegram_tool_notifications_enabled() -> bool:
-    """Return True when Telegram tool notifications are configured and active.
-
-    Uses a small LRU cache keyed by the relevant env vars so repeated tool
-    calls do not re-parse the full environment each time.
-    """
-    return telegram_tool_progress_mode() != "off"
 
 
 def _parse_optional_int(value: str | int | None) -> int | None:
@@ -318,41 +270,13 @@ def _parse_optional_int(value: str | int | None) -> int | None:
         return None
 
 
-def _format_tool_args(args: dict[str, Any]) -> str:
-    """Format tool arguments into a compact Telegram-friendly string.
-
-    Returns an empty string when *args* is empty. Each key=value pair is
-    MarkdownV2-escaped and long values are truncated.
-    """
-    if not args:
-        return ""
-
-    parts: list[str] = []
-    for key, value in args.items():
-        value_str = str(value)
-        truncated = len(value_str) > 100
-        if truncated:
-            value_str = value_str[:97]
-        escaped_key = escape_markdown(key)
-        escaped_value = escape_markdown(value_str)
-        suffix = "..." if truncated else ""
-        parts.append(f"{escaped_key}\\=`{escaped_value}{suffix}`")
-
-    formatted = ", ".join(parts)
-    if len(formatted) > 400:
-        formatted = formatted[:397] + "..."
-
-    return f"\n{formatted}"
-
-
 async def notify_telegram_before_tool(
     tool: BaseTool,
     args: dict[str, Any],
     tool_context: ToolContext,
 ) -> None:
     """Send or edit status before tool execution (Telegram sessions only)."""
-    mode = telegram_tool_progress_mode()
-    if mode == "off":
+    if not telegram_live_tool_progress_enabled():
         return None
 
     chat_id_raw = tool_context.state.get("telegram_chat_id")
@@ -373,39 +297,6 @@ async def notify_telegram_before_tool(
     raw_invocation_id = getattr(tool_context, "invocation_id", None)
     invocation_id = str(raw_invocation_id) if raw_invocation_id is not None else None
 
-    if mode == "messages":
-        logger.debug(
-            "notify_telegram_before_tool: sending notification for tool=%s chat_id=%s",
-            tool.name,
-            chat_id,
-        )
-        escaped_name = escape_markdown(tool.name)
-        args_text = "" if is_private_tool(tool) else _format_tool_args(args)
-        text = f"🔧 Using tool: *{escaped_name}*{args_text}"
-
-        try:
-            client = await _shared_telegram_notify_client(token)
-            await client.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=thread_id,
-                disable_notification=True,
-            )
-        except TelegramApiError as exc:
-            logger.warning(
-                "Telegram tool notification failed for tool=%s: %s",
-                tool.name,
-                exc,
-            )
-        except Exception:
-            logger.exception(
-                "Unexpected error sending Telegram tool notification tool=%s",
-                tool.name,
-            )
-        return None
-
-    # Live status mode
     session_key = (chat_id, thread_id, invocation_id)
     session = await _get_or_create_live_status_session(session_key)
 
@@ -473,8 +364,7 @@ async def notify_telegram_after_model(
     llm_response: LlmResponse,
 ) -> None:
     """Handle intermediate text responses or record model preamble for live status."""
-    mode = telegram_tool_progress_mode()
-    if mode == "off":
+    if not telegram_live_tool_progress_enabled():
         return None
 
     if not llm_response.content or not llm_response.content.parts:
@@ -508,60 +398,10 @@ async def notify_telegram_after_model(
     raw_invocation_id = getattr(callback_context, "invocation_id", None)
     invocation_id = str(raw_invocation_id) if raw_invocation_id is not None else None
 
-    if mode == "live":
-        # In live mode, store the preamble to override the hardcoded tool label
-        session_key = (chat_id, thread_id, invocation_id)
-        session = await _get_or_create_live_status_session(session_key)
-        async with session.lock:
-            session.pending_preamble = text
-        return None
-
-    # Messages mode (legacy): send intermediate messages
-    chat_key = str(chat_id)
-    now = time.monotonic()
-    if not await _rate_limit_allows_notification(
-        chat_key,
-        now,
-        storage=_INTERMEDIATE_NOTIFY_LAST,
-        min_interval=_INTERMEDIATE_NOTIFY_MIN_INTERVAL_SEC,
-        max_entries=_MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES,
-        lock=_INTERMEDIATE_NOTIFY_LOCK,
-    ):
-        logger.debug(
-            "Skipping Telegram intermediate notify (rate limit) chat_id=%s",
-            chat_id,
-        )
-        return None
-
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if not token:
-        return None
-
-    formatted_text = format_for_telegram(text)
-
-    from .telegram.streaming import split_long_message
-
-    chunks = split_long_message(formatted_text)
-    if not chunks:
-        return None
-
-    try:
-        client = await _shared_telegram_notify_client(token)
-        for chunk in chunks:
-            await client.send_message(
-                chat_id=chat_id,
-                text=chunk,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=thread_id,
-                disable_notification=True,
-            )
-    except TelegramApiError as exc:
-        logger.warning(
-            "Telegram intermediate notification failed: %s",
-            exc,
-        )
-    except Exception:
-        logger.exception("Unexpected error sending Telegram intermediate notification")
+    session_key = (chat_id, thread_id, invocation_id)
+    session = await _get_or_create_live_status_session(session_key)
+    async with session.lock:
+        session.pending_preamble = text
 
     return None
 
@@ -570,8 +410,7 @@ async def notify_telegram_after_agent(
     callback_context: CallbackContext,
 ) -> None:
     """Collapse the live status message to done and clean up state at turn end."""
-    mode = telegram_tool_progress_mode()
-    if mode != "live":
+    if not telegram_live_tool_progress_enabled():
         return None
 
     chat_id_raw = callback_context.state.get("telegram_chat_id")
@@ -600,11 +439,12 @@ async def notify_telegram_after_agent(
             return None
 
         client = await _shared_telegram_notify_client(token)
+        elapsed = time.monotonic() - session.started_at
         await _safe_edit_message_text(
             client,
             chat_id=chat_id,
             message_id=session.message_id,
-            text="✓ Done",
+            text=f"✓ Worked for {_format_elapsed_duration(elapsed)}",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
     return None

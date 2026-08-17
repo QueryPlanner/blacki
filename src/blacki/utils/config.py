@@ -167,14 +167,6 @@ class ServerEnv(BaseModel):
         description="Telegram bot token from @BotFather",
     )
 
-    telegram_tool_notifications: bool = Field(
-        default=False,
-        alias="TELEGRAM_TOOL_NOTIFICATIONS",
-        description=(
-            "Notify Telegram chats when tools run (requires Telegram configured)"
-        ),
-    )
-
     model_config = ConfigDict(
         populate_by_name=True,  # Allow both field names and aliases
         extra="ignore",  # Ignore extra env vars (system vars, etc.)
@@ -198,7 +190,7 @@ class ServerEnv(BaseModel):
         print(f"TELEGRAM_ENABLED:      {self.telegram_enabled}")
         masked_token = "********" if self.telegram_bot_token else "[not set]"
         print(f"TELEGRAM_BOT_TOKEN:    {masked_token}")
-        print(f"TELEGRAM_TOOL_NOTIFICATIONS: {self.telegram_tool_notifications}\n\n")
+        print()
 
     @property
     def agent_engine_uri(self) -> str | None:
@@ -244,8 +236,3 @@ class ServerEnv(BaseModel):
             True if enabled and has a bot token, False otherwise.
         """
         return self.telegram_enabled and self.telegram_bot_token is not None
-
-    @property
-    def is_telegram_tool_notifications_active(self) -> bool:
-        """Whether Telegram tool notifications are enabled and deliverable."""
-        return self.is_telegram_configured and self.telegram_tool_notifications

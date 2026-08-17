@@ -412,7 +412,6 @@ def test_smoke_overlay_is_isolated_and_side_effect_free() -> None:
         "RELOAD_AGENTS": "false",
         "SERVE_WEB_INTERFACE": "false",
         "TELEGRAM_ENABLED": "false",
-        "TELEGRAM_TOOL_NOTIFICATIONS": "false",
     }
 
 

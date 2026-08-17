@@ -393,21 +393,11 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
         "TELEGRAM_ENABLED",
         "TELEGRAM_BOT_TOKEN",
-        "TELEGRAM_TOOL_NOTIFICATIONS",
         "TELEGRAM_CHAT_ID",
-        "TELEGRAM_TOOL_PROGRESS_MODE",
     ]
 
     for var in env_vars_to_clean:
         monkeypatch.delenv(var, raising=False)
-
-    from blacki.callbacks import (
-        _telegram_tool_notifications_enabled_impl,
-        _telegram_tool_progress_mode_impl,
-    )
-
-    _telegram_tool_progress_mode_impl.cache_clear()
-    _telegram_tool_notifications_enabled_impl.cache_clear()
 
 
 @pytest.fixture

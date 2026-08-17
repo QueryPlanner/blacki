@@ -500,9 +500,9 @@ def test_all_tools_emit_strictly_valid_markdown_v2(
     validate_markdown_v2(label4)
 
 
-def test_done_collapse_text_is_valid_markdown_v2() -> None:
-    """Assert final done collapse text '✓ Done' is strictly valid MarkdownV2."""
-    validate_markdown_v2("✓ Done")
+def test_elapsed_collapse_text_is_valid_markdown_v2() -> None:
+    """Assert final elapsed collapse text is strictly valid MarkdownV2."""
+    validate_markdown_v2("✓ Worked for 2m 5s")
 
 
 def test_is_private_tool_helper() -> None:

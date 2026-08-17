@@ -39,7 +39,6 @@ def telegram_config() -> TelegramConfig:
     return TelegramConfig(
         telegram_enabled=True,
         telegram_bot_token="test-token",
-        telegram_tool_notifications=False,
     )
 
 

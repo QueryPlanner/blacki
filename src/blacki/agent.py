@@ -18,7 +18,7 @@ from .callbacks import (
     notify_telegram_after_agent,
     notify_telegram_after_model,
     notify_telegram_before_tool,
-    telegram_tool_notifications_enabled,
+    telegram_live_tool_progress_enabled,
 )
 from .inference import (
     InferenceProfile,
@@ -213,11 +213,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
     after_model_callbacks: list[Any] = [logging_callbacks.after_model]
     after_agent_callbacks: list[Any] = [logging_callbacks.after_agent]
 
-    if telegram_tool_notifications_enabled():
-        logger.info(
-            "Telegram tool notifications enabled; "
-            "registering before_tool, after_model, and after_agent callbacks"
-        )
+    if telegram_live_tool_progress_enabled():
         before_tool_callbacks.append(notify_telegram_before_tool)
         after_model_callbacks.append(notify_telegram_after_model)
         after_agent_callbacks.append(notify_telegram_after_agent)

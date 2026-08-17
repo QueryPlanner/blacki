@@ -22,7 +22,6 @@ In `.env`:
 ```dotenv
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=replace-me
-TELEGRAM_TOOL_NOTIFICATIONS=false
 ```
 
 Replace `replace-me` with the token from BotFather. Blacki validates that the
@@ -145,8 +144,9 @@ processing error without changing the selected model.
 
 ## Tool notifications
 
-`TELEGRAM_TOOL_NOTIFICATIONS=true` sends short tool-use notices for Telegram
-turns. It is opt-in because it adds chat traffic and may expose tool names.
+Telegram turns automatically show one live-updating tool status message while
+tools run. The status is updated in place and ends with the elapsed working
+time, so tool names and arguments are not posted as separate chat messages.
 
 ## Security
 
