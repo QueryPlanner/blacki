@@ -31,6 +31,28 @@ class TelegramApiError(Exception):
         self.retry_after = retry_after
 
 
+def _raise_for_error_response(response: httpx.Response) -> None:
+    """Raise TelegramApiError if the HTTP response signals a failure.
+
+    Args:
+        response: The raw HTTP response from a Telegram Bot API call.
+
+    Raises:
+        TelegramApiError: If the response status code indicates an error.
+    """
+    if response.status_code < 400:
+        return
+    try:
+        error_data = response.json()
+        error_msg = error_data.get("description", response.text)
+    except Exception:
+        error_msg = response.text
+    raise TelegramApiError(
+        message=f"HTTP {response.status_code}: {error_msg}",
+        error_code=response.status_code,
+    )
+
+
 class TelegramApiClient:
     """Direct HTTP client for Telegram Bot API.
 
@@ -105,17 +127,7 @@ class TelegramApiClient:
 
         request_timeout = self.timeout if timeout is None else timeout
         response = await client.post(url, json=params, timeout=request_timeout)
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("description", response.text)
-            except Exception:
-                error_msg = response.text
-            raise TelegramApiError(
-                message=f"HTTP {response.status_code}: {error_msg}",
-                error_code=response.status_code,
-            )
+        _raise_for_error_response(response)
 
         data = response.json()
         telegram_response = TelegramResponse.model_validate(data)
@@ -195,17 +207,7 @@ class TelegramApiClient:
         files = {"photo": (filename, photo_bytes)}
 
         response = await client.post(url, data=data, files=files, timeout=self.timeout)
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("description", response.text)
-            except Exception:
-                error_msg = response.text
-            raise TelegramApiError(
-                message=f"HTTP {response.status_code}: {error_msg}",
-                error_code=response.status_code,
-            )
+        _raise_for_error_response(response)
 
         response_data = response.json()
         telegram_response = TelegramResponse.model_validate(response_data)
@@ -260,17 +262,7 @@ class TelegramApiClient:
         files = {"document": (filename, document_bytes)}
 
         response = await client.post(url, data=data, files=files, timeout=self.timeout)
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("description", response.text)
-            except Exception:
-                error_msg = response.text
-            raise TelegramApiError(
-                message=f"HTTP {response.status_code}: {error_msg}",
-                error_code=response.status_code,
-            )
+        _raise_for_error_response(response)
 
         response_data = response.json()
         telegram_response = TelegramResponse.model_validate(response_data)
@@ -324,17 +316,7 @@ class TelegramApiClient:
 
         files = {"audio": (filename, audio_bytes, "audio/mpeg")}
         response = await client.post(url, data=data, files=files, timeout=self.timeout)
-
-        if response.status_code >= 400:
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("description", response.text)
-            except Exception:
-                error_msg = response.text
-            raise TelegramApiError(
-                message=f"HTTP {response.status_code}: {error_msg}",
-                error_code=response.status_code,
-            )
+        _raise_for_error_response(response)
 
         response_data = response.json()
         telegram_response = TelegramResponse.model_validate(response_data)

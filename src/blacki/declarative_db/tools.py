@@ -14,6 +14,22 @@ from blacki.declarative_db.validation import parse_user_preferences
 logger = logging.getLogger(__name__)
 
 
+def _require_user_id(tool_context: ToolContext) -> str | None:
+    """Return the user id from the tool context, or None if not identified."""
+    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
+        "user_id"
+    )
+    return str(user_id) if user_id else None
+
+
+def _user_not_identified_error() -> dict[str, Any]:
+    """Build the standard error response for a missing user id."""
+    return {
+        "status": "error",
+        "message": "User not identified in tool context.",
+    }
+
+
 async def create_custom_table(
     table_name: str,
     columns: list[dict[str, Any]],
@@ -41,14 +57,9 @@ async def create_custom_table(
     Returns:
         A status dictionary confirming creation or detailing validation errors.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
@@ -86,14 +97,9 @@ async def delete_custom_table(
     Returns:
         A status dictionary.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
@@ -154,14 +160,9 @@ async def create_query_template(
     Returns:
         A status dictionary.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
@@ -209,14 +210,9 @@ async def execute_query_template(
         A result dictionary containing status and output records (for SELECT) or
         affected rows count / last inserted ID (for write queries).
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
@@ -248,14 +244,9 @@ async def list_custom_tables_and_templates(
     Returns:
         A dictionary mapping table names to their schema structures and query templates.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
@@ -287,14 +278,9 @@ async def set_custom_instruction_override(
     Returns:
         A status dictionary.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         preferences = parse_user_preferences(instructions)
@@ -330,14 +316,9 @@ async def delete_custom_instruction_override(
     Returns:
         A status dictionary.
     """
-    user_id = getattr(tool_context, "user_id", None) or tool_context.state.get(
-        "user_id"
-    )
+    user_id = _require_user_id(tool_context)
     if not user_id:
-        return {
-            "status": "error",
-            "message": "User not identified in tool context.",
-        }
+        return _user_not_identified_error()
 
     try:
         storage = get_declarative_db_storage()
