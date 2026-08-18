@@ -93,7 +93,6 @@ its presence changes model routing.
 | --- | --- | --- |
 | `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
 | `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
-| `TELEGRAM_TOOL_NOTIFICATIONS` | `false` | Send short tool-use notices |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
 | `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
 

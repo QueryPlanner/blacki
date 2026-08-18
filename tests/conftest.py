@@ -7,7 +7,11 @@ from contextlib import AbstractContextManager
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import dotenv
 import pytest
+
+# Neutralize dotenv loading in test runs so tests do not inherit developer .env
+dotenv.load_dotenv = lambda *args, **kwargs: False
 
 _PYTEST_BOOTSTRAP_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
 _PYTEST_PREVIOUS_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
@@ -387,6 +391,9 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         "HOST",
         "PORT",
         "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+        "TELEGRAM_ENABLED",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
     ]
 
     for var in env_vars_to_clean:

@@ -1,8 +1,5 @@
-# mypy: disable-error-code="no-untyped-def"
-"""Tests for Telegram tool notification callback (issue #14)."""
+"""Behavior tests for always-on live Telegram tool progress."""
 
-import asyncio
-import logging
 from collections.abc import AsyncIterator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -17,964 +14,708 @@ from google.genai.types import Content, FunctionCall, Part
 
 import blacki.callbacks as callbacks_module
 from blacki.callbacks import (
-    _format_tool_args,
+    notify_telegram_after_agent,
+    notify_telegram_after_model,
     notify_telegram_before_tool,
     reset_telegram_tool_notify_rate_limiter_for_tests,
-    telegram_tool_notifications_enabled,
+    telegram_live_tool_progress_enabled,
 )
+from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiError
 
 
 @pytest.fixture(autouse=True)
-async def _clear_tool_notify_rate_limiter() -> AsyncIterator[None]:
-    """Isolate rate limiter state between tests."""
+async def reset_live_tool_progress() -> AsyncIterator[None]:
     await reset_telegram_tool_notify_rate_limiter_for_tests()
     yield None
     await reset_telegram_tool_notify_rate_limiter_for_tests()
 
 
-def test_telegram_tool_notifications_enabled_requires_all_flags(
+def configure_telegram(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "1s"), (4.9, "4s"), (65, "1m 5s"), (125, "2m 5s")],
+)
+def test_format_elapsed_duration(seconds: float, expected: str) -> None:
+    assert callbacks_module._format_elapsed_duration(seconds) == expected
+
+
+def test_live_progress_requires_configured_telegram(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Feature is off unless Telegram is configured and the opt-in flag is set."""
-    monkeypatch.delenv("TELEGRAM_TOOL_NOTIFICATIONS", raising=False)
-    monkeypatch.delenv("TELEGRAM_ENABLED", raising=False)
-    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    assert telegram_tool_notifications_enabled() is False
+    assert telegram_live_tool_progress_enabled() is False
 
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    configure_telegram(monkeypatch)
     monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "false")
-    assert telegram_tool_notifications_enabled() is False
-
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-    assert telegram_tool_notifications_enabled() is True
+    monkeypatch.setenv("TELEGRAM_TOOL_PROGRESS_MODE", "off")
+    assert telegram_live_tool_progress_enabled() is True
 
 
-@pytest.mark.asyncio
-async def test_notify_skips_without_telegram_chat_in_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No HTTP call when session state has no telegram_chat_id."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"user_id": "web-user"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_skips_when_no_tool_calls(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Do not send Telegram notification if the LLM response has no tool calls."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        response = LlmResponse(content=Content(parts=[Part.from_text(text="hello")]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_sends_intermediate_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Send Telegram notification if the LLM response has text and tool calls."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        text_part = Part.from_text(text="I am doing a test")
-
-        response = LlmResponse(content=Content(parts=[text_part, tool_call_part]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_awaited_once()
-    assert "I am doing a test" in mock_client.send_message.await_args.kwargs["text"]
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_skips_thoughts_and_think_tags(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Do not send thought parts or <think> tag contents as intermediate messages."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-
-        # This part should be ignored because thought=True
-        explicit_thought = Part(text="I am thinking...", thought=True)
-
-        # This part has text with a <think> block that should be stripped
-        think_tag_part = Part.from_text(
-            text="<think>internal monologue</think>Actual message"
-        )
-
-        response = LlmResponse(
-            content=Content(parts=[explicit_thought, think_tag_part, tool_call_part])
-        )
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_awaited_once()
-    sent_text = mock_client.send_message.await_args.kwargs["text"]
-    assert "internal monologue" not in sent_text
-    assert "I am thinking..." not in sent_text
-    assert "Actual message" in sent_text
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_skips_when_no_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip notification when LLM response has tool calls but no text."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        response = LlmResponse(content=Content(parts=[tool_call_part]))
-
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_skips_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip Telegram notification if disabled."""
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "false")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        response = LlmResponse(
-            content=Content(
-                parts=[Part(function_call=FunctionCall(name="test", args={}))]
-            )
-        )
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_handles_api_error(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """TelegramApiError from send_message is logged and swallowed."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock(
-        side_effect=TelegramApiError("bad", error_code=400),
+def test_telegram_config_ignores_removed_progress_options() -> None:
+    config = TelegramConfig.model_validate(
+        {
+            "TELEGRAM_ENABLED": "true",
+            "TELEGRAM_BOT_TOKEN": "test-token",
+            "TELEGRAM_TOOL_NOTIFICATIONS": "false",
+            "TELEGRAM_TOOL_PROGRESS_MODE": "off",
+        }
     )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        text_part = Part.from_text(text="I am doing a test")
-
-        response = LlmResponse(content=Content(parts=[text_part, tool_call_part]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    assert "Telegram intermediate notification failed" in caplog.text
+    assert config.is_configured() is True
+    assert not hasattr(config, "telegram_tool_notifications")
+    assert not hasattr(config, "telegram_tool_progress_mode")
 
 
 @pytest.mark.asyncio
-async def test_notify_after_model_handles_missing_chat_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip if telegram_chat_id is missing or invalid."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+async def test_live_progress_is_inert_without_telegram_configuration() -> None:
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    with patch("blacki.callbacks.TelegramApiClient") as client_class:
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "test"},
+            cast(ToolContext, context),
+        )
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        text_part = Part.from_text(text="text")
-
-        response = LlmResponse(content=Content(parts=[text_part, tool_call_part]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-    # Invalid chat ID
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "invalid"})
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
+    client_class.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_notify_after_model_handles_missing_token(
+async def test_live_progress_skips_non_telegram_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Skip if token is missing."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock()
 
-    callbacks_module._telegram_tool_notifications_enabled_impl.cache_clear()
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "test"},
+            cast(ToolContext, MockToolContext(state=MockState({}))),
+        )
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test", args={}))
-        text_part = Part.from_text(text="text")
-        response = LlmResponse(content=Content(parts=[text_part, tool_call_part]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
+    client.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_notify_after_model_handles_unexpected_error(
+async def test_live_progress_uses_one_message_for_a_turn(
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Unexpected error from send_message is logged."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    client.edit_message_text = AsyncMock(return_value=MagicMock(message_id=7))
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    context.invocation_id = "turn-1"
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock(
-        side_effect=RuntimeError("boom"),
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "first"},
+            cast(ToolContext, context),
+        )
+        callbacks_module._INTERMEDIATE_NOTIFY_LAST["42"] = 0
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("get_calorie_summary")),
+            {},
+            cast(ToolContext, context),
+        )
+
+    client.send_message.assert_awaited_once()
+    assert (
+        client.send_message.await_args.kwargs["text"]
+        == "Searching the web for *first*…"
+    )
+    client.edit_message_text.assert_awaited_once()
+    assert (
+        client.edit_message_text.await_args.kwargs["text"]
+        == "Checking calorie summary…"
     )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        text_part = Part.from_text(text="I am doing a test")
-
-        response = LlmResponse(content=Content(parts=[text_part, tool_call_part]))
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    assert "Unexpected error sending Telegram intermediate notification" in caplog.text
-
 
 @pytest.mark.asyncio
-async def test_notify_skips_invalid_chat_id(
+async def test_live_progress_uses_model_preamble_then_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Malformed chat id does not call Telegram."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(
-            state=MockState({"telegram_chat_id": "not-an-int"}),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_sends_to_telegram_with_chat_and_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Integration-style check: send_message receives parsed chat and thread ids."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(
-            state=MockState(
-                {
-                    "telegram_chat_id": "4242",
-                    "telegram_thread_id": "7",
-                }
-            ),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("search_memory")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_client.send_message.assert_awaited_once()
-    kwargs = mock_client.send_message.await_args.kwargs
-    assert kwargs["chat_id"] == 4242
-    assert kwargs["message_thread_id"] == 7
-    assert "Using tool" in kwargs["text"]
-
-
-@pytest.mark.asyncio
-async def test_notify_sends_for_each_tool_call(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Each tool call gets its own Telegram notification (no rate limiting)."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    ctx = MockToolContext(
-        state=MockState({"telegram_chat_id": "100"}),
-    )
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("a")),
-            {},
-            cast(ToolContext, ctx),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("b")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    # Both tool calls should send notifications
-    assert len(mock_client.send_message.await_args_list) == 2
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_rate_limits_per_chat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Rate limit ensures only one Telegram send per throttle window."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    ctx = MagicMock(spec=CallbackContext)
-    ctx.state = MockState({"telegram_chat_id": "100"})
-
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    client.edit_message_text = AsyncMock(return_value=MagicMock(message_id=7))
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    context.invocation_id = "turn-2"
     response = LlmResponse(
         content=Content(
             parts=[
-                Part(function_call=FunctionCall(name="foo", args={})),
-                Part.from_text(text="thinking..."),
+                Part.from_text(text="Checking your meals"),
+                Part(function_call=FunctionCall(name="get_calorie_summary", args={})),
+            ]
+        )
+    )
+    tool_context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    tool_context.invocation_id = "turn-2"
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_after_model(context, response)
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("get_calorie_summary")),
+            {},
+            cast(ToolContext, tool_context),
+        )
+        await notify_telegram_after_agent(context)
+
+    assert client.send_message.await_args.kwargs["text"] == "Checking your meals"
+    assert client.edit_message_text.await_args.kwargs["text"].startswith(
+        "✓ Worked for "
+    )
+    assert (42, None, "turn-2") not in callbacks_module._LIVE_STATUS_SESSIONS
+
+
+@pytest.mark.asyncio
+async def test_live_progress_redacts_private_tool_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("send_text_to_speech")),
+            {"text": "private spoken content"},
+            cast(ToolContext, context),
+        )
+
+    assert client.send_message.await_args.kwargs["text"] == "Generating speech…"
+
+
+@pytest.mark.asyncio
+async def test_live_progress_telegram_errors_do_not_block_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(
+        side_effect=TelegramApiError("bad request", error_code=400)
+    )
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "test"},
+            cast(ToolContext, context),
+        )
+
+    client.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_progress_ignores_thought_only_model_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    context.invocation_id = "turn-3"
+    response = LlmResponse(
+        content=Content(
+            parts=[
+                Part(text="internal", thought=True),
+                Part(function_call=FunctionCall(name="brave_search", args={})),
             ]
         )
     )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        await callbacks_module.notify_telegram_after_model(ctx, response)
-        await callbacks_module.notify_telegram_after_model(ctx, response)
+    await notify_telegram_after_model(context, response)
 
-    assert len(mock_client.send_message.await_args_list) == 1
+    assert (42, None, "turn-3") not in callbacks_module._LIVE_STATUS_SESSIONS
 
 
-def test_evict_oldest_rate_limit_entries_noop() -> None:
-    """Eviction helper returns early for non-positive count or empty map."""
-    storage: dict[str, float] = {}
+def test_live_progress_treats_blank_token_as_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "   ")
+
+    assert telegram_live_tool_progress_enabled() is False
+
+
+def test_parse_optional_int_variants() -> None:
+    assert callbacks_module._parse_optional_int(None) is None
+    assert callbacks_module._parse_optional_int("  ") is None
+    assert callbacks_module._parse_optional_int("not-a-number") is None
+    assert callbacks_module._parse_optional_int("42") == 42
+    assert callbacks_module._parse_optional_int(7) == 7
+
+
+def test_evict_oldest_rate_limit_entries() -> None:
+    storage = {"a": 1.0, "b": 2.0, "c": 3.0}
     callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
-    callbacks_module._evict_oldest_rate_limit_entries(storage, 3)
-    assert storage == {}
+    assert storage == {"a": 1.0, "b": 2.0, "c": 3.0}
 
-    storage["a"] = 1.0
-    callbacks_module._evict_oldest_rate_limit_entries(storage, 0)
-    assert "a" in storage
+    callbacks_module._evict_oldest_rate_limit_entries(storage, 2)
+    assert storage == {"c": 3.0}
+
+    callbacks_module._evict_oldest_rate_limit_entries({}, 5)
+
+
+def test_evict_oldest_live_status_sessions() -> None:
+    session_a = callbacks_module._LiveStatusSession(last_sent_time=1.0)
+    session_b = callbacks_module._LiveStatusSession(last_sent_time=2.0)
+    key_a: tuple[int, int | None, str | None] = (1, None, "a")
+    key_b: tuple[int, int | None, str | None] = (2, None, "b")
+    storage = {key_a: session_a, key_b: session_b}
+
+    callbacks_module._evict_oldest_live_status_sessions(storage, 0)
+    assert storage == {key_a: session_a, key_b: session_b}
+
+    callbacks_module._evict_oldest_live_status_sessions(storage, 1)
+    assert storage == {key_b: session_b}
+
+    callbacks_module._evict_oldest_live_status_sessions({}, 5)
 
 
 @pytest.mark.asyncio
-async def test_rate_limit_evicts_oldest_when_map_full() -> None:
-    """New chat keys trigger eviction when the rate-limit map is at capacity."""
-    storage: dict[str, float] = {}
-    base = 1000.0
-    for index in range(4):
-        storage[str(index)] = base + index * 0.01
-    assert len(storage) == 4
-
-    lock = asyncio.Lock()
-    assert await callbacks_module._rate_limit_allows_notification(
-        "new",
-        base + 100.0,
+async def test_rate_limit_allows_notification_too_soon() -> None:
+    storage: dict[str, float] = {"chat": 100.0}
+    allowed = await callbacks_module._rate_limit_allows_notification(
+        "chat",
+        100.1,
         storage=storage,
         min_interval=0.35,
-        max_entries=4,
-        lock=lock,
-    )
-    assert "new" in storage
-    assert len(storage) == 4
-
-
-@pytest.mark.asyncio
-async def test_notify_returns_early_when_feature_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No Telegram traffic when TELEGRAM_TOOL_NOTIFICATIONS is off."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "false")
-    callbacks_module._telegram_tool_notifications_enabled_impl.cache_clear()
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(
-            state=MockState({"telegram_chat_id": "1"}),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_blank_thread_id_sends_without_thread_kwarg(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Blank telegram_thread_id is treated as absent for send_message."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(
-            state=MockState(
-                {
-                    "telegram_chat_id": "99",
-                    "telegram_thread_id": "",
-                }
-            ),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    kwargs = mock_client.send_message.await_args.kwargs
-    assert kwargs.get("message_thread_id") is None
-
-
-@pytest.mark.asyncio
-async def test_notify_send_message_telegram_api_error_logged(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """TelegramApiError from send_message is logged and swallowed."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock(
-        side_effect=TelegramApiError("bad", error_code=400),
+        max_entries=8192,
+        lock=callbacks_module._INTERMEDIATE_NOTIFY_LOCK,
     )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    assert "Telegram tool notification failed" in caplog.text
+    assert allowed is False
 
 
 @pytest.mark.asyncio
-async def test_notify_send_message_unexpected_exception_logged(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Non-Telegram errors from send_message are logged with stack trace."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+async def test_rate_limit_allows_notification_evicts_when_full() -> None:
+    storage: dict[str, float] = {"old": 0.0, "older": 0.0}
+    allowed = await callbacks_module._rate_limit_allows_notification(
+        "new-chat",
+        100.0,
+        storage=storage,
+        min_interval=0.35,
+        max_entries=2,
+        lock=callbacks_module._INTERMEDIATE_NOTIFY_LOCK,
+    )
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock(side_effect=RuntimeError("boom"))
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    assert "Unexpected error sending Telegram tool notification" in caplog.text
+    assert allowed is True
+    assert "new-chat" in storage
 
 
 @pytest.mark.asyncio
-async def test_shared_telegram_client_reused_for_same_token(
+async def test_get_or_create_live_status_session_evicts_when_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Second notify with the same bot token does not construct a new API client."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "one-token")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client) as ctor:
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "5"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("a")),
-            {},
-            cast(ToolContext, ctx),
-        )
-        await asyncio.sleep(0.4)
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("b")),
-            {},
-            cast(ToolContext, ctx),
+    monkeypatch.setattr(callbacks_module, "_MAX_LIVE_STATUS_SESSIONS", 8)
+    for i in range(8):
+        callbacks_module._LIVE_STATUS_SESSIONS[(i, None, "seed")] = (
+            callbacks_module._LiveStatusSession(last_sent_time=float(i))
         )
 
-    assert ctor.call_count == 1
+    await callbacks_module._get_or_create_live_status_session((99, None, "c"))
+
+    assert (0, None, "seed") not in callbacks_module._LIVE_STATUS_SESSIONS
+    assert (99, None, "c") in callbacks_module._LIVE_STATUS_SESSIONS
 
 
 @pytest.mark.asyncio
-async def test_shared_telegram_client_swaps_when_bot_token_changes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Changing TELEGRAM_BOT_TOKEN closes the previous shared client."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "first")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+async def test_safe_send_status_message_unexpected_error() -> None:
+    client = MagicMock()
+    client.send_message = AsyncMock(side_effect=RuntimeError("boom"))
 
-    mock_first = MagicMock()
-    mock_first.send_message = AsyncMock()
-    mock_first.close = AsyncMock()
-    mock_second = MagicMock()
-    mock_second.send_message = AsyncMock()
-    mock_second.close = AsyncMock()
+    result = await callbacks_module._safe_send_status_message(
+        client, chat_id=1, text="hi"
+    )
 
-    ctx = MockToolContext(state=MockState({"telegram_chat_id": "7"}))
-
-    with patch(
-        "blacki.callbacks.TelegramApiClient",
-        side_effect=[mock_first, mock_second],
-    ):
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "second")
-        callbacks_module._telegram_tool_notifications_enabled_impl.cache_clear()
-        await asyncio.sleep(0.4)
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_first.close.assert_awaited()
-    mock_second.send_message.assert_awaited()
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_reset_schedules_async_close_when_loop_running(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test reset drops the shared client and schedules close under a running loop."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+async def test_safe_edit_message_text_error_branches() -> None:
+    client = MagicMock()
+    client.edit_message_text = AsyncMock(
+        side_effect=TelegramApiError("bad request", error_code=400)
+    )
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.close = AsyncMock()
+    result = await callbacks_module._safe_edit_message_text(
+        client, chat_id=1, message_id=7, text="hi"
+    )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-        await reset_telegram_tool_notify_rate_limiter_for_tests()
-        await asyncio.sleep(0)
-
-    mock_client.close.assert_awaited()
+    assert result is False
 
 
 @pytest.mark.asyncio
-async def test_reset_handles_close_exception(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Exception during client close in reset is logged, not raised."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-    caplog.set_level(logging.DEBUG)
+async def test_safe_edit_message_text_treats_not_modified_as_success() -> None:
+    client = MagicMock()
+    client.edit_message_text = AsyncMock(
+        side_effect=TelegramApiError("message is not modified", error_code=400)
+    )
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    result = await callbacks_module._safe_edit_message_text(
+        client, chat_id=1, message_id=7, text="hi"
+    )
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-        await reset_telegram_tool_notify_rate_limiter_for_tests()
-        await asyncio.sleep(0)
-
-    assert "Telegram notify client close failed" in caplog.text
+    assert result is True
 
 
-async def test_reset_handles_loop_create_task_runtime_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """RuntimeError from loop.create_task is caught silently."""
+@pytest.mark.asyncio
+async def test_safe_edit_message_text_unexpected_error() -> None:
+    client = MagicMock()
+    client.edit_message_text = AsyncMock(side_effect=RuntimeError("boom"))
 
-    monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
-    monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")
+    result = await callbacks_module._safe_edit_message_text(
+        client, chat_id=1, message_id=7, text="hi"
+    )
 
-    mock_loop = MagicMock()
-    mock_loop.create_task = MagicMock(side_effect=RuntimeError("loop closed"))
+    assert result is False
 
-    with patch("asyncio.get_running_loop", return_value=mock_loop):
-        await reset_telegram_tool_notify_rate_limiter_for_tests()
+
+def test_schedule_shared_notify_client_close_for_tests_no_running_loop() -> None:
+    client = MagicMock()
+    client.close = AsyncMock()
+    callbacks_module._shared_notify_client = client
+    callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
+
+    callbacks_module._schedule_shared_notify_client_close_for_tests()
 
     assert callbacks_module._shared_notify_client is None
-    assert callbacks_module._shared_notify_token is None
 
 
 @pytest.mark.asyncio
-async def test_notify_returns_early_when_bot_token_missing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """No Telegram traffic when TELEGRAM_BOT_TOKEN is empty string."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-    callbacks_module._telegram_tool_notifications_enabled_impl.cache_clear()
+async def test_schedule_shared_notify_client_close_create_task_fails() -> None:
+    client = MagicMock()
+    client.close = AsyncMock()
+    callbacks_module._shared_notify_client = client
+    callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
+    fake_loop = MagicMock()
+    fake_loop.create_task = MagicMock(side_effect=RuntimeError("closed loop"))
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "1"}))
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("t")),
-            {},
-            cast(ToolContext, ctx),
-        )
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_handles_no_content_parts(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip if llm_response has no content or parts."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        response1 = LlmResponse(content=None)
-        await callbacks_module.notify_telegram_after_model(ctx, response1)
-
-        response2 = LlmResponse(content=Content(parts=[]))
-        await callbacks_module.notify_telegram_after_model(ctx, response2)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_notify_after_model_handles_empty_chunks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Skip if split_long_message returns empty chunks."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
-
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MagicMock(spec=CallbackContext)
-        ctx.state = MockState({"telegram_chat_id": "1"})
-
-        tool_call_part = Part(function_call=FunctionCall(name="test_tool", args={}))
-        text_part = Part.from_text(text="hello")
-
-        response = LlmResponse(content=Content(parts=[tool_call_part, text_part]))
-
-        # Mock split_long_message to return empty list
-        with patch("blacki.telegram.streaming.split_long_message", return_value=[]):
-            await callbacks_module.notify_telegram_after_model(ctx, response)
-
-    mock_client.send_message.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_reset_handles_get_running_loop_runtime_error() -> None:
-    """RuntimeError from get_running_loop is caught silently before closing."""
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(callbacks_module, "_shared_notify_client", MagicMock())
-    monkeypatch.setattr(callbacks_module, "_shared_notify_token", "tok")  # noqa: S105
-
-    with patch("asyncio.get_running_loop", side_effect=RuntimeError("no loop")):
-        await reset_telegram_tool_notify_rate_limiter_for_tests()
+    with patch("asyncio.get_running_loop", return_value=fake_loop):
+        callbacks_module._schedule_shared_notify_client_close_for_tests()
 
     assert callbacks_module._shared_notify_client is None
-    assert callbacks_module._shared_notify_token is None
 
 
 @pytest.mark.asyncio
-async def test_close_shared_notify_client_happy_path() -> None:
-    """close_shared_notify_client closes client and clears state."""
-    from blacki.callbacks import close_shared_notify_client
+async def test_close_shared_notify_client() -> None:
+    client = MagicMock()
+    client.close = AsyncMock()
+    callbacks_module._shared_notify_client = client
+    callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
 
-    mock_client = MagicMock()
-    mock_client.close = AsyncMock()
+    await callbacks_module.close_shared_notify_client()
 
-    callbacks_module._shared_notify_client = mock_client
-    callbacks_module._shared_notify_token = "tok"  # noqa: S105
-
-    await close_shared_notify_client()
-
-    mock_client.close.assert_awaited_once()
+    client.close.assert_awaited_once()
     assert callbacks_module._shared_notify_client is None
-    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
 
 
 @pytest.mark.asyncio
-async def test_close_shared_notify_client_handles_error(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """close_shared_notify_client logs and clears on close error."""
-    from blacki.callbacks import close_shared_notify_client
+async def test_close_shared_notify_client_swallows_close_error() -> None:
+    client = MagicMock()
+    client.close = AsyncMock(side_effect=RuntimeError("boom"))
+    callbacks_module._shared_notify_client = client
+    callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
 
-    mock_client = MagicMock()
-    mock_client.close = AsyncMock(side_effect=RuntimeError("close failed"))
+    await callbacks_module.close_shared_notify_client()
 
-    callbacks_module._shared_notify_client = mock_client
-    callbacks_module._shared_notify_token = "tok"  # noqa: S105
-
-    await close_shared_notify_client()
-
-    assert "Error closing shared Telegram notify client" in caplog.text
     assert callbacks_module._shared_notify_client is None
-    assert callbacks_module._shared_notify_token is None  # type: ignore[unreachable]
 
 
 @pytest.mark.asyncio
-async def test_close_shared_notify_client_when_none() -> None:
-    """close_shared_notify_client does nothing when client is already None."""
-    from blacki.callbacks import close_shared_notify_client
-
+async def test_close_shared_notify_client_when_none_is_noop() -> None:
     callbacks_module._shared_notify_client = None
     callbacks_module._shared_notify_token = None
 
-    await close_shared_notify_client()
+    await callbacks_module.close_shared_notify_client()
 
     assert callbacks_module._shared_notify_client is None
-    assert callbacks_module._shared_notify_token is None
-
-
-def test_format_tool_args_empty_args() -> None:
-    """Empty args dict returns empty string."""
-    assert _format_tool_args({}) == ""
-
-
-def test_format_tool_args_single_arg() -> None:
-    """Single arg formatted as key=value pair."""
-    result = _format_tool_args({"query": "hello"})
-    assert "query" in result
-    assert "hello" in result
-
-
-def test_format_tool_args_multiple_args() -> None:
-    """Multiple args are comma-separated."""
-    result = _format_tool_args({"query": "hello", "count": "5"})
-    assert "query" in result
-    assert "hello" in result
-    assert "count" in result
-    assert "5" in result
-    assert ", " in result
-
-
-def test_format_tool_args_long_value_truncated() -> None:
-    """Long values are truncated with '...'."""
-    long_value = "a" * 120
-    result = _format_tool_args({"text": long_value})
-    assert "..." in result
-    assert "aaaaaa" in result
-
-
-def test_format_tool_args_overall_truncated() -> None:
-    """Very many args result in an overall truncated string."""
-    many_args = {f"k{i}": f"v{i}" for i in range(50)}
-    result = _format_tool_args(many_args)
-    assert result.endswith("...")
-
-
-def test_format_tool_args_special_chars_escaped() -> None:
-    """Special Markdown characters are escaped, including = separator."""
-    result = _format_tool_args({"file_path": "/home/user_1/file.txt"})
-    assert r"\=" in result
-    assert "file\\_path" in result or "/home" in result
 
 
 @pytest.mark.asyncio
-async def test_notify_sends_args_in_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Telegram notification includes tool arguments in the message text."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+async def test_shared_telegram_notify_client_swaps_on_token_change() -> None:
+    old_client = MagicMock()
+    old_client.close = AsyncMock()
+    callbacks_module._shared_notify_client = old_client
+    callbacks_module._shared_notify_token = "old-bot-token"  # noqa: S105
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
+    with patch("blacki.callbacks.TelegramApiClient") as client_class:
+        new_client = await callbacks_module._shared_telegram_notify_client("new-token")
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(
-            state=MockState({"telegram_chat_id": "4242"}),
-        )
-        await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("search_memory")),
-            {"query": "capital of France", "limit": 5},
-            cast(ToolContext, ctx),
-        )
-
-    kwargs = mock_client.send_message.await_args.kwargs
-    assert "Using tool" in kwargs["text"]
-    assert "query" in kwargs["text"]
-    assert "capital of France" in kwargs["text"]
-    assert "limit" in kwargs["text"]
-    assert "5" in kwargs["text"]
+    old_client.close.assert_awaited_once()
+    assert new_client is client_class.return_value
+    await callbacks_module.close_shared_notify_client()
 
 
 @pytest.mark.asyncio
-async def test_notify_redacts_private_tts_text(
+async def test_before_tool_invalid_chat_id_logs_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Optional tool notices may name TTS but never include speech contents."""
-    monkeypatch.setenv("TELEGRAM_ENABLED", "true")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret-token")
-    monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "true")
+    configure_telegram(monkeypatch)
+    context = MockToolContext(state=MockState({"telegram_chat_id": "not-a-number"}))
 
-    mock_client = MagicMock()
-    mock_client.send_message = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("blacki.callbacks.TelegramApiClient", return_value=mock_client):
-        ctx = MockToolContext(state=MockState({"telegram_chat_id": "4242"}))
+    with patch("blacki.callbacks.TelegramApiClient") as client_class:
         await notify_telegram_before_tool(
-            cast(BaseTool, MockBaseTool("send_text_to_speech")),
-            {"text": "private spoken content"},
-            cast(ToolContext, ctx),
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "test"},
+            cast(ToolContext, context),
         )
 
-    sent_text = mock_client.send_message.await_args.kwargs["text"]
-    assert r"send\_text\_to\_speech" in sent_text
-    assert "private spoken content" not in sent_text
-    assert r"\=" not in sent_text
+    client_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_before_tool_blank_token_short_circuits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+
+    with patch(
+        "blacki.callbacks.telegram_live_tool_progress_enabled", return_value=True
+    ):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+        with patch("blacki.callbacks.TelegramApiClient") as client_class:
+            await notify_telegram_before_tool(
+                cast(BaseTool, MockBaseTool("brave_search")),
+                {"query": "test"},
+                cast(ToolContext, context),
+            )
+
+    client_class.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_before_tool_skips_edit_when_label_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    client.edit_message_text = AsyncMock(return_value=MagicMock(message_id=7))
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    context.invocation_id = "turn-same-label"
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "same"},
+            cast(ToolContext, context),
+        )
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "same"},
+            cast(ToolContext, context),
+        )
+
+    client.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_before_tool_coalesces_rapid_edits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    client.edit_message_text = AsyncMock(return_value=MagicMock(message_id=7))
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    context.invocation_id = "turn-coalesce"
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "first"},
+            cast(ToolContext, context),
+        )
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("get_calorie_summary")),
+            {},
+            cast(ToolContext, context),
+        )
+
+    client.edit_message_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_before_tool_edit_failure_keeps_previous_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+    client.edit_message_text = AsyncMock(
+        side_effect=TelegramApiError("bad request", error_code=400)
+    )
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+    context.invocation_id = "turn-edit-fails"
+
+    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("brave_search")),
+            {"query": "first"},
+            cast(ToolContext, context),
+        )
+        callbacks_module._INTERMEDIATE_NOTIFY_LAST["42"] = 0
+        await notify_telegram_before_tool(
+            cast(BaseTool, MockBaseTool("get_calorie_summary")),
+            {},
+            cast(ToolContext, context),
+        )
+
+    session = callbacks_module._LIVE_STATUS_SESSIONS[(42, None, "turn-edit-fails")]
+    assert session.last_sent_text == "Searching the web for *first*…"
+
+
+@pytest.mark.asyncio
+async def test_after_model_disabled_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    response = LlmResponse(content=None)
+
+    await notify_telegram_after_model(context, response)
+
+
+@pytest.mark.asyncio
+async def test_after_model_without_content_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    response = LlmResponse(content=None)
+
+    await notify_telegram_after_model(context, response)
+
+
+@pytest.mark.asyncio
+async def test_after_model_without_function_call_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    response = LlmResponse(content=Content(parts=[Part.from_text(text="just text")]))
+
+    await notify_telegram_after_model(context, response)
+
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
+
+
+@pytest.mark.asyncio
+async def test_after_model_missing_chat_id_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({})
+    response = LlmResponse(
+        content=Content(
+            parts=[
+                Part.from_text(text="hello"),
+                Part(function_call=FunctionCall(name="brave_search", args={})),
+            ]
+        )
+    )
+
+    await notify_telegram_after_model(context, response)
+
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
+
+
+@pytest.mark.asyncio
+async def test_after_model_invalid_chat_id_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "not-a-number"})
+    response = LlmResponse(
+        content=Content(
+            parts=[
+                Part.from_text(text="hello"),
+                Part(function_call=FunctionCall(name="brave_search", args={})),
+            ]
+        )
+    )
+
+    await notify_telegram_after_model(context, response)
+
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
+
+
+@pytest.mark.asyncio
+async def test_after_agent_disabled_returns_early() -> None:
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+
+    await notify_telegram_after_agent(context)
+
+
+@pytest.mark.asyncio
+async def test_after_agent_missing_chat_id_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({})
+
+    await notify_telegram_after_agent(context)
+
+
+@pytest.mark.asyncio
+async def test_after_agent_invalid_chat_id_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "not-a-number"})
+
+    await notify_telegram_after_agent(context)
+
+
+@pytest.mark.asyncio
+async def test_after_agent_no_session_returns_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    context.invocation_id = "no-such-turn"
+
+    await notify_telegram_after_agent(context)
+
+
+@pytest.mark.asyncio
+async def test_after_agent_blank_token_short_circuits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_telegram(monkeypatch)
+    context = MagicMock(spec=CallbackContext)
+    context.state = MockState({"telegram_chat_id": "42"})
+    context.invocation_id = "turn-blank-token"
+    session_key = (42, None, "turn-blank-token")
+    callbacks_module._LIVE_STATUS_SESSIONS[session_key] = (
+        callbacks_module._LiveStatusSession(message_id=99)
+    )
+
+    with patch(
+        "blacki.callbacks.telegram_live_tool_progress_enabled", return_value=True
+    ):
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
+        with patch("blacki.callbacks.TelegramApiClient") as client_class:
+            await notify_telegram_after_agent(context)
+
+    client_class.assert_not_called()
