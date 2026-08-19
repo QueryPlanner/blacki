@@ -122,6 +122,7 @@ class Message(BaseModel):
     text: str | None = None
     entities: list[MessageEntity] | None = None
     caption: str | None = None
+    media_group_id: str | None = Field(None, alias="media_group_id")
     document: Document | None = None
     photo: list[PhotoSize] | None = None
     audio: Audio | None = None

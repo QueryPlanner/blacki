@@ -30,6 +30,7 @@ class ToolConfig:
         legacy_workout_tools_enabled: Whether to expose weekly split fallbacks.
         kokoro_tts_base_url: Private Kokoro API base URL.
         kokoro_tts_voice: Default Kokoro voice ID.
+        google_health_enabled: Whether the private Google Health reader is enabled.
     """
 
     exa_api_key: str | None = None
@@ -41,6 +42,7 @@ class ToolConfig:
     legacy_workout_tools_enabled: bool = False
     kokoro_tts_base_url: str | None = None
     kokoro_tts_voice: str = "af_heart"
+    google_health_enabled: bool = False
     zepto_mcp_enabled: bool = False
     zepto_mcp_config_dir: Path = Path("data/credentials/zepto-mcp-remote")
     zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
@@ -99,6 +101,9 @@ def build_tools(
                 voice=config.kokoro_tts_voice,
             )
         )
+
+    if include_user_scoped_tools and config.google_health_enabled:
+        tools.extend(_build_health_tools())
 
     if include_user_scoped_tools and config.r2_files_enabled:
         tools.extend(_build_user_file_tools())
@@ -332,6 +337,18 @@ def _build_user_file_tools() -> list[Any]:
         return []
 
 
+def _build_health_tools() -> list[Any]:
+    """Build the private, read-only Google Health tool."""
+    try:
+        from blacki.health.tools import get_health_summary
+
+        logger.info("Google Health summary tool enabled for the Telegram root agent")
+        return [get_health_summary]
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("Google Health tool disabled: %s", exc)
+        return []
+
+
 def _build_declarative_db_tools() -> list[Any]:
     """Build declarative database tools."""
     try:
@@ -393,6 +410,7 @@ def build_tool_config_from_env() -> ToolConfig:
         kokoro_tts_base_url=os.getenv("KOKORO_TTS_BASE_URL", "").strip() or None,
         kokoro_tts_voice=os.getenv("KOKORO_TTS_VOICE", "af_heart").strip()
         or "af_heart",
+        google_health_enabled=_google_health_configured(),
         zepto_mcp_enabled=os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
         zepto_mcp_config_dir=Path(
@@ -405,3 +423,13 @@ def build_tool_config_from_env() -> ToolConfig:
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
     )
+
+
+def _google_health_configured() -> bool:
+    """Return whether the optional Google Health configuration is complete."""
+    try:
+        from blacki.health.config import google_health_configured_from_environment
+
+        return google_health_configured_from_environment()
+    except ImportError:  # pragma: no cover
+        return False

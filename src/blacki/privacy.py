@@ -14,6 +14,7 @@ _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _ZEPTO_TOOL_PREFIX = "zepto_"
 _PRIVATE_TOOL_NAMES = frozenset(
     {
+        "get_health_summary",
         "send_text_to_speech",
         "list_user_files",
         "restore_user_file",
@@ -37,9 +38,21 @@ def r2_files_enabled() -> bool:
     return os.getenv("R2_FILES_ENABLED", "false").strip().lower() in _ENABLED_VALUES
 
 
+def google_health_enabled() -> bool:
+    """Return whether a complete Google Health connector is configured."""
+    from .health.config import google_health_configured_from_environment
+
+    return google_health_configured_from_environment()
+
+
 def private_tool_privacy_enabled() -> bool:
     """Return whether any configured tool needs content-level redaction."""
-    return zepto_mcp_enabled() or kokoro_tts_enabled() or r2_files_enabled()
+    return (
+        zepto_mcp_enabled()
+        or kokoro_tts_enabled()
+        or google_health_enabled()
+        or r2_files_enabled()
+    )
 
 
 def configure_zepto_privacy() -> bool:

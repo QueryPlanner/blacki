@@ -100,6 +100,8 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           DEPLOY_SHA: ${{ github.sha }}
           IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
+          # Optional Compose host binding; defaults to the server's current value.
+          HOST_BIND_IP: ${{ secrets.HOST_BIND_IP }}
           # App secrets for .env generation
           AGENT_NAME: ${{ secrets.AGENT_NAME }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -125,6 +127,10 @@ jobs:
           R2_OWNER_HMAC_SECRET: ${{ secrets.R2_OWNER_HMAC_SECRET }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_HEALTH_CLIENT_ID: ${{ secrets.GOOGLE_HEALTH_CLIENT_ID }}
+          GOOGLE_HEALTH_CLIENT_SECRET: ${{ secrets.GOOGLE_HEALTH_CLIENT_SECRET }}
+          GOOGLE_HEALTH_REDIRECT_URI: ${{ secrets.GOOGLE_HEALTH_REDIRECT_URI }}
+          GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY: ${{ secrets.GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY }}
           MEM0_QDRANT_URL: ${{ secrets.MEM0_QDRANT_URL }}
           MEM0_QDRANT_API_KEY: ${{ secrets.MEM0_QDRANT_API_KEY }}
           OTEL_EXPORTER_OTLP_ENDPOINT: ${{ secrets.OTEL_EXPORTER_OTLP_ENDPOINT }}
@@ -174,6 +180,7 @@ jobs:
 
           # Serialize secrets without interpolation or shell evaluation.
           python3 scripts/write_compose_env.py "$LOCAL_ENV_FILE" \
+            HOST_BIND_IP \
             AGENT_NAME \
             OPENROUTER_API_KEY \
             ROOT_AGENT_MODEL \
@@ -197,6 +204,10 @@ jobs:
             R2_SECRET_ACCESS_KEY \
             R2_OWNER_HMAC_SECRET \
             GOOGLE_API_KEY \
+            GOOGLE_HEALTH_CLIENT_ID \
+            GOOGLE_HEALTH_CLIENT_SECRET \
+            GOOGLE_HEALTH_REDIRECT_URI \
+            GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY \
             MEM0_QDRANT_URL \
             MEM0_QDRANT_API_KEY \
             OTEL_EXPORTER_OTLP_ENDPOINT \
@@ -310,13 +321,14 @@ jobs:
           }
 
           wait_for_host_ready() {
-            local port=$1
-            local container_id=$2
-            local label=$3
+            local host=$1
+            local port=$2
+            local container_id=$3
+            local label=$4
             local attempt=1
 
             while [ "$attempt" -le 12 ]; do
-              if curl -sf "http://127.0.0.1:${port}/ready" \
+              if curl -sf "http://${host}:${port}/ready" \
                 >/dev/null 2>&1; then
                 echo "$label readiness check passed on port ${port}."
                 return 0
@@ -384,8 +396,17 @@ jobs:
               return 1
             fi
 
+            local rollback_host_bind_ip
+            rollback_host_bind_ip=$(
+              sed -n 's/^HOST_BIND_IP="\{0,1\}\([0-9][0-9.]*\)"\{0,1\}$/\1/p' \
+                .env 2>/dev/null | tail -n 1
+            )
+            case "$rollback_host_bind_ip" in
+              ''|*[!0-9.]*) rollback_host_bind_ip=127.0.0.1 ;;
+            esac
             if wait_for_host_ready \
-              "$HOST_PORT" "$rollback_container_id" "Rollback"; then
+              "$rollback_host_bind_ip" "$HOST_PORT" \
+              "$rollback_container_id" "Rollback"; then
               echo "Rollback restored the previous healthy deployment."
               return 0
             fi
@@ -451,6 +472,22 @@ jobs:
           if [ "$HOST_PORT" -lt 1 ] || [ "$HOST_PORT" -gt 65535 ]; then
             HOST_PORT=8080
           fi
+          HOST_BIND_IP=$(
+            sed -n 's/^HOST_BIND_IP="\{0,1\}\([0-9][0-9.]*\)"\{0,1\}$/\1/p' \
+              .env 2>/dev/null | tail -n 1
+          )
+          case "$HOST_BIND_IP" in
+            ''|*[!0-9.]*) HOST_BIND_IP=127.0.0.1 ;;
+          esac
+          ACTIVE_HOST_BIND_IP="$HOST_BIND_IP"
+          DEPLOY_HOST_BIND_IP=$(
+            sed -n 's/^HOST_BIND_IP="\{0,1\}\([0-9][0-9.]*\)"\{0,1\}$/\1/p' \
+              "$DEPLOY_ENV_FILE" 2>/dev/null | tail -n 1
+          )
+          case "$DEPLOY_HOST_BIND_IP" in
+            ''|*[!0-9.]*) ;;
+            *) HOST_BIND_IP="$DEPLOY_HOST_BIND_IP" ;;
+          esac
 
           ACTIVE_CONTAINER_ID=$(
             docker ps \
@@ -459,7 +496,7 @@ jobs:
               --format '{{.ID}}' | head -n 1
           )
           if [ -n "$ACTIVE_CONTAINER_ID" ] && [ -f .env ] && \
-            curl -sf "http://127.0.0.1:${HOST_PORT}/ready" \
+            curl -sf "http://${ACTIVE_HOST_BIND_IP}:${HOST_PORT}/ready" \
               >/dev/null 2>&1; then
             PREVIOUS_IMAGE=$(
               docker inspect --format '{{.Config.Image}}' "$ACTIVE_CONTAINER_ID"
@@ -486,6 +523,7 @@ jobs:
             printf 'DEPLOY_SHA="%s"\n' "$DEPLOY_SHA"
             printf 'IMAGE="%s"\n' "$IMAGE_NAME"
             printf 'HOST_PORT="%s"\n' "$HOST_PORT"
+            printf 'HOST_BIND_IP="%s"\n' "$HOST_BIND_IP"
           } >> .env.next
           chmod 600 .env.next
 
@@ -545,7 +583,8 @@ jobs:
           fi
 
           if ! wait_for_host_ready \
-            "$HOST_PORT" "$PROMOTED_CONTAINER_ID" "Promoted deployment"; then
+            "$HOST_BIND_IP" "$HOST_PORT" \
+            "$PROMOTED_CONTAINER_ID" "Promoted deployment"; then
             echo "Promoted deployment failed; checking logs before rollback..."
             docker compose -f compose.yaml -f compose.prod.yaml logs --tail=100
             exit 1

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from blacki.calories.storage import SqliteCalorieStorage
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
+    from blacki.health.storage import SqliteGoogleHealthStorage
     from blacki.reminders.storage import SqliteReminderStorage
     from blacki.user_files.storage import SqliteUserFileStorage
     from blacki.utils.preferences import SqlitePreferencesStorage
@@ -139,6 +140,9 @@ class AppContainer:
     _declarative_db_storage: SqliteDeclarativeDbStorage | None = field(
         default=None, init=False, repr=False
     )
+    _google_health_storage: SqliteGoogleHealthStorage | None = field(
+        default=None, init=False, repr=False
+    )
     _user_file_storage: SqliteUserFileStorage | None = field(
         default=None, init=False, repr=False
     )
@@ -186,6 +190,10 @@ class AppContainer:
             await self._declarative_db_storage.close()
             self._declarative_db_storage = None
 
+        if self._google_health_storage is not None:
+            await self._google_health_storage.close()
+            self._google_health_storage = None
+
         if self._user_file_storage is not None:
             await self._user_file_storage.close()
             self._user_file_storage = None
@@ -201,6 +209,7 @@ class AppContainer:
         await self.workout_storage.initialize()
         await self.preferences_storage.initialize()
         await self.declarative_db_storage.initialize()
+        await self.google_health_storage.initialize()
         await self.user_file_storage.initialize()
 
     @property
@@ -254,6 +263,17 @@ class AppContainer:
                 self.conn, self._lock
             )
         return self._declarative_db_storage
+
+    @property
+    def google_health_storage(self) -> SqliteGoogleHealthStorage:
+        """Get or create storage for Google Health credentials and records."""
+        if self._google_health_storage is None:
+            from blacki.health.storage import SqliteGoogleHealthStorage
+
+            self._google_health_storage = SqliteGoogleHealthStorage(
+                self.conn, self._lock
+            )
+        return self._google_health_storage
 
     @property
     def user_file_storage(self) -> SqliteUserFileStorage:

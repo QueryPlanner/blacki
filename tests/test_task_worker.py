@@ -274,7 +274,7 @@ async def test_task_worker_shares_session_sandbox_state_end_to_end(
             ],
         ),
         patch("blacki.agent._build_model", return_value=model),
-        patch("blacki.agent.telegram_tool_notifications_enabled", return_value=False),
+        patch("blacki.agent.telegram_live_tool_progress_enabled", return_value=False),
     ):
         agent = create_agent()
 

@@ -86,6 +86,7 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert values["TELEGRAM_ENABLED"] == "true"
     assert values["TELEGRAM_BOT_TOKEN"] == "replace-me"  # noqa: S105
     assert "BIND_ADDRESS" not in values
+    assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
@@ -100,6 +101,7 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     assert "GOOGLE_API_KEY" not in values
     assert values["TELEGRAM_ENABLED"] == "false"
     assert "TELEGRAM_BOT_TOKEN" not in values
+    assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["HOST"] == "127.0.0.1"
     assert values["ZEPTO_MCP_ENABLED"] == "false"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
@@ -410,7 +412,6 @@ def test_smoke_overlay_is_isolated_and_side_effect_free() -> None:
         "RELOAD_AGENTS": "false",
         "SERVE_WEB_INTERFACE": "false",
         "TELEGRAM_ENABLED": "false",
-        "TELEGRAM_TOOL_NOTIFICATIONS": "false",
     }
 
 
@@ -435,7 +436,8 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
         "down --remove-orphans",
         "mv .env.next .env",
         "-f compose.yaml -f compose.prod.yaml up -d",
-        '"$HOST_PORT" "$PROMOTED_CONTAINER_ID" "Promoted deployment"',
+        '"$HOST_BIND_IP" "$HOST_PORT"',
+        '"$PROMOTED_CONTAINER_ID" "Promoted deployment"',
         "DEPLOYMENT_HEALTHY=true",
         "docker image prune -af",
     )
@@ -476,6 +478,14 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert 'IMAGE_NAME="ghcr.io/queryplanner/blacki@${IMAGE_DIGEST}"' in workflow
     assert 'printf \'IMAGE="%s"\\n\' "$IMAGE_NAME"' in workflow
     assert 'printf \'DEPLOY_SHA="%s"\\n\' "$DEPLOY_SHA"' in workflow
+    assert "HOST_BIND_IP: ${{ secrets.HOST_BIND_IP }}" in workflow
+    assert "HOST_BIND_IP=$(" in workflow
+    assert "DEPLOY_HOST_BIND_IP=$(" in workflow
+    assert '"$DEPLOY_ENV_FILE"' in workflow
+    assert 'curl -sf "http://${ACTIVE_HOST_BIND_IP}:${HOST_PORT}/ready"' in workflow
+    assert 'curl -sf "http://${host}:${port}/ready"' in workflow
+    assert "HOST_BIND_IP=127.0.0.1" in workflow
+    assert 'printf \'HOST_BIND_IP="%s"\\n\' "$HOST_BIND_IP"' in workflow
     assert 'SMOKE_PROJECT="${PROJECT_NAME}-smoke-${DEPLOY_SHA:0:12}-$$"' in workflow
     assert "source /tmp/deploy.env" not in workflow
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
@@ -488,6 +498,24 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     ):
         assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
         assert f'{setting}="${{{setting}}}"' not in workflow
+
+
+def test_production_deployment_serializes_host_bind_secret() -> None:
+    """The private interface secret must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    assert deploy_step["env"]["HOST_BIND_IP"] == "${{ secrets.HOST_BIND_IP }}"
+    assert "HOST_BIND_IP" in writer_names
+    assert 'HOST_BIND_IP="$DEPLOY_HOST_BIND_IP"' in deploy_script
 
 
 def test_production_deployment_shell_is_valid_bash() -> None:
@@ -546,6 +574,29 @@ def test_production_deployment_serializes_kokoro_tts_settings() -> None:
     writer_names = deploy_script[writer_start:writer_end].split()
 
     for setting in ("KOKORO_TTS_BASE_URL", "KOKORO_TTS_VOICE"):
+        assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
+        assert setting in writer_names
+
+
+def test_production_deployment_serializes_google_health_settings() -> None:
+    """Google Health OAuth secrets must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    for setting in (
+        "GOOGLE_HEALTH_CLIENT_ID",
+        "GOOGLE_HEALTH_CLIENT_SECRET",
+        "GOOGLE_HEALTH_REDIRECT_URI",
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ):
         assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
         assert setting in writer_names
 
@@ -643,6 +694,36 @@ def test_development_overlay_is_loopback_only() -> None:
     assert service["environment"]["SERVE_WEB_INTERFACE"] == "true"
     assert service["environment"]["RELOAD_AGENTS"] == "true"
     assert service["ports"][0]["host_ip"] == "127.0.0.1"
+
+
+def test_production_overlay_supports_a_specific_tailscale_bind() -> None:
+    """Operators can publish only the host's private Tailscale interface."""
+    assert DOCKER_EXECUTABLE is not None
+    result = subprocess.run(  # noqa: S603 - executable resolved with shutil.which
+        [
+            DOCKER_EXECUTABLE,
+            "compose",
+            "--env-file",
+            ".env.minimal",
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.prod.yaml",
+            "config",
+        ],
+        cwd=REPO_ROOT,
+        env={
+            **os.environ,
+            "ENV_FILE": ".env.minimal",
+            "HOST_BIND_IP": "100.64.0.42",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    service = yaml.safe_load(result.stdout)["services"]["agent"]
+
+    assert service["ports"][0]["host_ip"] == "100.64.0.42"
 
 
 def test_owner_deployment_cannot_run_from_a_fork() -> None:

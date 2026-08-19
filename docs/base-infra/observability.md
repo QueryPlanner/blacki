@@ -110,3 +110,36 @@ incident.
 If the application cannot create its log directory or file handler, it reports
 the error and continues with stdout logging. Treat that as degraded
 observability, not a successful persistence setup.
+
+## Private dashboard
+
+The server always mounts the read-only operator dashboard at `/dashboard`. It
+reads the local ADK session database, application JSON logs, and JSON Lines
+traces from the same persistent volumes. The dashboard can filter users and
+sessions and inspect individual conversations and traces;
+Telegram `/reset` starts the next versioned ADK session and leaves earlier
+session rows available. The append-only log and trace files are not deleted by
+`/reset`, so the dashboard continues to show that history.
+
+This is an admin-only, private-data surface. The application does not add
+HTTP Basic auth, cookies, or Tailscale identity-header authentication. For
+direct tailnet access, set `HOST_BIND_IP` to the host's Tailscale IPv4 address
+and restrict access with Tailscale ACLs and device posture. Alternatively,
+keep the production Compose loopback binding and use Tailscale Serve to reverse
+proxy the service to your tailnet over HTTPS:
+
+```bash
+HOST_PORT="$(sed -n 's/^HOST_PORT="\{0,1\}\([0-9][0-9]*\)"\{0,1\}$/\1/p' .env | tail -n 1)"
+tailscale serve --bg "localhost:${HOST_PORT:-8080}"
+```
+
+Run the commands from the Blacki repository directory; the first line reads
+the configured host port from `.env` and falls back to 8080 when absent.
+
+The `--bg` flag keeps the Serve configuration across host reboots and service
+restarts while the endpoint remains tailnet-only. Use `tailscale serve`, never
+`tailscale funnel`, for this dashboard. Funnel is public internet exposure and
+is not an acceptable boundary for conversation logs. If you use the direct
+bind, never set `HOST_BIND_IP=0.0.0.0`. The current command syntax is documented
+in the official
+[Tailscale Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).

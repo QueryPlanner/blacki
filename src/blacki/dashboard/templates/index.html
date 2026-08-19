@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Local Blacki observability dashboard for sessions, traces, and logs."
+    />
+    <title>Blacki observability</title>
+    <link rel="stylesheet" href="/dashboard/static/dashboard.css" />
+  </head>
+  <body class="min-h-screen bg-base-200 text-base-content">
+    <div class="dashboard-shell min-h-screen">
+      <header class="sticky top-0 z-20 border-b border-base-300 bg-base-100/95 backdrop-blur">
+        <div class="navbar mx-auto max-w-screen-2xl gap-3 px-4 sm:px-6 lg:px-8">
+          <div class="navbar-start min-w-0">
+            <div class="flex min-w-0 items-center gap-3">
+              <div
+                class="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-lg font-black text-primary-content shadow-sm"
+                aria-hidden="true"
+              >
+                B
+              </div>
+              <div class="min-w-0">
+                <p class="truncate text-sm font-semibold tracking-tight sm:text-base">Blacki</p>
+                <p class="truncate text-xs text-base-content/60">Local observability</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="navbar-end gap-2 sm:gap-3">
+            <div class="hidden text-right text-xs text-base-content/60 sm:block">
+              <p>Last updated</p>
+              <p id="last-updated" class="font-medium text-base-content/80">Waiting for data</p>
+            </div>
+            <label class="hidden items-center gap-2 text-xs text-base-content/70 lg:flex" for="auto-refresh">
+              <input id="auto-refresh" class="toggle toggle-sm" type="checkbox" checked />
+              <span>Auto-refresh</span>
+            </label>
+            <button
+              id="refresh-button"
+              class="btn btn-sm btn-primary gap-2"
+              type="button"
+              aria-label="Refresh dashboard data"
+            >
+              <span aria-hidden="true">↻</span>
+              <span>Refresh</span>
+            </button>
+            <button
+              id="theme-toggle"
+              class="btn btn-square btn-sm btn-ghost"
+              type="button"
+              aria-label="Use dark theme"
+              aria-pressed="false"
+              title="Toggle theme"
+            >
+              <span aria-hidden="true">◐</span>
+            </button>
+          </div>
+        </div>
+
+        <nav class="mx-auto max-w-screen-2xl overflow-x-auto px-4 pb-3 sm:px-6 lg:px-8" aria-label="Dashboard views">
+          <div id="view-tabs" class="tabs tabs-box w-max min-w-full bg-base-200/70 sm:min-w-0" role="tablist">
+            <button
+              id="tab-overview"
+              class="tab tab-active min-w-28 font-medium"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="overview-panel"
+              tabindex="0"
+              data-view="overview"
+            >
+              Overview
+            </button>
+            <button
+              id="tab-users"
+              class="tab min-w-28 font-medium"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="users-panel"
+              tabindex="-1"
+              data-view="users"
+            >
+              Users &amp; sessions
+            </button>
+            <button
+              id="tab-traces"
+              class="tab min-w-24 font-medium"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="traces-panel"
+              tabindex="-1"
+              data-view="traces"
+            >
+              Traces
+            </button>
+            <button
+              id="tab-logs"
+              class="tab min-w-24 font-medium"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="logs-panel"
+              tabindex="-1"
+              data-view="logs"
+            >
+              Logs
+            </button>
+          </div>
+        </nav>
+      </header>
+
+      <main class="mx-auto w-full max-w-screen-2xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+        <div class="mb-6 flex flex-col gap-4 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p class="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-primary">Blacki / telemetry</p>
+            <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">See what your users experience.</h1>
+            <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/65 sm:text-base">
+              A local view of activity written to disk: sessions, traces, structured logs, latency, and token use.
+            </p>
+          </div>
+          <div class="flex items-center gap-2 text-xs text-base-content/60">
+            <span class="status status-success" aria-hidden="true"></span>
+            <span id="connection-state">Connecting to local data</span>
+          </div>
+        </div>
+
+        <div class="mb-6" role="alert">
+          <div class="alert border-info/30 bg-info/10 text-base-content text-sm shadow-sm sm:alert-horizontal">
+            <span class="text-info text-lg" aria-hidden="true">ⓘ</span>
+            <div>
+              <p class="font-semibold text-base-content">Telegram /reset keeps history intact.</p>
+              <p class="mt-0.5 text-xs leading-5 text-base-content/70 sm:text-sm">
+                It starts a new session version for the user; older sessions, logs, and traces remain available here.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div id="loading-state" class="mb-6 rounded-2xl border border-base-300 bg-base-100 p-5 shadow-sm" role="status" aria-live="polite">
+          <div class="flex items-center gap-3">
+            <span class="loading loading-spinner loading-sm text-primary" aria-hidden="true"></span>
+            <div>
+              <p class="font-semibold">Loading telemetry</p>
+              <p class="text-sm text-base-content/60">Reading the latest local records…</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="global-error" class="mb-6" role="alert" hidden></div>
+
+        <section id="overview-panel" role="tabpanel" aria-labelledby="tab-overview" tabindex="0" data-panel="overview">
+          <div class="mb-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div class="stats min-w-0 border border-base-300 bg-base-100 shadow-sm">
+              <div class="stat p-5">
+                <div class="stat-title text-xs font-semibold uppercase tracking-wide">Active users</div>
+                <div id="metric-users" class="stat-value mt-1 text-3xl">—</div>
+                <div id="metric-users-desc" class="stat-desc mt-1">Across the selected window</div>
+              </div>
+            </div>
+            <div class="stats min-w-0 border border-base-300 bg-base-100 shadow-sm">
+              <div class="stat p-5">
+                <div class="stat-title text-xs font-semibold uppercase tracking-wide">Sessions</div>
+                <div id="metric-sessions" class="stat-value mt-1 text-3xl">—</div>
+                <div id="metric-sessions-desc" class="stat-desc mt-1">All retained versions</div>
+              </div>
+            </div>
+            <div class="stats min-w-0 border border-base-300 bg-base-100 shadow-sm">
+              <div class="stat p-5">
+                <div class="stat-title text-xs font-semibold uppercase tracking-wide">Traces</div>
+                <div id="metric-traces" class="stat-value mt-1 text-3xl">—</div>
+                <div id="metric-traces-desc" class="stat-desc mt-1">Completed and in-flight</div>
+              </div>
+            </div>
+            <div class="stats min-w-0 border border-base-300 bg-base-100 shadow-sm">
+              <div class="stat p-5">
+                <div class="stat-title text-xs font-semibold uppercase tracking-wide">Error rate</div>
+                <div id="metric-errors" class="stat-value mt-1 text-3xl">—</div>
+                <div id="metric-errors-desc" class="stat-desc mt-1">Based on available logs</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.85fr)]">
+            <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+              <div class="card-body p-5 sm:p-6">
+                <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h2 class="card-title text-lg">Activity</h2>
+                    <p class="text-sm text-base-content/60">Requests and sessions by time bucket</p>
+                  </div>
+                  <span id="activity-window" class="badge badge-ghost">Last 24 hours</span>
+                </div>
+                <div id="activity-chart" class="mt-6" aria-label="Activity by time bucket"></div>
+              </div>
+            </article>
+
+            <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+              <div class="card-body p-5 sm:p-6">
+                <div>
+                  <h2 class="card-title text-lg">Performance pulse</h2>
+                  <p class="text-sm text-base-content/60">Cost and speed signals from the same records</p>
+                </div>
+                <dl class="mt-5 divide-y divide-base-300">
+                  <div class="flex items-center justify-between gap-4 py-3 first:pt-0">
+                    <dt class="text-sm text-base-content/65">Tokens processed</dt>
+                    <dd id="metric-tokens" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3">
+                    <dt class="text-sm text-base-content/65">Average latency</dt>
+                    <dd id="metric-latency" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3 last:pb-0">
+                    <dt class="text-sm text-base-content/65">P95 latency</dt>
+                    <dd id="metric-p95" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                </dl>
+                <div id="performance-note" class="mt-5 rounded-xl bg-base-200 p-3 text-xs leading-5 text-base-content/65">
+                  Metrics are calculated from records currently available on disk.
+                </div>
+              </div>
+            </article>
+          </div>
+
+          <article class="card card-border mt-6 border-base-300 bg-base-100 shadow-sm">
+            <div class="card-body p-5 sm:p-6">
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 class="card-title text-lg">Data-source health</h2>
+                  <p class="text-sm text-base-content/60">A quick read on what the dashboard could access</p>
+                </div>
+                <span class="badge badge-ghost">Local only</span>
+              </div>
+              <div id="source-health" class="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4"></div>
+            </div>
+          </article>
+        </section>
+
+        <section id="users-panel" class="space-y-6" role="tabpanel" aria-labelledby="tab-users" tabindex="0" data-panel="users" hidden>
+          <div class="grid gap-6 xl:grid-cols-[minmax(17rem,0.75fr)_minmax(0,1.7fr)]">
+            <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+              <div class="card-body p-5 sm:p-6">
+                <div>
+                  <h2 class="card-title text-lg">Users</h2>
+                  <p class="text-sm leading-5 text-base-content/60">Filter by the stored user or chat ID.</p>
+                </div>
+                <form id="user-filter-form" class="mt-5 space-y-3">
+                  <fieldset class="fieldset w-full p-0">
+                    <legend class="fieldset-legend mb-1.5 text-xs font-semibold uppercase tracking-wide">User / chat ID</legend>
+                    <input id="user-search" class="input w-full" type="search" autocomplete="off" placeholder="Search exact ID" />
+                  </fieldset>
+                  <div class="flex gap-2">
+                    <button class="btn btn-primary btn-sm flex-1" type="submit">Apply filter</button>
+                    <button id="user-clear" class="btn btn-ghost btn-sm" type="button">Clear</button>
+                  </div>
+                </form>
+                <div id="users-summary" class="mt-5 text-xs text-base-content/60" aria-live="polite">No users loaded</div>
+                <div id="users-list" class="mt-3 space-y-2"></div>
+              </div>
+            </article>
+
+            <div class="space-y-6">
+              <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+                <div class="card-body p-5 sm:p-6">
+                  <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p class="text-xs font-semibold uppercase tracking-wide text-base-content/55">Selected user</p>
+                      <h2 id="selected-user" class="mt-1 break-all text-lg font-semibold">Choose a user</h2>
+                    </div>
+                    <span id="sessions-summary" class="badge badge-ghost">No sessions</span>
+                  </div>
+                  <div id="sessions-list" class="mt-5"></div>
+                </div>
+              </article>
+
+              <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+                <div class="card-body p-5 sm:p-6">
+                  <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <h2 class="card-title text-lg">Session conversation</h2>
+                      <p id="selected-session" class="break-all text-sm text-base-content/60">Select a session to inspect messages.</p>
+                    </div>
+                    <span class="badge badge-outline">Read-only</span>
+                  </div>
+                  <div id="chat-view" class="mt-5 max-h-[38rem] space-y-2 overflow-y-auto rounded-2xl bg-base-200/60 p-3 sm:p-5"></div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="traces-panel" class="space-y-6" role="tabpanel" aria-labelledby="tab-traces" tabindex="0" data-panel="traces" hidden>
+          <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+            <div class="card-body p-5 sm:p-6">
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 class="card-title text-lg">Traces</h2>
+                  <p class="text-sm text-base-content/60">Follow a request across safe, structured spans.</p>
+                </div>
+                <form id="trace-filter-form" class="grid gap-2 sm:grid-cols-[10rem_minmax(14rem,1fr)_auto]">
+                  <fieldset class="fieldset p-0">
+                    <legend class="fieldset-legend mb-1 text-xs font-semibold uppercase tracking-wide">Status</legend>
+                    <select id="trace-status" class="select select-bordered select-sm">
+                      <option value="">All statuses</option>
+                      <option value="ok">OK</option>
+                      <option value="error">Error</option>
+                      <option value="running">Running</option>
+                    </select>
+                  </fieldset>
+                  <fieldset class="fieldset p-0">
+                    <legend class="fieldset-legend mb-1 text-xs font-semibold uppercase tracking-wide">Search</legend>
+                    <input id="trace-search" class="input input-sm" type="search" autocomplete="off" placeholder="Trace or span ID" />
+                  </fieldset>
+                  <button class="btn btn-ghost btn-sm mt-auto" type="submit">Filter</button>
+                </form>
+              </div>
+              <div id="traces-list" class="mt-6"></div>
+            </div>
+          </article>
+
+          <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+            <div class="card-body p-5 sm:p-6">
+              <div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p class="text-xs font-semibold uppercase tracking-wide text-base-content/55">Trace detail</p>
+                  <h2 id="selected-trace" class="mt-1 break-all text-lg font-semibold">Choose a trace</h2>
+                </div>
+                <span class="badge badge-outline">Span timeline</span>
+              </div>
+              <div id="trace-detail" class="mt-6"></div>
+            </div>
+          </article>
+        </section>
+
+        <section id="logs-panel" class="space-y-6" role="tabpanel" aria-labelledby="tab-logs" tabindex="0" data-panel="logs" hidden>
+          <article class="card card-border border-base-300 bg-base-100 shadow-sm">
+            <div class="card-body p-5 sm:p-6">
+              <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <h2 class="card-title text-lg">Structured logs</h2>
+                  <p class="text-sm text-base-content/60">Inspect the records behind the dashboard signals.</p>
+                </div>
+                <form id="log-filter-form" class="grid gap-2 sm:grid-cols-[9rem_minmax(14rem,1fr)_auto]">
+                  <fieldset class="fieldset p-0">
+                    <legend class="fieldset-legend mb-1 text-xs font-semibold uppercase tracking-wide">Level</legend>
+                    <select id="log-level" class="select select-bordered select-sm">
+                      <option value="">All levels</option>
+                      <option value="ERROR">Error</option>
+                      <option value="WARNING">Warning</option>
+                      <option value="INFO">Info</option>
+                      <option value="DEBUG">Debug</option>
+                    </select>
+                  </fieldset>
+                  <fieldset class="fieldset p-0">
+                    <legend class="fieldset-legend mb-1 text-xs font-semibold uppercase tracking-wide">Search</legend>
+                    <input id="log-search" class="input input-sm" type="search" autocomplete="off" placeholder="Message or source" />
+                  </fieldset>
+                  <button class="btn btn-ghost btn-sm mt-auto" type="submit">Filter</button>
+                </form>
+              </div>
+              <div id="logs-list" class="mt-6"></div>
+            </div>
+          </article>
+        </section>
+      </main>
+
+      <footer class="border-t border-base-300 bg-base-100">
+        <div class="mx-auto flex max-w-screen-2xl flex-col gap-2 px-4 py-5 text-xs text-base-content/55 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+          <p>Blacki observability · local records only</p>
+          <p>Use Tailscale to reach this server from your private network.</p>
+        </div>
+      </footer>
+    </div>
+    <script src="/dashboard/static/dashboard.js" defer></script>
+  </body>
+</html>

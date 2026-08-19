@@ -9,5 +9,4 @@ services:
       RELOAD_AGENTS: "false"
       SERVE_WEB_INTERFACE: "false"
       TELEGRAM_ENABLED: "false"
-      TELEGRAM_TOOL_NOTIFICATIONS: "false"
     restart: "no"

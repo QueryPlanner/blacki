@@ -3,36 +3,40 @@
 import asyncio
 import contextlib
 import logging
-import os
 import re
+from collections.abc import Coroutine, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from google.genai import types
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator
+from blacki.adk_runtime import AdkRuntime, EmptyModelResponseError, SessionLocator
+from blacki.health.config import telegram_chat_id_for_health_user
+from blacki.health.service import (
+    GoogleHealthOAuthError,
+    GoogleHealthService,
+    SyncResult,
+    format_health_summary,
+)
 from blacki.inference import (
     InferenceProfile,
-    ReasoningConfig,
-    ReasoningEffort,
     inference_profile_from_environment,
     load_inference_profile,
-    update_inference_profile,
-)
-from blacki.model_capabilities import (
-    ModelCapabilities,
-    OpenRouterModelCapabilitiesResolver,
 )
 from blacki.reminders.storage import Reminder
 from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig
+from .album_buffer import AlbumBuffer, _BufferedAlbum
 from .api import TelegramApiClient, TelegramApiError
-from .formatting import format_for_telegram
+from .formatting import escape_markdown_plain, format_for_telegram
+from .settings_menu import SettingsMenu
 from .streaming import split_long_message
 from .types import (
     BotCommand,
     CallbackQuery,
+    ChatType,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -48,43 +52,32 @@ logger = logging.getLogger(__name__)
 POLLING_TIMEOUT = 30
 _MAX_CONSECUTIVE_ERRORS = 5
 _FATAL_ERROR_CODES = {401, 403}
+_MAX_EMPTY_RESPONSE_RETRIES = 1
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TELEGRAM_FILE_BYTES = 20 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
+_MAX_ALBUM_PHOTOS = 10
+_MAX_ALBUM_BYTES = 20 * 1024 * 1024
 
-MODEL_CHOICES = {
-    "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),
-    "m2": ("openrouter/x-ai/grok-4.3", "Grok 4.3"),
-    "m3": ("google/gemini-flash-latest", "Gemini Flash"),
-    "m4": ("openrouter/deepseek/deepseek-v4-pro", "DeepSeek v4 Pro"),
-    "m5": ("openrouter/deepseek/deepseek-v4-flash", "DeepSeek v4 Flash"),
-    "m6": ("google/gemini-pro-latest", "Gemini Pro"),
-    "m7": ("moonshotai/kimi-latest", "Kimi Latest"),
-    "m8": ("openrouter/minimax/minimax-m2.7", "MiniMax m2.7"),
-    "m9": ("openrouter/nvidia/nemotron-3-super-120b-a12b", "Nemotron 3 Super"),
-    "m10": ("openrouter/z-ai/glm-5", "GLM 5"),
-    "m11": ("openrouter/openai/gpt-5.6-luna", "GPT-5.6 Luna"),
-    "m_default": ("default", "System Default"),
-}
 
-_SETTINGS_MODEL_PREFIX = "s:m:"
-_SETTINGS_REASONING_PREFIX = "s:r:"
-_SETTINGS_THINKING = "s:t"
-_SETTINGS_BACK = "s:b"
-_SETTINGS_RESET = "s:x"
-_INHERIT_REASONING = "inherit"
-_REASONING_LABELS = {
-    "inherit": "Default",
-    "none": "Off",
-    "minimal": "Minimal",
-    "low": "Low",
-    "medium": "Medium",
-    "high": "High",
-    "xhigh": "XHigh",
-    "max": "Max",
-}
+def _format_health_sync_result(result: SyncResult) -> str:
+    """Render a provider-sync result without exposing IDs or error payloads."""
+    if result.status == "not_connected":
+        return "Google Health is not connected. Use /connect_health first."
+    if result.status == "reauthorization_required":
+        return (
+            "Google Health needs authorization again. Use /connect_health to reconnect."
+        )
+    if result.status == "rate_limited":
+        return "A Google Health refresh was requested recently. Please try again later."
+    if result.status == "success":
+        return (
+            f"Google Health refreshed {result.days_upserted} day(s) from "
+            f"{result.records_fetched} record(s)."
+        )
+    return "Google Health could not be refreshed right now. Please try again later."
 
 
 @dataclass(slots=True, frozen=True)
@@ -103,16 +96,27 @@ class TelegramBot:
         self,
         config: TelegramConfig,
         runtime: AdkRuntime,
+        google_health_service: GoogleHealthService | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
         self.runtime = runtime
+        self.google_health_service = google_health_service
         self._api: TelegramApiClient | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
+        self._conversation_task_seqs: dict[str, int] = {}
+        self._album_buffer = AlbumBuffer(on_flush=self._on_album_flushed)
+        self._update_counter: int = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._capabilities_resolver: OpenRouterModelCapabilitiesResolver | None = None
+        self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
+            "telegram_chat_type", default=None
+        )
+        self._settings_menu = SettingsMenu(
+            api_provider=lambda: self.api,
+            load_profile=self._load_chat_profile,
+        )
 
     @property
     def api(self) -> TelegramApiClient:
@@ -148,6 +152,8 @@ class TelegramBot:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._polling_task
 
+        await self._album_buffer.shutdown()
+
         for task in list(self._background_tasks):
             task.cancel()
         if self._background_tasks:
@@ -156,10 +162,7 @@ class TelegramBot:
 
         await self.runtime.close()
 
-        if self._capabilities_resolver is not None:
-            with contextlib.suppress(Exception):
-                await self._capabilities_resolver.aclose()
-            self._capabilities_resolver = None
+        await self._settings_menu.aclose()
 
         if self._api is not None:
             await self._api.close()
@@ -180,6 +183,27 @@ class TelegramBot:
                 description="Set reasoning effort for this chat",
             ),
         ]
+        if self.google_health_service is not None:
+            commands.extend(
+                [
+                    BotCommand(
+                        command="connect_health",
+                        description="Connect Google Health read-only data",
+                    ),
+                    BotCommand(
+                        command="health_summary",
+                        description="Show your Google Health summary",
+                    ),
+                    BotCommand(
+                        command="health_refresh",
+                        description="Refresh Google Health data",
+                    ),
+                    BotCommand(
+                        command="disconnect_health",
+                        description="Disconnect and delete Google Health data",
+                    ),
+                ]
+            )
         try:
             await self.api.set_my_commands(commands)
             logger.info("Registered Telegram bot commands")
@@ -257,6 +281,12 @@ class TelegramBot:
         if update.message is None:
             return
 
+        # Check if this update is part of a photo album
+        if update.message.photo and update.message.media_group_id is not None:
+            self._update_counter += 1
+            await self._album_buffer.add_message(update.message, self._update_counter)
+            return
+
         chat_id = update.message.chat.id
         message_thread_id = update.message.message_thread_id
         conversation_key = self._build_conversation_key(
@@ -264,8 +294,45 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
+        self._update_counter += 1
+        current_seq = self._update_counter
+
+        for active_album in self._album_buffer.get_active(chat_id, message_thread_id):
+            if active_album.future is not None:
+                try:
+                    await asyncio.shield(active_album.future)
+                except asyncio.CancelledError:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling() > 0:
+                        raise
+                except Exception as exc:
+                    # A failed album turn already reports its own user-facing
+                    # error via _send_photo_error inside _handle_album_turn.
+                    # This wait only unblocks processing of the next message
+                    # in this conversation, so it must not raise on the
+                    # album's behalf, but it is logged at warning level (not
+                    # debug) so an unexpected failure here stays visible.
+                    logger.warning("Album buffer wait suppressed error: %s", exc)
+
+        await self._run_sequenced_turn(
+            conversation_key, current_seq, self._handle_update(update)
+        )
+
+    async def _run_sequenced_turn(
+        self,
+        conversation_key: str,
+        seq: int,
+        turn: Coroutine[Any, Any, None],
+    ) -> None:
+        """Run a turn, cancelling and waiting out any superseded turn first."""
         existing_task = self._conversation_tasks.get(conversation_key)
-        if existing_task is not None and not existing_task.done():
+        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        supersedes_existing = (
+            existing_task is not None
+            and not existing_task.done()
+            and seq >= existing_seq
+        )
+        if supersedes_existing and existing_task is not None:
             logger.info(
                 "Cancelling in-flight turn for conversation %s", conversation_key
             )
@@ -274,19 +341,162 @@ class TelegramBot:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
+            self._conversation_task_seqs[conversation_key] = seq
 
         try:
             # Wait for the superseded task to fully clean up before starting
-            if existing_task is not None and not existing_task.done():
+            if supersedes_existing and existing_task is not None:
                 await asyncio.wait([existing_task])
 
-            await self._handle_update(update)
+            await turn
         except asyncio.CancelledError:
             logger.info("Message turn superseded for conversation %s", conversation_key)
             raise
         finally:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
+                self._conversation_task_seqs.pop(conversation_key, None)
+
+    def _on_album_flushed(self, album: _BufferedAlbum) -> None:
+        """Schedule processing of a completed album as a background task."""
+        task = asyncio.create_task(self._process_flushed_album(album))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _process_flushed_album(self, album: _BufferedAlbum) -> None:
+        """Enqueue flushed album as a conversation turn, respecting cancellation."""
+        conversation_key = self._build_conversation_key(
+            chat_id=str(album.chat_id),
+            message_thread_id=album.message_thread_id,
+        )
+        try:
+            await self._run_sequenced_turn(
+                conversation_key,
+                album.created_seq,
+                self._handle_album_turn(album),
+            )
+        finally:
+            if album.future is not None and not album.future.done():
+                album.future.set_result(None)
+
+    async def _handle_album_turn(self, album: _BufferedAlbum) -> None:
+        """Download album images and run a single ADK turn.
+
+        Resolves ``album.future`` before returning on every exit path, so
+        this method is safe to call directly and does not rely on a caller
+        (``_process_flushed_album``) to resolve the future on its behalf.
+        """
+        try:
+            await self._run_album_turn(album)
+        finally:
+            if album.future is not None and not album.future.done():
+                album.future.set_result(None)
+
+    async def _run_album_turn(self, album: _BufferedAlbum) -> None:
+        """Validate, download, and process a flushed album's photos."""
+        chat_id = album.chat_id
+        message_thread_id = album.message_thread_id
+        messages = album.messages
+
+        if len(messages) > _MAX_ALBUM_PHOTOS:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text=(
+                    f"❌ The album contains too many photos "
+                    f"({_MAX_ALBUM_PHOTOS} maximum)."
+                ),
+            )
+            return
+
+        # Check total reported size before download
+        total_reported_size = 0
+        photo_items: list[tuple[str, int | None]] = []
+        caption: str | None = None
+
+        for msg in messages:
+            if msg.caption and msg.caption.strip() and caption is None:
+                caption = msg.caption.strip()
+            if not msg.photo:
+                await self._send_photo_error(
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    text="❌ Sorry, I failed to process the photo.",
+                )
+                return
+            best_photo = max(msg.photo, key=lambda item: item.width * item.height)
+            if best_photo.file_size is not None:
+                if best_photo.file_size > _MAX_NATIVE_IMAGE_BYTES:
+                    await self._send_photo_error(
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        text="❌ The photo is too large to process (10 MB maximum).",
+                    )
+                    return
+                total_reported_size += best_photo.file_size
+            photo_items.append((best_photo.file_id, best_photo.file_size))
+
+        if total_reported_size > _MAX_ALBUM_BYTES:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ The album is too large to process (20 MB maximum).",
+            )
+            return
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+            chat_type=album.chat_type,
+        )
+
+        try:
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="typing",
+                message_thread_id=message_thread_id,
+            )
+
+            downloaded_images: list[bytes] = []
+            total_downloaded_bytes = 0
+
+            for file_id, _ in photo_items:
+                image_bytes = await self._download_and_validate_photo(file_id)
+
+                total_downloaded_bytes += len(image_bytes)
+                if total_downloaded_bytes > _MAX_ALBUM_BYTES:
+                    raise ValueError("Album total downloaded size exceeds limit")
+
+                downloaded_images.append(image_bytes)
+
+            prompt = caption if caption is not None else _DEFAULT_IMAGE_PROMPT
+
+            parts: list[types.Part] = [types.Part.from_text(text=prompt)]
+            for img_bytes in downloaded_images:
+                parts.append(
+                    types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+                )
+
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                state=state,
+                message_text=prompt,
+                user_parts=parts,
+            )
+        except Exception:
+            logger.exception("Failed to handle Telegram photo album")
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ Sorry, I failed to process the photo.",
+            )
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""
@@ -294,25 +504,28 @@ class TelegramBot:
             return
 
         message = update.message
+        token = self._chat_type_context.set(message.chat.type)
+        try:
+            if message.text is None:
+                await self._route_non_text_message(message)
+                return
 
-        if message.text is None:
-            await self._route_non_text_message(message)
-            return
+            chat_id = message.chat.id
+            message_thread_id = message.message_thread_id
+            user_message = message.text
 
-        chat_id = message.chat.id
-        message_thread_id = message.message_thread_id
-        user_message = message.text
+            if user_message.startswith("/"):
+                await self._handle_command(message, user_message)
+                return
 
-        if user_message.startswith("/"):
-            await self._handle_command(message, user_message)
-            return
-
-        await self._handle_message(
-            chat_id=chat_id,
-            message_thread_id=message_thread_id,
-            user_message=user_message,
-            sender_user_id=message.from_user.id if message.from_user else None,
-        )
+            await self._handle_message(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                user_message=user_message,
+                sender_user_id=message.from_user.id if message.from_user else None,
+            )
+        finally:
+            self._chat_type_context.reset(token)
 
     async def _route_non_text_message(self, message: Message) -> None:
         """Route a non-text message to the appropriate handler."""
@@ -388,6 +601,7 @@ class TelegramBot:
         caption: str | None,
         file_unique_id: str | None = None,
         sender_user_id: int | None = None,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Download a Telegram photo and send it to ADK as native image input."""
         if file_size is not None and file_size > _MAX_NATIVE_IMAGE_BYTES:
@@ -406,6 +620,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            chat_type=chat_type or self._chat_type_context.get(),
             sender_user_id=sender_user_id,
         )
 
@@ -415,18 +630,7 @@ class TelegramBot:
                 action="typing",
                 message_thread_id=message_thread_id,
             )
-            file_info = await self.api.get_file(file_id)
-            file_path_api = file_info.get("file_path")
-            if not file_path_api:
-                raise ValueError("Telegram did not return a photo file path")
-
-            image_bytes = await self.api.download_file(file_path_api)
-            if not image_bytes:
-                raise ValueError("Telegram returned an empty photo")
-            if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
-                raise ValueError("Telegram photo exceeds the 10 MB limit")
-            if not image_bytes.startswith(_JPEG_MAGIC):
-                raise ValueError("Telegram photo is not a JPEG image")
+            image_bytes = await self._download_and_validate_photo(file_id)
 
             ingest, sandbox_path, sandbox_error = await self._shield_attachment_ingest(
                 state=state,
@@ -464,21 +668,13 @@ class TelegramBot:
                 types.Part.from_text(text=prompt),
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             )
-            profile = await self._load_chat_profile(chat_id)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
-                message_text=message_text,
-                state=state,
-                user_parts=user_parts,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=message_text,
+                user_parts=user_parts,
             )
         except Exception:
             logger.exception("Failed to handle Telegram photo")
@@ -592,6 +788,22 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
+    async def _download_and_validate_photo(self, file_id: str) -> bytes:
+        """Download a Telegram photo and validate its size and format."""
+        file_info = await self.api.get_file(file_id)
+        file_path_api = file_info.get("file_path")
+        if not file_path_api:
+            raise ValueError("Telegram did not return a photo file path")
+
+        image_bytes = await self.api.download_file(file_path_api)
+        if not image_bytes:
+            raise ValueError("Telegram returned an empty photo")
+        if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
+            raise ValueError("Telegram photo exceeds the 10 MB limit")
+        if not image_bytes.startswith(_JPEG_MAGIC):
+            raise ValueError("Telegram photo is not a JPEG image")
+        return image_bytes
+
     async def _handle_command(self, message: Message, command: str) -> None:
         """Handle a command message."""
         chat_id = message.chat.id
@@ -603,291 +815,219 @@ class TelegramBot:
         elif command == "/reset":
             await self._handle_reset(chat_id, message.message_thread_id)
         elif command == "/model":
-            await self._send_model_menu(chat_id, message.message_thread_id)
+            await self._settings_menu.send_model_menu(
+                chat_id, message.message_thread_id
+            )
         elif command == "/thinking":
-            await self._send_thinking_menu(chat_id, message.message_thread_id)
+            await self._settings_menu.send_thinking_menu(
+                chat_id, message.message_thread_id
+            )
+        elif command == "/connect_health":
+            await self._connect_health(message)
+        elif command == "/health_summary":
+            await self._send_health_summary(message)
+        elif command == "/health_refresh":
+            await self._refresh_health(message)
+        elif command == "/disconnect_health":
+            await self._request_health_disconnect(message)
 
-    async def _send_model_menu(
-        self, chat_id: int, message_thread_id: int | None
-    ) -> None:
-        """Send the compact model-and-thinking settings panel."""
-        profile = await self._load_chat_profile(chat_id)
-        text, reply_markup = self._build_model_menu(profile)
+    async def _connect_health(self, message: Message) -> None:
+        """Send a short-lived Google authorization link to a private chat."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
         try:
+            url = await service.begin_authorization(f"telegram-chat-{message.chat.id}")
             await self.api.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=message_thread_id,
-                reply_markup=reply_markup,
-            )
-        except Exception:
-            logger.exception("Failed to send model menu")
-
-    async def _send_thinking_menu(
-        self, chat_id: int, message_thread_id: int | None
-    ) -> None:
-        """Send the reasoning-effort menu for the effective model."""
-        profile = await self._load_chat_profile(chat_id)
-        text, reply_markup = await self._build_thinking_menu(profile)
-        try:
-            await self.api.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=message_thread_id,
-                reply_markup=reply_markup,
-            )
-        except Exception:
-            logger.exception("Failed to send thinking menu")
-
-    def _build_model_menu(
-        self, profile: InferenceProfile
-    ) -> tuple[str, InlineKeyboardMarkup]:
-        """Build the model menu without performing network I/O."""
-        effective_model = self._effective_model(profile)
-        current_display_name = self._model_display_name(effective_model)
-        current_thinking = self._reasoning_display(profile)
-
-        buttons: list[list[InlineKeyboardButton]] = []
-        row: list[InlineKeyboardButton] = []
-        for key, (_, display_name) in MODEL_CHOICES.items():
-            row.append(
-                InlineKeyboardButton(
-                    text=display_name,
-                    callback_data=f"{_SETTINGS_MODEL_PREFIX}{key}",
-                )
-            )
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text=f"🧠 Thinking: {current_thinking}",
-                    callback_data=_SETTINGS_THINKING,
-                )
-            ]
-        )
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="↩️ Reset settings", callback_data=_SETTINGS_RESET
-                )
-            ]
-        )
-
-        text = format_for_telegram(
-            "⚙️ **Inference settings**\n\n"
-            f"Model: **{current_display_name}**\n"
-            f"Thinking: **{current_thinking}**\n\n"
-            "Choose a model or adjust Thinking. Changes apply to the next turn."
-        )
-        return text, InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    async def _build_thinking_menu(
-        self, profile: InferenceProfile
-    ) -> tuple[str, InlineKeyboardMarkup]:
-        """Build a capability-aware reasoning menu."""
-        effective_model = self._effective_model(profile)
-        capability = await self._resolve_capabilities(effective_model)
-        options = self._reasoning_options(capability)
-        current = self._reasoning_display(profile)
-
-        buttons: list[list[InlineKeyboardButton]] = []
-        row: list[InlineKeyboardButton] = []
-        for value, label in options:
-            row.append(
-                InlineKeyboardButton(
-                    text=f"{label}{' ✓' if label == current else ''}",
-                    callback_data=f"{_SETTINGS_REASONING_PREFIX}{value}",
-                )
-            )
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    text="⬅️ Back to settings", callback_data=_SETTINGS_BACK
-                )
-            ]
-        )
-
-        if capability is None or capability.reasoning is None:
-            note = (
-                "Thinking controls are not published for this model. "
-                "Only the provider default is available."
-            )
-        elif not capability.reasoning.supports_effort:
-            note = "This model does not expose effort controls."
-        else:
-            note = "Only options supported by the selected model are shown."
-
-        text = format_for_telegram(
-            f"🧠 **Thinking for {self._model_display_name(effective_model)}**\n\n"
-            f"Current: **{current}**\n"
-            f"{note}"
-        )
-        return text, InlineKeyboardMarkup(inline_keyboard=buttons)
-
-    async def _handle_callback_query(self, query: CallbackQuery) -> None:
-        """Handle incoming callback query."""
-        data = query.data or ""
-        action, value = self._parse_settings_callback(data)
-        if action is None:
-            await self.api.answer_callback_query(query.id, text="Unknown action")
-            return
-
-        if action == "model" and (value is None or value not in MODEL_CHOICES):
-            await self.api.answer_callback_query(query.id, text="Unknown model")
-            return
-        if action == "reasoning" and value not in {
-            _INHERIT_REASONING,
-            *tuple(_REASONING_LABELS),
-        }:
-            await self.api.answer_callback_query(
-                query.id, text="Unknown thinking option"
-            )
-            return
-
-        if query.message is None:
-            await self.api.answer_callback_query(query.id, text="Settings expired")
-            return
-
-        chat_id = query.message.chat.id
-        await self.api.answer_callback_query(query.id, text="Updating settings…")
-
-        try:
-            storage = get_preferences_storage()
-            if action == "model":
-                model_id, _ = MODEL_CHOICES[cast(str, value)]
-                await update_inference_profile(
-                    storage,
-                    str(chat_id),
-                    {
-                        "model": None if model_id == "default" else model_id,
-                        "reasoning": None,
-                    },
-                )
-                await self._edit_model_menu(query, chat_id)
-                return
-
-            if action == "reasoning":
-                profile = await self._load_chat_profile(chat_id)
-                capability = await self._resolve_capabilities(
-                    self._effective_model(profile)
-                )
-                supported = {
-                    option for option, _ in self._reasoning_options(capability)
-                }
-                if value not in supported:
-                    await self._edit_error(
-                        query,
-                        chat_id,
-                        "That thinking option is not available for this model.",
-                    )
-                    return
-                reasoning = self._reasoning_config(value)
-                await update_inference_profile(
-                    storage,
-                    str(chat_id),
-                    {"reasoning": reasoning},
-                    base_profile=profile,
-                )
-                await self._edit_model_menu(query, chat_id)
-                return
-
-            if action == "reset":
-                await update_inference_profile(
-                    storage,
-                    str(chat_id),
-                    {"model": None, "reasoning": None},
-                )
-                await self._edit_model_menu(query, chat_id)
-                return
-
-            if action == "thinking":
-                profile = await self._load_chat_profile(chat_id)
-                text, markup = await self._build_thinking_menu(profile)
-                await self.api.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=query.message.message_id,
-                    text=text,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=markup,
-                )
-                return
-
-            # All other parsed actions return above, so the only remaining
-            # valid action is Back.
-            await self._edit_model_menu(query, chat_id)
-        except Exception:
-            logger.exception("Failed to update Telegram inference settings")
-            await self._edit_error(
-                query, chat_id, "Could not save settings. Please try again."
-            )
-
-    @staticmethod
-    def _parse_settings_callback(data: str) -> tuple[str | None, str | None]:
-        """Parse current and legacy callback payloads."""
-        if data.startswith("mod:"):
-            return "model", data.removeprefix("mod:")
-        if data.startswith(_SETTINGS_MODEL_PREFIX):
-            return "model", data.removeprefix(_SETTINGS_MODEL_PREFIX)
-        if data.startswith(_SETTINGS_REASONING_PREFIX):
-            return "reasoning", data.removeprefix(_SETTINGS_REASONING_PREFIX)
-        if data == _SETTINGS_THINKING:
-            return "thinking", None
-        if data == _SETTINGS_BACK:
-            return "back", None
-        if data == _SETTINGS_RESET:
-            return "reset", None
-        return None, None
-
-    async def _edit_model_menu(self, query: CallbackQuery, chat_id: int) -> None:
-        """Render the settings panel into an existing callback message."""
-        if query.message is None:
-            return
-        profile = await self._load_chat_profile(chat_id)
-        text, markup = self._build_model_menu(profile)
-        await self.api.edit_message_text(
-            chat_id=chat_id,
-            message_id=query.message.message_id,
-            text=text,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=markup,
-        )
-
-    async def _edit_error(
-        self, query: CallbackQuery, chat_id: int, message: str
-    ) -> None:
-        """Show a recoverable settings error while retaining a back action."""
-        if query.message is None:
-            return
-        try:
-            await self.api.edit_message_text(
-                chat_id=chat_id,
-                message_id=query.message.message_id,
-                text=format_for_telegram(f"⚠️ {message}"),
-                parse_mode=ParseMode.MARKDOWN_V2,
+                chat_id=message.chat.id,
+                text=(
+                    "Google Health connection is read-only. It can summarize "
+                    "data that reaches Google Health from Fitbit-compatible sources. "
+                    "Blacki does not receive Apple ID credentials or raw Apple Health "
+                    "records. Authorize only if you want this private chat to read "
+                    "the selected health categories."
+                ),
+                message_thread_id=message.message_thread_id,
                 reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="⬅️ Back to settings", callback_data=_SETTINGS_BACK
+                                text="Connect Google Health",
+                                url=url,
+                                callback_data=None,
                             )
                         ]
                     ]
                 ),
+                protect_content=True,
+            )
+        except (GoogleHealthOAuthError, ValueError):
+            logger.exception("Failed to create Google Health authorization link")
+            await self._send_health_text(
+                message,
+                "Google Health is not available for this chat right now.",
+            )
+
+    async def _send_health_summary(self, message: Message) -> None:
+        """Send the latest normalized health summary without provider access."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
+        try:
+            summary = await service.summary(f"telegram-chat-{message.chat.id}")
+            await self._send_health_text(message, format_health_summary(summary))
+        except GoogleHealthOAuthError:
+            await self._send_health_text(
+                message,
+                "Google Health summaries are available only in a private chat.",
             )
         except Exception:
-            logger.exception("Failed to render Telegram settings error")
+            logger.exception("Failed to read Google Health summary")
+            await self._send_health_text(
+                message,
+                "I couldn't read your Google Health summary right now.",
+            )
+
+    async def _refresh_health(self, message: Message) -> None:
+        """Fetch a bounded window of provider data and show the result."""
+        if not await self._health_command_ready(message):
+            return
+        service = cast(GoogleHealthService, self.google_health_service)
+        try:
+            result = await service.refresh_user(f"telegram-chat-{message.chat.id}")
+            if result.status == "success":
+                summary = await service.summary(f"telegram-chat-{message.chat.id}")
+                text = format_health_summary(summary)
+            else:
+                text = _format_health_sync_result(result)
+            await self._send_health_text(message, text)
+        except GoogleHealthOAuthError:
+            await self._send_health_text(
+                message,
+                "Google Health refreshes are available only in a private chat.",
+            )
+        except Exception:
+            logger.exception("Failed to refresh Google Health data")
+            await self._send_health_text(
+                message,
+                "I couldn't refresh your Google Health data right now.",
+            )
+
+    async def _request_health_disconnect(self, message: Message) -> None:
+        """Ask for a final Telegram click before deleting local health data."""
+        if not await self._health_command_ready(message):
+            return
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "Disconnect Google Health and delete Blacki's stored health "
+                "data for this chat? This cannot be undone locally."
+            ),
+            message_thread_id=message.message_thread_id,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Disconnect and delete data",
+                            callback_data="health:disconnect",
+                        ),
+                        InlineKeyboardButton(
+                            text="Cancel",
+                            callback_data="health:cancel",
+                        ),
+                    ]
+                ]
+            ),
+            protect_content=True,
+        )
+
+    async def _health_command_ready(self, message: Message) -> bool:
+        """Require a configured connector and a private Telegram chat."""
+        if message.chat.type != ChatType.PRIVATE:
+            await self._send_health_text(
+                message,
+                "Google Health is available only in a private Telegram chat.",
+            )
+            return False
+        if self.google_health_service is None:
+            await self._send_health_text(
+                message,
+                "Google Health is not configured on this Blacki server yet.",
+            )
+            return False
+        return True
+
+    async def _send_health_text(self, message: Message, text: str) -> None:
+        """Send private health content with Telegram forwarding protection."""
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=text,
+            message_thread_id=message.message_thread_id,
+            protect_content=True,
+        )
+
+    async def _handle_health_callback(self, query: CallbackQuery) -> None:
+        """Handle the explicit disconnect confirmation from a private chat."""
+        if query.message is None:
+            await self.api.answer_callback_query(query.id, text="Confirmation expired")
+            return
+        chat = query.message.chat
+        if chat.type != ChatType.PRIVATE or query.from_user.id != chat.id:
+            await self.api.answer_callback_query(query.id, text="Not authorized")
+            return
+        if self.google_health_service is None:
+            await self.api.answer_callback_query(query.id, text="Not configured")
+            return
+        if query.data == "health:cancel":
+            await self.api.answer_callback_query(query.id, text="Cancelled")
+            return
+
+        await self.api.answer_callback_query(query.id, text="Disconnecting…")
+        try:
+            deleted = await self.google_health_service.disconnect(
+                f"telegram-chat-{chat.id}"
+            )
+            text = (
+                "Google Health was disconnected and stored health data was deleted."
+                if deleted
+                else "Google Health was already disconnected."
+            )
+            await self._send_health_text(query.message, text)
+        except Exception:
+            logger.exception("Failed to disconnect Google Health")
+            await self._send_health_text(
+                query.message,
+                "I couldn't finish disconnecting Google Health. Please try again.",
+            )
+
+    async def notify_health_connection(
+        self, telegram_user_id: str, *, connected: bool
+    ) -> None:
+        """Notify the originating private chat after OAuth callback completion."""
+        chat_id = telegram_chat_id_for_health_user(telegram_user_id)
+        if chat_id is None:
+            return
+        text = (
+            "Google Health is connected. Use /health_refresh for a fresh sync or "
+            "/health_summary to read the latest stored records."
+            if connected
+            else (
+                "Google Health authorization was cancelled. No credentials were stored."
+            )
+        )
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=text,
+            protect_content=True,
+        )
+
+    async def _handle_callback_query(self, query: CallbackQuery) -> None:
+        """Handle incoming callback query."""
+        data = query.data or ""
+        if data.startswith("health:"):
+            await self._handle_health_callback(query)
+            return
+        await self._settings_menu.handle_callback(query)
 
     async def _load_chat_profile(self, chat_id: int | str) -> InferenceProfile:
         """Load a profile snapshot, retaining the process fallback on errors."""
@@ -904,100 +1044,27 @@ class TelegramBot:
             else inference_profile_from_environment()
         )
 
-    async def _resolve_capabilities(
-        self, model_id: str | None
-    ) -> ModelCapabilities | None:
-        """Resolve OpenRouter reasoning metadata without blocking turns."""
-        if not model_id or model_id == "default":
-            return None
-        try:
-            if self._capabilities_resolver is None:
-                self._capabilities_resolver = OpenRouterModelCapabilitiesResolver()
-            return await self._capabilities_resolver.resolve(
-                model_id,
-                openrouter_routed=bool(os.getenv("OPENROUTER_API_KEY")),
-            )
-        except Exception:
-            logger.exception("Failed to resolve model capabilities for %s", model_id)
-            return None
-
-    @staticmethod
-    def _effective_model(profile: InferenceProfile) -> str:
-        """Resolve the profile model, then the process-wide model setting."""
-        return profile.model or os.getenv("ROOT_AGENT_MODEL") or "default"
-
-    @staticmethod
-    def _model_display_name(model_id: str) -> str:
-        """Return a friendly label while preserving unknown model IDs."""
-        for configured_id, display_name in MODEL_CHOICES.values():
-            if configured_id == model_id:
-                return display_name
-        if model_id == "default":
-            return "System Default"
-        return model_id.rsplit("/", 1)[-1]
-
-    @staticmethod
-    def _effort_value(value: object) -> str | None:
-        """Normalize enum or string effort values for Telegram labels."""
-        raw = getattr(value, "value", value)
-        return raw.strip().lower() if isinstance(raw, str) and raw.strip() else None
-
-    def _reasoning_display(self, profile: InferenceProfile) -> str:
-        """Render the profile's current reasoning setting."""
-        reasoning = profile.reasoning
-        if reasoning is None:
-            return _REASONING_LABELS[_INHERIT_REASONING]
-        value = self._effort_value(reasoning.effort)
-        if value is None:
-            return _REASONING_LABELS[_INHERIT_REASONING]
-        return _REASONING_LABELS.get(value, value.title())
-
-    def _reasoning_options(
-        self, capability: ModelCapabilities | None
-    ) -> list[tuple[str, str]]:
-        """Return default plus only the effort values the model supports."""
-        options: list[tuple[str, str]] = [
-            (_INHERIT_REASONING, _REASONING_LABELS[_INHERIT_REASONING])
-        ]
-        reasoning = getattr(capability, "reasoning", None)
-        if reasoning is None or not reasoning.supports_effort:
-            return options
-
-        supported = reasoning.supported_efforts
-        if supported is None:
-            supported = tuple(_REASONING_LABELS)
-        for effort in supported:
-            value = self._effort_value(effort)
-            if value is None or value == _INHERIT_REASONING:
-                continue
-            if value == "none" and reasoning.mandatory:
-                continue
-            label = _REASONING_LABELS.get(value, value.title())
-            options.append((value, label))
-        return options
-
-    @staticmethod
-    def _reasoning_config(value: str) -> ReasoningConfig | None:
-        """Convert a Telegram value into the typed profile update."""
-        if value == _INHERIT_REASONING:
-            return None
-        try:
-            effort = ReasoningEffort(value)
-        except ValueError:
-            return None
-        return ReasoningConfig(effort=effort)
-
     async def _send_start_message(self, chat_id: int) -> None:
         """Send the start/welcome message."""
-        text = (
-            "👋 Hello! I'm blacki, your AI assistant\\.\n\n"
+        health_commands = ""
+        if self.google_health_service is not None:
+            health_commands = (
+                "\n"
+                "/connect_health - Connect Google Health read-only data\n"
+                "/health_summary - Show the latest health summary\n"
+                "/health_refresh - Refresh health data\n"
+                "/disconnect_health - Disconnect and delete health data"
+            )
+        text = escape_markdown_plain(
+            "👋 Hello! I'm blacki, your AI assistant.\n\n"
             "I run through the same ADK agent as the web interface, so our "
-            "conversation history stays attached to this chat\\.\n\n"
+            "conversation history stays attached to this chat.\n\n"
             "Commands:\n"
-            "/help \\- Show available commands\n"
-            "/reset \\- Start a fresh conversation session\n"
-            "/model \\- Choose the model and thinking settings\n"
-            "/thinking \\- Choose supported reasoning effort"
+            "/help - Show available commands\n"
+            "/reset - Start a fresh conversation session\n"
+            "/model - Choose the model and thinking settings\n"
+            "/thinking - Choose supported reasoning effort"
+            f"{health_commands}"
         )
         try:
             await self.api.send_message(
@@ -1010,6 +1077,14 @@ class TelegramBot:
 
     async def _send_help_message(self, chat_id: int) -> None:
         """Send the help message."""
+        health_commands = ""
+        if self.google_health_service is not None:
+            health_commands = (
+                "• /connect_health \\- Connect Google Health read-only data\n"
+                "• /health_summary \\- Show the latest health summary\n"
+                "• /health_refresh \\- Refresh health data\n"
+                "• /disconnect_health \\- Disconnect and delete health data\n"
+            )
         text = (
             "🤖 *blacki \\- AI Assistant*\n\n"
             "I'm powered by the same Google ADK runtime used by the HTTP app\\.\n\n"
@@ -1018,7 +1093,8 @@ class TelegramBot:
             "• /help \\- Show this help message\n"
             "• /reset \\- Start a fresh conversation session\n"
             "• /model \\- Choose the model and thinking settings\n"
-            "• /thinking \\- Choose supported reasoning effort\n\n"
+            "• /thinking \\- Choose supported reasoning effort\n"
+            f"{health_commands}\n"
             "*Features:*\n"
             "• Conversation history is tied to this chat\n"
             "• Topic threads can keep separate sessions\n"
@@ -1083,6 +1159,7 @@ class TelegramBot:
         mime_type: str | None = None,
         media_kind: str = "document",
         sender_user_id: int | None = None,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Handle incoming file uploads, save to sandbox, and message agent."""
         from blacki.sandbox.manager import get_sandbox_manager
@@ -1104,6 +1181,7 @@ class TelegramBot:
             chat_id=str(chat_id),
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
+            chat_type=chat_type or self._chat_type_context.get(),
             sender_user_id=sender_user_id,
         )
 
@@ -1168,20 +1246,12 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
-                message_text=user_message,
-                state=state,
-                inference_profile=await self._load_chat_profile(chat_id),
-            )
-
-            await self._send_final_response(
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=user_message,
             )
 
         except Exception:
@@ -1193,12 +1263,105 @@ class TelegramBot:
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 
+    async def _run_user_turn_with_retry(
+        self,
+        *,
+        session_identity: TelegramSessionIdentity,
+        message_text: str,
+        state: dict[str, str],
+        inference_profile: InferenceProfile | None,
+        user_parts: Sequence[types.Part] | None = None,
+    ) -> str:
+        """Run a Telegram turn with one safe empty-response retry."""
+        retry_count = 0
+        while True:
+            try:
+                return await self.runtime.run_user_turn(
+                    locator=SessionLocator(
+                        user_id=session_identity.user_id,
+                        session_id_prefix=session_identity.session_id_prefix,
+                    ),
+                    message_text=message_text,
+                    state=state,
+                    user_parts=user_parts,
+                    inference_profile=inference_profile,
+                )
+            except EmptyModelResponseError as error:
+                model = error.model or (
+                    inference_profile.model if inference_profile else None
+                )
+                model = model or "unknown"
+                provider = error.provider or "unknown"
+                invocation_id = error.invocation_id
+                if (
+                    retry_count >= _MAX_EMPTY_RESPONSE_RETRIES
+                    or not error.retryable
+                    or invocation_id is None
+                ):
+                    logger.warning(
+                        "Empty model response recovery stopped: "
+                        "model=%s provider=%s conversation_id=%s "
+                        "invocation_id=%s retry_count=%d retryable=%s",
+                        model,
+                        provider,
+                        session_identity.conversation_key,
+                        invocation_id or "unknown",
+                        retry_count,
+                        error.retryable,
+                    )
+                    raise
+
+                await self.runtime.rewind_empty_model_response(
+                    locator=SessionLocator(
+                        user_id=session_identity.user_id,
+                        session_id_prefix=session_identity.session_id_prefix,
+                    ),
+                    invocation_id=invocation_id,
+                )
+                retry_count += 1
+                logger.warning(
+                    "Empty model response; retrying Telegram turn: "
+                    "model=%s provider=%s conversation_id=%s "
+                    "invocation_id=%s retry_count=%d",
+                    model,
+                    provider,
+                    session_identity.conversation_key,
+                    invocation_id,
+                    retry_count,
+                )
+
+    async def _run_turn_and_send_response(
+        self,
+        *,
+        session_identity: TelegramSessionIdentity,
+        chat_id: int,
+        message_thread_id: int | None,
+        state: dict[str, str],
+        message_text: str,
+        user_parts: Sequence[types.Part] | None = None,
+    ) -> None:
+        """Load the chat profile, run a turn with retry, and send the response."""
+        profile = await self._load_chat_profile(chat_id)
+        final_response = await self._run_user_turn_with_retry(
+            session_identity=session_identity,
+            message_text=message_text,
+            state=state,
+            user_parts=user_parts,
+            inference_profile=profile,
+        )
+        await self._send_final_response(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            response_text=final_response,
+        )
+
     async def _handle_message(
         self,
         chat_id: int,
         message_thread_id: int | None,
         user_message: str,
         sender_user_id: int | None = None,
+        chat_type: ChatType | None = None,
     ) -> None:
         """Handle a regular text message with typing + final response."""
         session_identity = self._build_session_identity(
@@ -1219,25 +1382,30 @@ class TelegramBot:
                 chat_id=str(chat_id),
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
+                chat_type=chat_type or self._chat_type_context.get(),
                 sender_user_id=sender_user_id,
             )
-            profile = await self._load_chat_profile(chat_id)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
-                message_text=user_message,
-                state=state,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=user_message,
             )
 
             logger.info("Sent ADK response to chat %s", chat_id)
+        except EmptyModelResponseError:
+            logger.exception("Empty model response after retry for chat %s", chat_id)
+            text = (
+                "❌ The model returned an empty response\\. "
+                "Please try sending your message again\\."
+            )
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=text,
+                message_thread_id=message_thread_id,
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
         except Exception:
             logger.exception("Error processing message for chat %s", chat_id)
             text = (
@@ -1280,20 +1448,12 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
             )
-            profile = await self._load_chat_profile(chat_id_str)
-            final_response = await self.runtime.run_user_turn(
-                locator=SessionLocator(
-                    user_id=session_identity.user_id,
-                    session_id_prefix=session_identity.session_id_prefix,
-                ),
-                message_text=f"[Scheduled Event] {reminder.message}",
-                state=state,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=f"[Scheduled Event] {reminder.message}",
             )
         except Exception:
             logger.exception(
@@ -1386,6 +1546,7 @@ class TelegramBot:
         chat_id: str,
         message_thread_id: int | None,
         conversation_key: str,
+        chat_type: ChatType | None = None,
         sender_user_id: int | None = None,
     ) -> dict[str, str]:
         """Build explicit session state for ADK callbacks and observability."""
@@ -1396,6 +1557,8 @@ class TelegramBot:
         }
         if message_thread_id is not None:
             session_state["telegram_thread_id"] = str(message_thread_id)
+        if chat_type is not None:
+            session_state["telegram_chat_type"] = chat_type.value
         if sender_user_id is not None:
             session_state["temp:telegram_sender_user_id"] = str(sender_user_id)
         return session_state
@@ -1404,10 +1567,11 @@ class TelegramBot:
 def create_telegram_bot(
     config: TelegramConfig,
     runtime: AdkRuntime,
+    google_health_service: GoogleHealthService | None = None,
 ) -> TelegramBot | None:
     """Create a Telegram bot instance if configured."""
     if not config.is_configured():
         logger.info("Telegram bot not configured, skipping initialization")
         return None
 
-    return TelegramBot(config, runtime)
+    return TelegramBot(config, runtime, google_health_service)
