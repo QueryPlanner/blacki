@@ -5,11 +5,11 @@ import contextlib
 import logging
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from google.genai import types
 
@@ -388,13 +388,25 @@ class TelegramBot:
                 except Exception as exc:
                     logger.debug("Album buffer wait suppressed error: %s", exc)
 
+        await self._run_sequenced_turn(
+            conversation_key, current_seq, self._handle_update(update)
+        )
+
+    async def _run_sequenced_turn(
+        self,
+        conversation_key: str,
+        seq: int,
+        turn: Coroutine[Any, Any, None],
+    ) -> None:
+        """Run a turn, cancelling and waiting out any superseded turn first."""
         existing_task = self._conversation_tasks.get(conversation_key)
         existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
-        if (
+        supersedes_existing = (
             existing_task is not None
             and not existing_task.done()
-            and current_seq >= existing_seq
-        ):
+            and seq >= existing_seq
+        )
+        if supersedes_existing and existing_task is not None:
             logger.info(
                 "Cancelling in-flight turn for conversation %s", conversation_key
             )
@@ -403,18 +415,14 @@ class TelegramBot:
         current_task = asyncio.current_task()
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
-            self._conversation_task_seqs[conversation_key] = current_seq
+            self._conversation_task_seqs[conversation_key] = seq
 
         try:
             # Wait for the superseded task to fully clean up before starting
-            if (
-                existing_task is not None
-                and not existing_task.done()
-                and current_seq >= existing_seq
-            ):
+            if supersedes_existing and existing_task is not None:
                 await asyncio.wait([existing_task])
 
-            await self._handle_update(update)
+            await turn
         except asyncio.CancelledError:
             logger.info("Message turn superseded for conversation %s", conversation_key)
             raise
@@ -506,46 +514,17 @@ class TelegramBot:
 
     async def _process_flushed_album(self, album: _BufferedAlbum) -> None:
         """Enqueue flushed album as a conversation turn, respecting cancellation."""
-        chat_id = album.chat_id
-        message_thread_id = album.message_thread_id
         conversation_key = self._build_conversation_key(
-            chat_id=str(chat_id),
-            message_thread_id=message_thread_id,
+            chat_id=str(album.chat_id),
+            message_thread_id=album.message_thread_id,
         )
-
-        existing_task = self._conversation_tasks.get(conversation_key)
-        existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
-        if (
-            existing_task is not None
-            and not existing_task.done()
-            and album.created_seq >= existing_seq
-        ):
-            logger.info(
-                "Cancelling in-flight turn for conversation %s", conversation_key
-            )
-            existing_task.cancel()
-
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            self._conversation_tasks[conversation_key] = current_task
-            self._conversation_task_seqs[conversation_key] = album.created_seq
-
         try:
-            if (
-                existing_task is not None
-                and not existing_task.done()
-                and album.created_seq >= existing_seq
-            ):
-                await asyncio.wait([existing_task])
-
-            await self._handle_album_turn(album)
-        except asyncio.CancelledError:
-            logger.info("Message turn superseded for conversation %s", conversation_key)
-            raise
+            await self._run_sequenced_turn(
+                conversation_key,
+                album.created_seq,
+                self._handle_album_turn(album),
+            )
         finally:
-            if self._conversation_tasks.get(conversation_key) is current_task:
-                self._conversation_tasks.pop(conversation_key, None)
-                self._conversation_task_seqs.pop(conversation_key, None)
             if album.future is not None and not album.future.done():
                 album.future.set_result(None)
 
@@ -623,18 +602,7 @@ class TelegramBot:
             total_downloaded_bytes = 0
 
             for file_id, _ in photo_items:
-                file_info = await self.api.get_file(file_id)
-                file_path_api = file_info.get("file_path")
-                if not file_path_api:
-                    raise ValueError("Telegram did not return a photo file path")
-
-                image_bytes = await self.api.download_file(file_path_api)
-                if not image_bytes:
-                    raise ValueError("Telegram returned an empty photo")
-                if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
-                    raise ValueError("Telegram photo exceeds the 10 MB limit")
-                if not image_bytes.startswith(_JPEG_MAGIC):
-                    raise ValueError("Telegram photo is not a JPEG image")
+                image_bytes = await self._download_and_validate_photo(file_id)
 
                 total_downloaded_bytes += len(image_bytes)
                 if total_downloaded_bytes > _MAX_ALBUM_BYTES:
@@ -650,18 +618,13 @@ class TelegramBot:
                     types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
                 )
 
-            profile = await self._load_chat_profile(chat_id)
-            final_response = await self._run_user_turn_with_retry(
+            await self._run_turn_and_send_response(
                 session_identity=session_identity,
-                message_text=prompt,
-                state=state,
-                user_parts=parts,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=prompt,
+                user_parts=parts,
             )
         except Exception:
             logger.exception("Failed to handle Telegram photo album")
@@ -775,18 +738,7 @@ class TelegramBot:
                 action="typing",
                 message_thread_id=message_thread_id,
             )
-            file_info = await self.api.get_file(file_id)
-            file_path_api = file_info.get("file_path")
-            if not file_path_api:
-                raise ValueError("Telegram did not return a photo file path")
-
-            image_bytes = await self.api.download_file(file_path_api)
-            if not image_bytes:
-                raise ValueError("Telegram returned an empty photo")
-            if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
-                raise ValueError("Telegram photo exceeds the 10 MB limit")
-            if not image_bytes.startswith(_JPEG_MAGIC):
-                raise ValueError("Telegram photo is not a JPEG image")
+            image_bytes = await self._download_and_validate_photo(file_id)
 
             prompt = (
                 caption.strip()
@@ -797,18 +749,13 @@ class TelegramBot:
                 types.Part.from_text(text=prompt),
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             )
-            profile = await self._load_chat_profile(chat_id)
-            final_response = await self._run_user_turn_with_retry(
+            await self._run_turn_and_send_response(
                 session_identity=session_identity,
-                message_text=prompt,
-                state=state,
-                user_parts=user_parts,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=prompt,
+                user_parts=user_parts,
             )
         except Exception:
             logger.exception("Failed to handle Telegram photo")
@@ -831,6 +778,22 @@ class TelegramBot:
             text=text,
             message_thread_id=message_thread_id,
         )
+
+    async def _download_and_validate_photo(self, file_id: str) -> bytes:
+        """Download a Telegram photo and validate its size and format."""
+        file_info = await self.api.get_file(file_id)
+        file_path_api = file_info.get("file_path")
+        if not file_path_api:
+            raise ValueError("Telegram did not return a photo file path")
+
+        image_bytes = await self.api.download_file(file_path_api)
+        if not image_bytes:
+            raise ValueError("Telegram returned an empty photo")
+        if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
+            raise ValueError("Telegram photo exceeds the 10 MB limit")
+        if not image_bytes.startswith(_JPEG_MAGIC):
+            raise ValueError("Telegram photo is not a JPEG image")
+        return image_bytes
 
     async def _handle_command(self, message: Message, command: str) -> None:
         """Handle a command message."""
@@ -1079,6 +1042,13 @@ class TelegramBot:
         except Exception:
             logger.exception("Failed to send thinking menu")
 
+    @staticmethod
+    def _chunk_buttons(
+        buttons: Sequence[InlineKeyboardButton], per_row: int = 2
+    ) -> list[list[InlineKeyboardButton]]:
+        """Group flat buttons into keyboard rows of a fixed width."""
+        return [list(buttons[i : i + per_row]) for i in range(0, len(buttons), per_row)]
+
     def _build_model_menu(
         self, profile: InferenceProfile
     ) -> tuple[str, InlineKeyboardMarkup]:
@@ -1087,20 +1057,14 @@ class TelegramBot:
         current_display_name = self._model_display_name(effective_model)
         current_thinking = self._reasoning_display(profile)
 
-        buttons: list[list[InlineKeyboardButton]] = []
-        row: list[InlineKeyboardButton] = []
-        for key, (_, display_name) in MODEL_CHOICES.items():
-            row.append(
-                InlineKeyboardButton(
-                    text=display_name,
-                    callback_data=f"{_SETTINGS_MODEL_PREFIX}{key}",
-                )
+        model_buttons = [
+            InlineKeyboardButton(
+                text=display_name,
+                callback_data=f"{_SETTINGS_MODEL_PREFIX}{key}",
             )
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
+            for key, (_, display_name) in MODEL_CHOICES.items()
+        ]
+        buttons = self._chunk_buttons(model_buttons)
 
         buttons.append(
             [
@@ -1135,20 +1099,14 @@ class TelegramBot:
         options = self._reasoning_options(capability)
         current = self._reasoning_display(profile)
 
-        buttons: list[list[InlineKeyboardButton]] = []
-        row: list[InlineKeyboardButton] = []
-        for value, label in options:
-            row.append(
-                InlineKeyboardButton(
-                    text=f"{label}{' ✓' if label == current else ''}",
-                    callback_data=f"{_SETTINGS_REASONING_PREFIX}{value}",
-                )
+        reasoning_buttons = [
+            InlineKeyboardButton(
+                text=f"{label}{' ✓' if label == current else ''}",
+                callback_data=f"{_SETTINGS_REASONING_PREFIX}{value}",
             )
-            if len(row) == 2:
-                buttons.append(row)
-                row = []
-        if row:
-            buttons.append(row)
+            for value, label in options
+        ]
+        buttons = self._chunk_buttons(reasoning_buttons)
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -1607,17 +1565,12 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
             )
 
-            final_response = await self._run_user_turn_with_retry(
+            await self._run_turn_and_send_response(
                 session_identity=session_identity,
-                message_text=user_message,
-                state=state,
-                inference_profile=await self._load_chat_profile(chat_id),
-            )
-
-            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=user_message,
             )
 
         except Exception:
@@ -1696,6 +1649,31 @@ class TelegramBot:
                     retry_count,
                 )
 
+    async def _run_turn_and_send_response(
+        self,
+        *,
+        session_identity: TelegramSessionIdentity,
+        chat_id: int,
+        message_thread_id: int | None,
+        state: dict[str, str],
+        message_text: str,
+        user_parts: Sequence[types.Part] | None = None,
+    ) -> None:
+        """Load the chat profile, run a turn with retry, and send the response."""
+        profile = await self._load_chat_profile(chat_id)
+        final_response = await self._run_user_turn_with_retry(
+            session_identity=session_identity,
+            message_text=message_text,
+            state=state,
+            user_parts=user_parts,
+            inference_profile=profile,
+        )
+        await self._send_final_response(
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+            response_text=final_response,
+        )
+
     async def _handle_message(
         self,
         chat_id: int,
@@ -1724,17 +1702,12 @@ class TelegramBot:
                 conversation_key=session_identity.conversation_key,
                 chat_type=chat_type or self._chat_type_context.get(),
             )
-            profile = await self._load_chat_profile(chat_id)
-            final_response = await self._run_user_turn_with_retry(
+            await self._run_turn_and_send_response(
                 session_identity=session_identity,
-                message_text=user_message,
-                state=state,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=user_message,
             )
 
             logger.info("Sent ADK response to chat %s", chat_id)
@@ -1792,17 +1765,12 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
             )
-            profile = await self._load_chat_profile(chat_id_str)
-            final_response = await self._run_user_turn_with_retry(
+            await self._run_turn_and_send_response(
                 session_identity=session_identity,
-                message_text=f"[Scheduled Event] {reminder.message}",
-                state=state,
-                inference_profile=profile,
-            )
-            await self._send_final_response(
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
-                response_text=final_response,
+                state=state,
+                message_text=f"[Scheduled Event] {reminder.message}",
             )
         except Exception:
             logger.exception(
