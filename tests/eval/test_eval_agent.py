@@ -50,3 +50,17 @@ async def test_eval_container_requires_explicit_sqlite_path(
         assert str(error) == "SQLITE_PATH is required for prompt evaluations"
     else:
         raise AssertionError("missing SQLITE_PATH should fail")
+
+
+@pytest.mark.asyncio
+async def test_eval_container_materializes_sender_as_invocation_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Eval-only sender metadata should mirror Telegram invocation state."""
+    context = MagicMock()
+    context.state = {"telegram_sender_user_id_for_eval": "4242"}
+    monkeypatch.setattr("eval.blacki_eval.agent.get_container", MagicMock())
+
+    await _ensure_eval_container(callback_context=context)
+
+    assert context.state["temp:telegram_sender_user_id"] == "4242"

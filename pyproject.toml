@@ -32,6 +32,7 @@ dependencies = [
     "opensandbox>=0.1.7",
     "mem0ai>=0.1.0,<1.0.0",
     "opensandbox-code-interpreter>=0.1.2",
+    "boto3>=1.40.0,<2.0.0",
 ]
 
 [project.scripts]
@@ -111,7 +112,7 @@ strict_equality = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "opensandbox.*", "mem0", "mem0.*"]
+module = ["apscheduler.*", "opensandbox.*", "mem0", "mem0.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]

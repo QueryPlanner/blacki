@@ -42,6 +42,7 @@ from blacki.telegram.streaming import (
     split_long_message,
 )
 from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
+from blacki.user_files.service import IngestResult, StoredUserFile
 
 
 class RecordingRuntime:
@@ -281,11 +282,13 @@ def test_build_session_state_includes_thread_when_present(
         chat_id="123",
         message_thread_id=99,
         conversation_key="chat-123-thread-99",
+        sender_user_id=456,
     )
 
     assert session_state["user_id"] == "telegram-chat-123-thread-99"
     assert session_state["telegram_chat_id"] == "123"
     assert session_state["telegram_thread_id"] == "99"
+    assert session_state["temp:telegram_sender_user_id"] == "456"
 
 
 def test_create_bot_configured(
@@ -2820,7 +2823,10 @@ class TestTelegramBotEdgeCases:
         await bot._handle_update(update)
 
         bot._handle_message.assert_called_once_with(
-            chat_id=123, message_thread_id=None, user_message="Regular message"
+            chat_id=123,
+            message_thread_id=None,
+            user_message="Regular message",
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3129,8 +3135,13 @@ class TestRouteNonTextMessage:
             chat_id=123,
             message_thread_id=None,
             file_id="doc123",
+            file_unique_id="uniq123",
             file_name="report.pdf",
+            file_size=None,
+            mime_type=None,
+            media_kind="document",
             caption=None,
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3172,8 +3183,10 @@ class TestRouteNonTextMessage:
             chat_id=123,
             message_thread_id=None,
             file_id="large",
+            file_unique_id="u2",
             file_size=2048,
             caption=None,
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3206,8 +3219,13 @@ class TestRouteNonTextMessage:
             chat_id=123,
             message_thread_id=None,
             file_id="aud123",
+            file_unique_id="uniq123",
             file_name="song.mp3",
+            file_size=None,
+            mime_type=None,
+            media_kind="audio",
             caption=None,
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3242,8 +3260,13 @@ class TestRouteNonTextMessage:
             chat_id=123,
             message_thread_id=None,
             file_id="vid123",
+            file_unique_id="uniq123",
             file_name="clip.mp4",
+            file_size=None,
+            mime_type=None,
+            media_kind="video",
             caption=None,
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3275,8 +3298,13 @@ class TestRouteNonTextMessage:
             chat_id=123,
             message_thread_id=None,
             file_id="voi123",
+            file_unique_id="uniq123",
             file_name="voice.ogg",
+            file_size=None,
+            mime_type=None,
+            media_kind="voice",
             caption=None,
+            sender_user_id=None,
         )
 
     @pytest.mark.asyncio
@@ -3332,6 +3360,7 @@ class TestHandlePhotoUpload:
         bot._api = mock_api
 
         with patch("blacki.sandbox.manager.get_sandbox_manager") as get_manager:
+            get_manager.return_value.config.enabled = False
             await bot._handle_photo_upload(
                 chat_id=123,
                 message_thread_id=7,
@@ -3340,7 +3369,7 @@ class TestHandlePhotoUpload:
                 caption=caption,
             )
 
-        get_manager.assert_not_called()
+        get_manager.assert_called_once_with()
         call = runtime_recorder.run_user_turn_calls[0]
         assert call["message_text"] == expected_prompt
         assert isinstance(call["inference_profile"], InferenceProfile)
@@ -3479,7 +3508,6 @@ class TestHandleFileUpload:
             mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
         assert "Sandbox is not enabled" in call_kwargs["text"]
-        assert r"enabled\." in call_kwargs["text"]
 
     @pytest.mark.asyncio
     async def test_upload_success(
@@ -3841,6 +3869,269 @@ class TestTelegramBotScheduledReminders:
         assert len(runtime_recorder.run_user_turn_calls) == 0
         mock_api.send_chat_action.assert_not_called()
         mock_api.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_attachment_ingest_is_completed_when_turn_is_cancelled(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """Cancellation must wait for the durable ingest stage to finish."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def durable_ingest(**_kwargs):
+        started.set()
+        await release.wait()
+        return IngestResult(None, "temporary"), None, None
+
+    bot._store_and_materialize_attachment = durable_ingest  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        bot._shield_attachment_ingest(
+            state={},
+            owner_id="123",
+            display_name="file.pdf",
+            media_kind="document",
+            mime_type="application/pdf",
+            telegram_file_unique_id="unique",
+            data=b"data",
+        )
+    )
+    await started.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_attachment_materialization_uses_opaque_unique_path(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """A durable object gets an owner-safe, collision-resistant sandbox path."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    stored = StoredUserFile(
+        object_id="opaque-id",
+        display_name="report.pdf",
+        media_kind="document",
+        mime_type="application/pdf",
+        size_bytes=4,
+        uploaded_at="now",
+        expires_at="later",
+    )
+    service = MagicMock()
+    service.ingest = AsyncMock(return_value=IngestResult(stored, "stored"))
+    sandbox = MagicMock()
+    sandbox.files.write_file = AsyncMock()
+    manager = MagicMock()
+    manager.config.enabled = True
+    manager.get_or_create_sandbox = AsyncMock(return_value={"sandbox": sandbox})
+    with (
+        patch("blacki.user_files.user_files_enabled", return_value=True),
+        patch("blacki.user_files.get_user_file_service", return_value=service),
+        patch("blacki.sandbox.manager.get_sandbox_manager", return_value=manager),
+    ):
+        ingest, path, error = await bot._store_and_materialize_attachment(
+            state={"user_id": "chat"},
+            owner_id="123",
+            display_name="../report.pdf",
+            media_kind="document",
+            mime_type="application/pdf",
+            telegram_file_unique_id="unique",
+            data=b"data",
+        )
+    assert ingest.status == "stored"
+    assert path == "/workspace/uploads/opaque-id-report.pdf"
+    assert error is None
+    sandbox.files.write_file.assert_awaited_once_with(path, b"data")
+
+
+@pytest.mark.asyncio
+async def test_invalid_r2_configuration_falls_back_to_sandbox(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """Broken optional R2 settings must not prevent temporary processing."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    sandbox = MagicMock()
+    sandbox.files.write_file = AsyncMock()
+    manager = MagicMock()
+    manager.config.enabled = True
+    manager.get_or_create_sandbox = AsyncMock(return_value={"sandbox": sandbox})
+    with (
+        patch("blacki.user_files.user_files_enabled", return_value=True),
+        patch(
+            "blacki.user_files.get_user_file_service",
+            side_effect=ValueError("missing credentials"),
+        ),
+        patch("blacki.sandbox.manager.get_sandbox_manager", return_value=manager),
+    ):
+        ingest, path, error = await bot._store_and_materialize_attachment(
+            state={"user_id": "chat"},
+            owner_id="123",
+            display_name="report.pdf",
+            media_kind="document",
+            mime_type="application/pdf",
+            telegram_file_unique_id="unique",
+            data=b"data",
+        )
+
+    assert ingest.status == "temporary"
+    assert ingest.warning is not None and "misconfigured" in ingest.warning
+    assert path == "/workspace/uploads/report.pdf"
+    assert error is None
+    sandbox.files.write_file.assert_awaited_once_with(path, b"data")
+
+
+@pytest.mark.asyncio
+async def test_photo_saved_without_sandbox_reports_restore_option(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """A native photo remains safely catalogued when sandbox creation fails."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    image = b"\xff\xd8\xffimage"
+    api = create_autospec(TelegramApiClient, instance=True)
+    api.send_chat_action = AsyncMock()
+    api.get_file = AsyncMock(return_value={"file_path": "photo.jpg"})
+    api.download_file = AsyncMock(return_value=image)
+    api.send_message = AsyncMock()
+    bot._api = api
+    stored = StoredUserFile(
+        "id", "photo.jpg", "photo", "image/jpeg", len(image), "now", "later"
+    )
+    bot._shield_attachment_ingest = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            IngestResult(stored, "stored", "catalog warning"),
+            None,
+            "sandbox down",
+        )
+    )
+    await bot._handle_photo_upload(
+        chat_id=1,
+        message_thread_id=None,
+        file_id="photo",
+        file_size=len(image),
+        caption=None,
+        sender_user_id=7,
+    )
+    assert api.send_message.await_count == 2
+    assert (
+        "saved in durable storage"
+        in api.send_message.await_args_list[-1].kwargs["text"]
+    )
+    assert runtime_recorder.run_user_turn_calls == []
+
+
+@pytest.mark.asyncio
+async def test_photo_includes_materialized_sandbox_path_in_turn(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """A photo keeps native image input while advertising its working copy."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    image = b"\xff\xd8\xffimage"
+    api = create_autospec(TelegramApiClient, instance=True)
+    api.send_chat_action = AsyncMock()
+    api.get_file = AsyncMock(return_value={"file_path": "photo.jpg"})
+    api.download_file = AsyncMock(return_value=image)
+    api.send_message = AsyncMock()
+    bot._api = api
+    bot._shield_attachment_ingest = AsyncMock(  # type: ignore[method-assign]
+        return_value=(
+            IngestResult(None, "temporary"),
+            "/workspace/uploads/photo.jpg",
+            None,
+        )
+    )
+    await bot._handle_photo_upload(
+        chat_id=1,
+        message_thread_id=None,
+        file_id="photo",
+        file_size=len(image),
+        caption="Analyze",
+    )
+    assert runtime_recorder.run_user_turn_calls[0]["message_text"] == (
+        "Analyze\nSandbox working copy: /workspace/uploads/photo.jpg"
+    )
+
+
+@pytest.mark.asyncio
+async def test_file_saved_without_sandbox_reports_restore_option(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+) -> None:
+    """A non-photo attachment can be retained even without a sandbox."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    api = create_autospec(TelegramApiClient, instance=True)
+    api.send_chat_action = AsyncMock()
+    api.get_file = AsyncMock(return_value={"file_path": "report.pdf"})
+    api.download_file = AsyncMock(return_value=b"data")
+    api.send_message = AsyncMock()
+    bot._api = api
+    stored = StoredUserFile(
+        "id", "report.pdf", "document", "application/pdf", 4, "now", "later"
+    )
+    bot._shield_attachment_ingest = AsyncMock(  # type: ignore[method-assign]
+        return_value=(IngestResult(stored, "stored", "warning"), None, "down")
+    )
+    with (
+        patch("blacki.user_files.user_files_enabled", return_value=True),
+        patch("blacki.sandbox.manager.get_sandbox_manager"),
+    ):
+        await bot._handle_file_upload(
+            chat_id=1,
+            message_thread_id=None,
+            file_id="file",
+            file_name="report.pdf",
+            caption=None,
+            sender_user_id=7,
+        )
+    assert api.send_message.await_count == 2
+    assert (
+        "saved in durable storage"
+        in api.send_message.await_args_list[-1].kwargs["text"]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("declared_size", "downloaded"),
+    [
+        (20 * 1024 * 1024 + 1, b"unused"),
+        (None, b""),
+        (None, b"x" * (20 * 1024 * 1024 + 1)),
+    ],
+)
+async def test_file_rejects_declared_empty_and_actual_oversize_bytes(
+    telegram_config: TelegramConfig,
+    runtime_recorder: RecordingRuntime,
+    declared_size: int | None,
+    downloaded: bytes,
+) -> None:
+    """Both Telegram metadata and downloaded bytes enforce the inbound limit."""
+    bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+    api = create_autospec(TelegramApiClient, instance=True)
+    api.send_chat_action = AsyncMock()
+    api.get_file = AsyncMock(return_value={"file_path": "file.bin"})
+    api.download_file = AsyncMock(return_value=downloaded)
+    api.send_message = AsyncMock()
+    bot._api = api
+    manager = MagicMock()
+    manager.config.enabled = True
+    with patch("blacki.sandbox.manager.get_sandbox_manager", return_value=manager):
+        await bot._handle_file_upload(
+            chat_id=1,
+            message_thread_id=None,
+            file_id="file",
+            file_name="file.bin",
+            file_size=declared_size,
+            caption=None,
+        )
+    assert "failed to process" in api.send_message.await_args.kwargs["text"]
+    assert runtime_recorder.run_user_turn_calls == []
 
 
 class TestTelegramBotPhotoAlbums:

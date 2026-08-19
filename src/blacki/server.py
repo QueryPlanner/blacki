@@ -233,6 +233,9 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         await _stop_telegram_bot()
 
         if _container is not None:
+            from .user_files import reset_user_file_service
+
+            reset_user_file_service()
             await close_container()
             _container = None
 
