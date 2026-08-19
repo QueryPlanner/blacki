@@ -110,8 +110,23 @@ def test_config_loading_and_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     loaded = load_r2_file_config()
     assert loaded.enabled is True
     assert loaded.normalized_prefix == "blacki/user-files"
+    assert loaded.retention_days is None
+
+    monkeypatch.setenv("R2_FILE_RETENTION_DAYS", "30")
+    assert load_r2_file_config().retention_days == 30
 
     assert R2FileConfig().enabled is False
+    assert (
+        R2FileConfig(
+            enabled=True,
+            endpoint_url="https://ok.example",
+            bucket_name="b",
+            access_key_id="a",
+            secret_access_key="s",
+            owner_hmac_secret="h",
+        ).retention_days
+        is None
+    )
     with pytest.raises(ValueError, match="HTTPS"):
         R2FileConfig(enabled=True, endpoint_url="http://bad", bucket_name="b")
     with pytest.raises(ValueError, match="Missing"):
@@ -165,6 +180,29 @@ async def test_storage_owner_scope_search_expiry_and_delete(
 
 
 @pytest.mark.asyncio
+async def test_storage_null_expiry_never_expires(
+    storage: SqliteUserFileStorage,
+) -> None:
+    """A NULL expires_at means the row is retained until explicitly deleted."""
+    forever = _record(
+        object_id="forever",
+        r2_key="forever-key",
+        owner_id="sender-forever",
+        sha256="a" * 64,
+        expires_at=None,
+    )
+    await storage.add(forever)
+
+    far_future = "9999-01-01T00:00:00+00:00"
+    assert await storage.get_by_hash("sender-forever", "a" * 64, far_future) == forever
+    assert (
+        await storage.get_available("sender-forever", "forever", far_future) == forever
+    )
+    assert len(await storage.list_available("sender-forever", "", 10, far_future)) == 1
+    assert await storage.cleanup_expired(far_future) == 0
+
+
+@pytest.mark.asyncio
 async def test_service_ingest_deduplicate_restore_and_delete(
     storage: SqliteUserFileStorage, config: R2FileConfig
 ) -> None:
@@ -201,6 +239,28 @@ async def test_service_ingest_deduplicate_restore_and_delete(
     assert await service.delete("sender-2", item.object_id) is False
     assert await service.delete("sender-1", item.object_id) is True
     assert objects.objects == {}
+
+
+@pytest.mark.asyncio
+async def test_service_ingest_with_infinite_retention_has_no_expiry(
+    storage: SqliteUserFileStorage, config: R2FileConfig
+) -> None:
+    """The default (unset) retention stores files that never expire."""
+    assert config.retention_days is None
+    service = UserFileService(config, storage, FakeObjectStore())
+
+    result = await service.ingest(
+        owner_id="sender-1",
+        display_name="report.pdf",
+        media_kind="document",
+        mime_type="application/pdf",
+        telegram_file_unique_id="tg-1",
+        data=b"data",
+    )
+
+    assert result.status == "stored"
+    assert result.stored_file is not None
+    assert result.stored_file.expires_at is None
 
 
 @pytest.mark.asyncio

@@ -204,14 +204,17 @@ the Blacki golden path.
 | `R2_SECRET_ACCESS_KEY` | unset | Bucket-scoped S3 secret |
 | `R2_OWNER_HMAC_SECRET` | unset | Secret used to hide Telegram IDs in object keys |
 | `R2_FILE_KEY_PREFIX` | `blacki/user-files` | Private object-key prefix |
-| `R2_FILE_RETENTION_DAYS` | `90` | Application availability window |
+| `R2_FILE_RETENTION_DAYS` | unset (infinite) | Application availability window |
 
-Create a private R2 bucket, grant Blacki only Object Read & Write permission
-for that bucket, and add an R2 lifecycle rule that deletes
-`blacki/user-files/` objects after 90 days. Keep the lifecycle setting aligned
-with `R2_FILE_RETENTION_DAYS`. Files are catalogued in the persistent SQLite
-volume; include that database in backups. R2 credentials remain in the Blacki
-host and are never copied into a sandbox.
+Create a private R2 bucket and grant Blacki only Object Read & Write
+permission for that bucket. Files are retained until the bucket is deleted
+unless `R2_FILE_RETENTION_DAYS` is set. If you do set it, also add a matching
+R2 lifecycle rule that deletes `blacki/user-files/` objects after the same
+number of days — the application only removes its own SQLite catalog rows
+once they expire; it never issues a delete against R2 for passive expiry
+(explicit user deletion still removes both). Files are catalogued in the
+persistent SQLite volume; include that database in backups. R2 credentials
+remain in the Blacki host and are never copied into a sandbox.
 
 If R2 is unavailable, Telegram processing can continue with an explicit
 temporary-storage warning. If the sandbox is unavailable, a successfully

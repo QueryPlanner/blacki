@@ -25,7 +25,7 @@ class R2FileConfig:
     secret_access_key: str = ""
     owner_hmac_secret: str = ""
     key_prefix: str = "blacki/user-files"
-    retention_days: int = 90
+    retention_days: int | None = None
 
     def __post_init__(self) -> None:
         if not self.enabled:
@@ -49,7 +49,7 @@ class R2FileConfig:
         missing = [name for name, value in required.items() if not value.strip()]
         if missing:
             raise ValueError(f"Missing R2 file configuration: {', '.join(missing)}")
-        if not 1 <= self.retention_days <= 3650:
+        if self.retention_days is not None and not 1 <= self.retention_days <= 3650:
             raise ValueError("R2_FILE_RETENTION_DAYS must be between 1 and 3650")
         if not self.key_prefix.strip("/"):
             raise ValueError("R2_FILE_KEY_PREFIX cannot be empty")
@@ -62,6 +62,7 @@ class R2FileConfig:
 
 def load_r2_file_config() -> R2FileConfig:
     """Load R2 attachment configuration from environment variables."""
+    raw_retention_days = os.getenv("R2_FILE_RETENTION_DAYS", "").strip()
     return R2FileConfig(
         enabled=user_files_enabled(),
         endpoint_url=os.getenv("R2_ENDPOINT_URL", "").strip(),
@@ -70,5 +71,5 @@ def load_r2_file_config() -> R2FileConfig:
         secret_access_key=os.getenv("R2_SECRET_ACCESS_KEY", "").strip(),
         owner_hmac_secret=os.getenv("R2_OWNER_HMAC_SECRET", "").strip(),
         key_prefix=os.getenv("R2_FILE_KEY_PREFIX", "blacki/user-files").strip(),
-        retention_days=int(os.getenv("R2_FILE_RETENTION_DAYS", "90").strip()),
+        retention_days=int(raw_retention_days) if raw_retention_days else None,
     )

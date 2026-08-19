@@ -33,7 +33,7 @@ class StoredUserFile:
     mime_type: str | None
     size_bytes: int
     uploaded_at: str
-    expires_at: str
+    expires_at: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +202,11 @@ class UserFileService:
             hashlib.sha256,
         ).hexdigest()
         key = f"{self.config.normalized_prefix}/{owner_hash}/{object_id}"
-        expires_at = now + timedelta(days=self.config.retention_days)
+        expires_at = (
+            now + timedelta(days=self.config.retention_days)
+            if self.config.retention_days is not None
+            else None
+        )
         try:
             object_store = self.object_store
             if object_store is None:  # pragma: no cover - guarded by ingest()
@@ -228,7 +232,7 @@ class UserFileService:
             telegram_file_unique_id=telegram_file_unique_id,
             uploaded_at=now_iso,
             last_seen_at=now_iso,
-            expires_at=expires_at.isoformat(),
+            expires_at=expires_at.isoformat() if expires_at is not None else None,
         )
         try:
             await self.storage.add(record)

@@ -28,7 +28,7 @@ class UserFileRecord:
     telegram_file_unique_id: str | None
     uploaded_at: str
     last_seen_at: str
-    expires_at: str
+    expires_at: str | None
     status: str = "available"
 
 
@@ -52,7 +52,7 @@ class SqliteUserFileStorage(SqlStorage):
                 telegram_file_unique_id TEXT,
                 uploaded_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
-                expires_at TEXT NOT NULL,
+                expires_at TEXT,
                 status TEXT NOT NULL DEFAULT 'available',
                 UNIQUE (owner_id, sha256)
             )
@@ -70,7 +70,7 @@ class SqliteUserFileStorage(SqlStorage):
             """
             SELECT * FROM user_files
             WHERE owner_id = ? AND sha256 = ? AND status = 'available'
-              AND expires_at > ?
+              AND (expires_at IS NULL OR expires_at > ?)
             """,
             (owner_id, sha256, now_iso),
         )
@@ -84,7 +84,7 @@ class SqliteUserFileStorage(SqlStorage):
             """
             SELECT * FROM user_files
             WHERE owner_id = ? AND object_id = ? AND status = 'available'
-              AND expires_at > ?
+              AND (expires_at IS NULL OR expires_at > ?)
             """,
             (owner_id, object_id, now_iso),
         )
@@ -140,7 +140,8 @@ class SqliteUserFileStorage(SqlStorage):
             rows = await self._fetch_all(
                 """
                 SELECT * FROM user_files
-                WHERE owner_id = ? AND status = 'available' AND expires_at > ?
+                WHERE owner_id = ? AND status = 'available'
+                  AND (expires_at IS NULL OR expires_at > ?)
                   AND instr(lower(display_name), ?) > 0
                 ORDER BY uploaded_at DESC LIMIT ?
                 """,
@@ -150,7 +151,8 @@ class SqliteUserFileStorage(SqlStorage):
             rows = await self._fetch_all(
                 """
                 SELECT * FROM user_files
-                WHERE owner_id = ? AND status = 'available' AND expires_at > ?
+                WHERE owner_id = ? AND status = 'available'
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY uploaded_at DESC LIMIT ?
                 """,
                 (owner_id, now_iso, limit),
@@ -167,10 +169,15 @@ class SqliteUserFileStorage(SqlStorage):
             return cursor.rowcount > 0
 
     async def cleanup_expired(self, now_iso: str) -> int:
-        """Remove metadata whose application-level retention has elapsed."""
+        """Remove metadata whose application-level retention has elapsed.
+
+        Rows with a NULL expires_at never expire.
+        """
         async with self._lock:
             cursor = await self._conn.execute(
-                "DELETE FROM user_files WHERE expires_at <= ?", (now_iso,)
+                "DELETE FROM user_files "
+                "WHERE expires_at IS NOT NULL AND expires_at <= ?",
+                (now_iso,),
             )
             return cursor.rowcount
 
