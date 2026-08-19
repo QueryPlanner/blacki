@@ -303,7 +303,13 @@ class TelegramBot:
                     if current_task is not None and current_task.cancelling() > 0:
                         raise
                 except Exception as exc:
-                    logger.debug("Album buffer wait suppressed error: %s", exc)
+                    # A failed album turn already reports its own user-facing
+                    # error via _send_photo_error inside _handle_album_turn.
+                    # This wait only unblocks processing of the next message
+                    # in this conversation, so it must not raise on the
+                    # album's behalf, but it is logged at warning level (not
+                    # debug) so an unexpected failure here stays visible.
+                    logger.warning("Album buffer wait suppressed error: %s", exc)
 
         await self._run_sequenced_turn(
             conversation_key, current_seq, self._handle_update(update)
@@ -371,7 +377,20 @@ class TelegramBot:
                 album.future.set_result(None)
 
     async def _handle_album_turn(self, album: _BufferedAlbum) -> None:
-        """Download album images and run a single ADK turn."""
+        """Download album images and run a single ADK turn.
+
+        Resolves ``album.future`` before returning on every exit path, so
+        this method is safe to call directly and does not rely on a caller
+        (``_process_flushed_album``) to resolve the future on its behalf.
+        """
+        try:
+            await self._run_album_turn(album)
+        finally:
+            if album.future is not None and not album.future.done():
+                album.future.set_result(None)
+
+    async def _run_album_turn(self, album: _BufferedAlbum) -> None:
+        """Validate, download, and process a flushed album's photos."""
         chat_id = album.chat_id
         message_thread_id = album.message_thread_id
         messages = album.messages

@@ -100,6 +100,46 @@ async def test_buffer_album_message_branches(buffer: AlbumBuffer) -> None:
 
 
 @pytest.mark.asyncio
+async def test_add_message_cleans_up_on_watchdog_schedule_failure(
+    buffer: AlbumBuffer,
+) -> None:
+    """If scheduling the max-wait watchdog raises, the album must not be
+    left orphaned in self._buffers with no timer to ever flush it
+    (Github issue #163, item 2)."""
+    msg = Message.model_validate(
+        {
+            "message_id": 1,
+            "date": "2024-01-01T00:00:00Z",
+            "chat": {"id": 123, "type": "private"},
+            "media_group_id": "schedule-fail",
+            "photo": [
+                {
+                    "file_id": "p1",
+                    "file_unique_id": "u1",
+                    "width": 10,
+                    "height": 10,
+                }
+            ],
+        }
+    )
+
+    def _fail_to_schedule(coro):
+        coro.close()  # avoid a "coroutine was never awaited" warning
+        raise RuntimeError("event loop is shutting down")
+
+    with (
+        patch(
+            "blacki.telegram.album_buffer.asyncio.create_task",
+            side_effect=_fail_to_schedule,
+        ),
+        pytest.raises(RuntimeError, match="event loop is shutting down"),
+    ):
+        await buffer.add_message(msg, 1)
+
+    assert (123, None, "schedule-fail") not in buffer._buffers
+
+
+@pytest.mark.asyncio
 async def test_album_max_wait_triggers_flush(buffer: AlbumBuffer) -> None:
     """Test _max_wait completing its sleep and triggering flush."""
     album = _BufferedAlbum(
@@ -142,3 +182,26 @@ async def test_flush_album_branches(buffer: AlbumBuffer) -> None:
     )
     buffer._flush(album_none_handles)
     assert album_none_handles.processed is True
+
+
+def test_flush_is_idempotent_against_debounce_max_wait_race(
+    buffer: AlbumBuffer, on_flush: MagicMock
+) -> None:
+    """Both the debounce callback and the max-wait task call _flush on the
+    same album; this pins _flush's check-then-set as a single synchronous
+    call with no ``await`` in between, so calling it twice back-to-back
+    (as if both timers fired in the same event-loop iteration) must flush
+    exactly once (Github issue #163, item 4)."""
+    album = _BufferedAlbum(
+        chat_id=123,
+        message_thread_id=None,
+        media_group_id="race",
+        chat_type=ChatType.PRIVATE,
+        messages=[],
+    )
+    buffer._buffers[(123, None, "race")] = album
+
+    buffer._on_debounce_expired(album)
+    buffer._flush(album)
+
+    assert on_flush.call_count == 1
