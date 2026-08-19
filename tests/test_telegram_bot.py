@@ -22,11 +22,11 @@ from blacki.adk_runtime import (
 from blacki.inference import InferenceProfile
 from blacki.reminders.storage import Reminder
 from blacki.telegram import TelegramConfig
+from blacki.telegram.album_buffer import _BufferedAlbum
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
 from blacki.telegram.bot import (
     TelegramBot,
     TelegramSessionIdentity,
-    _BufferedAlbum,
     create_telegram_bot,
 )
 from blacki.telegram.formatting import (
@@ -3936,13 +3936,13 @@ class TestTelegramBotPhotoAlbums:
         # Let the tasks register into album buffers
         await asyncio.sleep(0.05)
 
-        assert (100, None, "group-A") in bot._album_buffers
-        assert (100, 5, "group-A") in bot._album_buffers
-        assert (200, None, "group-A") in bot._album_buffers
+        assert (100, None, "group-A") in bot._album_buffer._buffers
+        assert (100, 5, "group-A") in bot._album_buffer._buffers
+        assert (200, None, "group-A") in bot._album_buffer._buffers
 
         # Flush all albums
-        for album in list(bot._album_buffers.values()):
-            bot._flush_album(album)
+        for album in list(bot._album_buffer._buffers.values()):
+            bot._album_buffer._flush(album)
 
         await asyncio.gather(task1, task2, task3)
 
@@ -4040,7 +4040,7 @@ class TestTelegramBotPhotoAlbums:
 
         await asyncio.sleep(0.05)
         # Verify 3 messages buffered
-        album = bot._album_buffers.get((123, None, "album-1"))
+        album = bot._album_buffer._buffers.get((123, None, "album-1"))
         assert album is not None
         assert len(album.messages) == 3
 
@@ -4183,11 +4183,11 @@ class TestTelegramBotPhotoAlbums:
         )
         await asyncio.sleep(0.05)
 
-        album = bot._album_buffers.get((123, None, "album-timeout"))
+        album = bot._album_buffer._buffers.get((123, None, "album-timeout"))
         assert album is not None
 
         # Simulate max wait triggering directly
-        bot._flush_album(album)
+        bot._album_buffer._flush(album)
         await task
 
         assert len(runtime_recorder.run_user_turn_calls) == 1
@@ -4236,9 +4236,9 @@ class TestTelegramBotPhotoAlbums:
         ]
 
         await asyncio.sleep(0.05)
-        album = bot._album_buffers.get((123, None, "album-too-many"))
+        album = bot._album_buffer._buffers.get((123, None, "album-too-many"))
         assert album is not None
-        bot._flush_album(album)
+        bot._album_buffer._flush(album)
         await asyncio.gather(*tasks)
 
         assert len(runtime_recorder.run_user_turn_calls) == 0
@@ -4290,9 +4290,9 @@ class TestTelegramBotPhotoAlbums:
         ]
 
         await asyncio.sleep(0.05)
-        album = bot._album_buffers.get((123, None, "album-heavy"))
+        album = bot._album_buffer._buffers.get((123, None, "album-heavy"))
         assert album is not None
-        bot._flush_album(album)
+        bot._album_buffer._flush(album)
         await asyncio.gather(*tasks)
 
         assert len(runtime_recorder.run_user_turn_calls) == 0
@@ -4350,9 +4350,9 @@ class TestTelegramBotPhotoAlbums:
         ]
 
         await asyncio.sleep(0.05)
-        album = bot._album_buffers.get((123, None, "album-download-overflow"))
+        album = bot._album_buffer._buffers.get((123, None, "album-download-overflow"))
         assert album is not None
-        bot._flush_album(album)
+        bot._album_buffer._flush(album)
         await asyncio.gather(*tasks)
 
         assert len(runtime_recorder.run_user_turn_calls) == 0
@@ -4477,7 +4477,7 @@ class TestTelegramBotPhotoAlbums:
 
         assert private_caption not in caplog.text
         assert "secret-image-content" not in caplog.text
-        assert len(bot._album_buffers) == 0
+        assert len(bot._album_buffer._buffers) == 0
 
     @pytest.mark.asyncio
     async def test_bot_stop_cleans_all_album_buffers(
@@ -4515,9 +4515,9 @@ class TestTelegramBotPhotoAlbums:
         )
         await asyncio.sleep(0.05)
 
-        assert len(bot._album_buffers) == 1
+        assert len(bot._album_buffer._buffers) == 1
         await bot.stop()
-        assert len(bot._album_buffers) == 0
+        assert len(bot._album_buffer._buffers) == 0
 
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -4760,7 +4760,7 @@ class TestTelegramBotPhotoAlbums:
         )
         # Yield briefly so album message is registered into buffer but not yet flushed
         await asyncio.sleep(0.05)
-        assert (123, None, "album-p1") in bot._album_buffers
+        assert (123, None, "album-p1") in bot._album_buffer._buffers
 
         # Send text message during debounce window
         text_task = asyncio.create_task(
@@ -4783,144 +4783,6 @@ class TestTelegramBotPhotoAlbums:
             runtime_recorder.run_user_turn_calls[1]["message_text"]
             == "Text during debounce"
         )
-
-    @pytest.mark.asyncio
-    async def test_cleanup_album_buffer_branches(
-        self,
-        telegram_config: TelegramConfig,
-        runtime_recorder: RecordingRuntime,
-    ) -> None:
-        """Test _cleanup_album_buffer when handles are None or future is done/None."""
-        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        loop = asyncio.get_running_loop()
-        done_future: asyncio.Future[None] = loop.create_future()
-        done_future.set_result(None)
-
-        album1 = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="clean-1",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-            debounce_handle=None,
-            max_wait_task=None,
-            future=done_future,
-        )
-        bot._album_buffers[(123, None, "clean-1")] = album1
-        bot._cleanup_album_buffer(album1)
-        assert (123, None, "clean-1") not in bot._album_buffers
-
-        album2 = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="clean-2",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-            debounce_handle=None,
-            max_wait_task=None,
-            future=None,
-        )
-        bot._album_buffers[(123, None, "clean-2")] = album2
-        bot._cleanup_album_buffer(album2)
-        assert (123, None, "clean-2") not in bot._album_buffers
-
-    @pytest.mark.asyncio
-    async def test_buffer_album_message_branches(
-        self,
-        telegram_config: TelegramConfig,
-        runtime_recorder: RecordingRuntime,
-    ) -> None:
-        """Test _buffer_album_message when debounce_handle or future is None."""
-        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        msg = Message.model_validate(
-            {
-                "message_id": 1,
-                "date": "2024-01-01T00:00:00Z",
-                "chat": {"id": 123, "type": "private"},
-                "media_group_id": "branch-buf",
-                "photo": [
-                    {
-                        "file_id": "p1",
-                        "file_unique_id": "u1",
-                        "width": 10,
-                        "height": 10,
-                    }
-                ],
-            }
-        )
-
-        album = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="branch-buf",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-            debounce_handle=None,
-            future=None,
-        )
-        bot._album_buffers[(123, None, "branch-buf")] = album
-
-        await bot._buffer_album_message(msg)
-        assert len(album.messages) == 1
-        assert album.debounce_handle is not None
-        album.debounce_handle.cancel()
-
-    @pytest.mark.asyncio
-    async def test_album_max_wait_triggers_flush(
-        self,
-        telegram_config: TelegramConfig,
-        runtime_recorder: RecordingRuntime,
-    ) -> None:
-        """Test _album_max_wait completing its sleep and triggering flush."""
-        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        mock_api = create_autospec(TelegramApiClient, instance=True)
-        mock_api.send_message = AsyncMock()
-        bot._api = mock_api
-
-        album = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="max-wait-flush",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-        )
-        bot._album_buffers[(123, None, "max-wait-flush")] = album
-
-        with patch("blacki.telegram.bot._ALBUM_MAX_WAIT_SECONDS", 0.01):
-            await bot._album_max_wait(album)
-
-        assert album.processed is True
-        assert (123, None, "max-wait-flush") not in bot._album_buffers
-
-    @pytest.mark.asyncio
-    async def test_flush_album_branches(
-        self,
-        telegram_config: TelegramConfig,
-        runtime_recorder: RecordingRuntime,
-    ) -> None:
-        """Test _flush_album with already processed album and None handles."""
-        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        album_processed = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="flushed-already",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-            processed=True,
-        )
-        bot._flush_album(album_processed)
-
-        album_none_handles = _BufferedAlbum(
-            chat_id=123,
-            message_thread_id=None,
-            media_group_id="none-handles",
-            chat_type=ChatType.PRIVATE,
-            messages=[],
-            debounce_handle=None,
-            max_wait_task=None,
-        )
-        bot._flush_album(album_none_handles)
-        assert album_none_handles.processed is True
 
     @pytest.mark.asyncio
     async def test_process_flushed_album_cancels_older_task(
@@ -5077,7 +4939,7 @@ class TestTelegramBotPhotoAlbums:
             messages=[],
             future=None,
         )
-        bot._album_buffers[(123, None, "no-fut")] = album_no_future
+        bot._album_buffer._buffers[(123, None, "no-fut")] = album_no_future
 
         text_msg = Message.model_validate(
             {
@@ -5104,7 +4966,7 @@ class TestTelegramBotPhotoAlbums:
             messages=[],
             future=err_future,
         )
-        bot._album_buffers[(123, None, "err-fut")] = album_err_future
+        bot._album_buffer._buffers[(123, None, "err-fut")] = album_err_future
 
         await bot._safe_handle_update(
             Update.model_validate({"update_id": 2, "message": text_msg.model_dump()})
@@ -5121,7 +4983,7 @@ class TestTelegramBotPhotoAlbums:
             messages=[],
             future=cancel_future,
         )
-        bot._album_buffers[(123, None, "cancel-fut")] = album_cancelling
+        bot._album_buffer._buffers[(123, None, "cancel-fut")] = album_cancelling
 
         task = asyncio.create_task(
             bot._safe_handle_update(
@@ -5134,7 +4996,7 @@ class TestTelegramBotPhotoAlbums:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        bot._album_buffers.pop((123, None, "cancel-fut"), None)
+        bot._album_buffer._buffers.pop((123, None, "cancel-fut"), None)
 
         # Case 4: active album future cancelled while current_task is NOT cancelling
         cancelled_fut: asyncio.Future[None] = loop.create_future()
@@ -5147,7 +5009,9 @@ class TestTelegramBotPhotoAlbums:
             messages=[],
             future=cancelled_fut,
         )
-        bot._album_buffers[(123, None, "pre-cancelled-fut")] = album_pre_cancelled
+        bot._album_buffer._buffers[(123, None, "pre-cancelled-fut")] = (
+            album_pre_cancelled
+        )
 
         await bot._safe_handle_update(
             Update.model_validate({"update_id": 4, "message": text_msg.model_dump()})

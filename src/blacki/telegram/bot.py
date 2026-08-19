@@ -29,6 +29,7 @@ from blacki.reminders.storage import Reminder
 from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig
+from .album_buffer import AlbumBuffer, _BufferedAlbum
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import escape_markdown_plain, format_for_telegram
 from .settings_menu import SettingsMenu
@@ -56,24 +57,6 @@ _JPEG_MAGIC = b"\xff\xd8\xff"
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
 _MAX_ALBUM_PHOTOS = 10
 _MAX_ALBUM_BYTES = 20 * 1024 * 1024
-_ALBUM_DEBOUNCE_SECONDS = 0.5
-_ALBUM_MAX_WAIT_SECONDS = 2.0
-
-
-@dataclass(slots=True)
-class _BufferedAlbum:
-    """In-memory buffer for a Telegram media group (photo album)."""
-
-    chat_id: int
-    message_thread_id: int | None
-    media_group_id: str
-    chat_type: ChatType | None
-    messages: list[Message]
-    debounce_handle: asyncio.TimerHandle | None = None
-    max_wait_task: asyncio.Task[None] | None = None
-    future: asyncio.Future[None] | None = None
-    processed: bool = False
-    created_seq: int = 0
 
 
 def _format_health_sync_result(result: SyncResult) -> str:
@@ -121,7 +104,7 @@ class TelegramBot:
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_task_seqs: dict[str, int] = {}
-        self._album_buffers: dict[tuple[int, int | None, str], _BufferedAlbum] = {}
+        self._album_buffer = AlbumBuffer(on_flush=self._on_album_flushed)
         self._update_counter: int = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
@@ -166,8 +149,7 @@ class TelegramBot:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._polling_task
 
-        for album in list(self._album_buffers.values()):
-            self._cleanup_album_buffer(album)
+        await self._album_buffer.shutdown()
 
         for task in list(self._background_tasks):
             task.cancel()
@@ -283,32 +265,6 @@ class TelegramBot:
                     return
                 await asyncio.sleep(min(5 * consecutive_errors, 60))
 
-    def _cleanup_album_buffer(self, album: _BufferedAlbum) -> None:
-        """Cancel and remove timers and tasks for a buffered album."""
-        key = (album.chat_id, album.message_thread_id, album.media_group_id)
-        self._album_buffers.pop(key, None)
-
-        if album.debounce_handle is not None:
-            album.debounce_handle.cancel()
-            album.debounce_handle = None
-
-        if album.max_wait_task is not None:
-            album.max_wait_task.cancel()
-            album.max_wait_task = None
-
-        if album.future is not None and not album.future.done():
-            album.future.cancel()
-
-    def _get_active_album_buffers(
-        self, chat_id: int, message_thread_id: int | None
-    ) -> list[_BufferedAlbum]:
-        """Return active album buffers for the given conversation."""
-        return [
-            album
-            for (cid, tid, _), album in self._album_buffers.items()
-            if cid == chat_id and tid == message_thread_id and not album.processed
-        ]
-
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
         if update.callback_query:
@@ -324,7 +280,8 @@ class TelegramBot:
 
         # Check if this update is part of a photo album
         if update.message.photo and update.message.media_group_id is not None:
-            await self._buffer_album_message(update.message)
+            self._update_counter += 1
+            await self._album_buffer.add_message(update.message, self._update_counter)
             return
 
         chat_id = update.message.chat.id
@@ -337,7 +294,7 @@ class TelegramBot:
         self._update_counter += 1
         current_seq = self._update_counter
 
-        for active_album in self._get_active_album_buffers(chat_id, message_thread_id):
+        for active_album in self._album_buffer.get_active(chat_id, message_thread_id):
             if active_album.future is not None:
                 try:
                     await asyncio.shield(active_album.future)
@@ -391,83 +348,8 @@ class TelegramBot:
                 self._conversation_tasks.pop(conversation_key, None)
                 self._conversation_task_seqs.pop(conversation_key, None)
 
-    async def _buffer_album_message(self, message: Message) -> None:
-        """Buffer an incoming album message with debounce and max-wait."""
-        chat_id = message.chat.id
-        message_thread_id = message.message_thread_id
-        media_group_id = cast(str, message.media_group_id)
-        key = (chat_id, message_thread_id, media_group_id)
-
-        self._update_counter += 1
-        current_seq = self._update_counter
-
-        album = self._album_buffers.get(key)
-        if album is None:
-            loop = asyncio.get_running_loop()
-            future: asyncio.Future[None] = loop.create_future()
-            album = _BufferedAlbum(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                media_group_id=media_group_id,
-                chat_type=message.chat.type,
-                messages=[message],
-                future=future,
-                created_seq=current_seq,
-            )
-            self._album_buffers[key] = album
-
-            # Schedule max wait timer
-            max_wait_task = asyncio.create_task(self._album_max_wait(album))
-            self._background_tasks.add(max_wait_task)
-            max_wait_task.add_done_callback(self._background_tasks.discard)
-            album.max_wait_task = max_wait_task
-        else:
-            album.messages.append(message)
-            if album.debounce_handle is not None:
-                album.debounce_handle.cancel()
-
-        # Set or reset debounce timer
-        loop = asyncio.get_running_loop()
-        album.debounce_handle = loop.call_later(
-            _ALBUM_DEBOUNCE_SECONDS,
-            self._on_album_debounce_expired,
-            album,
-        )
-
-        try:
-            if album.future is not None:
-                await asyncio.shield(album.future)
-        except asyncio.CancelledError:
-            raise
-
-    async def _album_max_wait(self, album: _BufferedAlbum) -> None:
-        """Flush album buffer after maximum wait timeout."""
-        try:
-            await asyncio.sleep(_ALBUM_MAX_WAIT_SECONDS)
-            self._flush_album(album)
-        except asyncio.CancelledError:
-            pass
-
-    def _on_album_debounce_expired(self, album: _BufferedAlbum) -> None:
-        """Handle debounce timer expiration by flushing the album."""
-        self._flush_album(album)
-
-    def _flush_album(self, album: _BufferedAlbum) -> None:
-        """Flush buffered album messages into a conversation turn."""
-        if album.processed:
-            return
-        album.processed = True
-
-        key = (album.chat_id, album.message_thread_id, album.media_group_id)
-        self._album_buffers.pop(key, None)
-
-        if album.debounce_handle is not None:
-            album.debounce_handle.cancel()
-            album.debounce_handle = None
-        if album.max_wait_task is not None:
-            album.max_wait_task.cancel()
-            album.max_wait_task = None
-
+    def _on_album_flushed(self, album: _BufferedAlbum) -> None:
+        """Schedule processing of a completed album as a background task."""
         task = asyncio.create_task(self._process_flushed_album(album))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
