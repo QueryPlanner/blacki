@@ -4708,6 +4708,46 @@ class TestTelegramBotPhotoAlbums:
         assert "failed to process" in mock_api.send_message.await_args.kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_album_turn_resolves_future_on_validation_early_return(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """_handle_album_turn resolves album.future itself on every early
+        return, even when called directly rather than through
+        _process_flushed_album (Github issue #163, item 1)."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        album = _BufferedAlbum(
+            chat_id=123,
+            message_thread_id=None,
+            media_group_id="empty-photos-future",
+            chat_type=ChatType.PRIVATE,
+            messages=[
+                Message.model_validate(
+                    {
+                        "message_id": 1,
+                        "date": "2024-01-01T00:00:00Z",
+                        "chat": {"id": 123, "type": "private"},
+                        "media_group_id": "empty-photos-future",
+                        "photo": [],
+                    }
+                )
+            ],
+            future=future,
+        )
+
+        await bot._handle_album_turn(album)
+
+        assert future.done()
+        assert future.result() is None
+
+    @pytest.mark.asyncio
     async def test_album_followed_by_text_during_debounce_preserves_order(
         self,
         telegram_config: TelegramConfig,
@@ -4922,6 +4962,7 @@ class TestTelegramBotPhotoAlbums:
         self,
         telegram_config: TelegramConfig,
         runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test _safe_handle_update active album buffer with None future or error."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
@@ -4968,10 +5009,17 @@ class TestTelegramBotPhotoAlbums:
         )
         bot._album_buffer._buffers[(123, None, "err-fut")] = album_err_future
 
-        await bot._safe_handle_update(
-            Update.model_validate({"update_id": 2, "message": text_msg.model_dump()})
-        )
+        with caplog.at_level(logging.WARNING, logger="blacki.telegram.bot"):
+            await bot._safe_handle_update(
+                Update.model_validate(
+                    {"update_id": 2, "message": text_msg.model_dump()}
+                )
+            )
         assert len(runtime_recorder.run_user_turn_calls) == 2
+        assert any(
+            "Album buffer wait suppressed error" in record.message
+            for record in caplog.records
+        )
 
         # Case 3: active album future cancelled while current_task is cancelling
         cancel_future: asyncio.Future[None] = loop.create_future()

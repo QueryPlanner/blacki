@@ -84,7 +84,13 @@ class AlbumBuffer:
             )
             self._buffers[key] = album
 
-            max_wait_task = asyncio.create_task(self._max_wait(album))
+            try:
+                max_wait_task = asyncio.create_task(self._max_wait(album))
+            except Exception:
+                # Scheduling failed before any timer exists to flush this
+                # album later, so don't leave it orphaned in self._buffers.
+                self._buffers.pop(key, None)
+                raise
             self._background_tasks.add(max_wait_task)
             max_wait_task.add_done_callback(self._background_tasks.discard)
             album.max_wait_task = max_wait_task
@@ -119,7 +125,17 @@ class AlbumBuffer:
         self._flush(album)
 
     def _flush(self, album: _BufferedAlbum) -> None:
-        """Mark an album processed, remove it from the buffer, and flush it."""
+        """Mark an album processed, remove it from the buffer, and flush it.
+
+        Both the debounce callback and the max-wait task call this method,
+        so the check-then-set on ``album.processed`` below is the only guard
+        against double-flushing. It is race-free only because this method
+        is synchronous with no ``await`` before ``album.processed = True``:
+        the event loop cannot interleave the check and the set. Do not add
+        an ``await`` before that line, or make this method ``async``,
+        without replacing the guard with something that is still atomic
+        against both callers.
+        """
         if album.processed:
             return
         album.processed = True
