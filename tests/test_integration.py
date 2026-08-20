@@ -11,7 +11,13 @@ Future: Container-based smoke tests for CI/CD will be added here.
 from collections.abc import Sequence
 from typing import Any, Protocol, cast
 
+from google.adk.apps.app import EventsCompactionConfig
+
 from blacki import app
+from blacki.agent import (
+    AUTO_COMPACTION_EVENT_RETENTION_SIZE,
+    AUTO_COMPACTION_TOKEN_THRESHOLD,
+)
 
 
 class AgentConfigLike(Protocol):
@@ -42,6 +48,16 @@ class TestAppIntegration:
     def test_app_has_root_agent(self) -> None:
         """Verify app is wired to root agent."""
         assert app.root_agent is not None
+
+    def test_app_uses_token_based_context_compaction(self) -> None:
+        """Keep long conversations bounded without replacing their sessions."""
+        config = app.events_compaction_config
+
+        assert isinstance(config, EventsCompactionConfig)
+        assert config.token_threshold == AUTO_COMPACTION_TOKEN_THRESHOLD
+        assert config.event_retention_size == AUTO_COMPACTION_EVENT_RETENTION_SIZE
+        assert config.overlap_size == 0
+        assert config.compaction_interval > config.token_threshold
 
     def test_app_plugins_are_valid_if_configured(self) -> None:
         """Verify plugins (if any) are properly initialized."""
