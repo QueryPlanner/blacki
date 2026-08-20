@@ -35,6 +35,13 @@ the ADK application plugins.
    tool is enabled and selected, it synthesizes a bounded MP3 in memory and
    sends it directly to the same chat or topic through Telegram `sendAudio`.
 
+Long conversations use Google ADK's native token-based event compaction. After
+the latest prompt reaches 200,000 tokens, ADK summarizes older conversation
+events after the successful turn and retains the latest eight raw events for
+immediate context. This is prompt compaction, not a hard session reset: the
+same versioned Telegram session continues, the compaction event is persisted,
+and `/reset` remains available when a completely new conversation is desired.
+
 For a private chat with the optional Google Health connector, `/connect_health`
 creates a short-lived one-time OAuth state and sends a Google authorization URL.
 The HTTPS callback consumes the state, exchanges the code, resolves Google's

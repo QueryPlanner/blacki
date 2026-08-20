@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from dotenv import load_dotenv
 from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.apps import App
+from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 
@@ -52,6 +53,12 @@ logger = logging.getLogger(__name__)
 logging_callbacks = LoggingCallbacks()
 TASK_WORKER_NAME = "task_worker"
 TASK_WORKER_ENABLED_VALUES = frozenset({"1", "true", "yes"})
+AUTO_COMPACTION_TOKEN_THRESHOLD = 200_000
+AUTO_COMPACTION_EVENT_RETENTION_SIZE = 8
+# ADK 2.5.0 requires the sliding-window fields even for token-only
+# configuration. Keep the interval above any realistic session length so the
+# token threshold remains the only practical compaction trigger.
+_AUTO_COMPACTION_INTERVAL_SENTINEL = 1_000_000_000
 
 
 class TelegramModelOverridePlugin(BasePlugin):
@@ -294,7 +301,12 @@ def create_app(agent: LlmAgent | None = None) -> App:
         name="blacki",
         root_agent=agent,
         plugins=plugins,
-        events_compaction_config=None,
+        events_compaction_config=EventsCompactionConfig(
+            compaction_interval=_AUTO_COMPACTION_INTERVAL_SENTINEL,
+            overlap_size=0,
+            token_threshold=AUTO_COMPACTION_TOKEN_THRESHOLD,
+            event_retention_size=AUTO_COMPACTION_EVENT_RETENTION_SIZE,
+        ),
         context_cache_config=None,
         resumability_config=None,
     )
