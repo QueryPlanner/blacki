@@ -340,13 +340,20 @@ class TelegramBot:
 
     async def _authorize_update(self, update: Update) -> bool:
         """Allow only authenticated private Telegram traffic into the bot."""
-        if not self.config.access_control_enabled:
-            return True
-
         message = update.message
         callback = update.callback_query
         if message is None and callback is not None:
             message = callback.message
+
+        sender = (
+            callback.from_user
+            if callback is not None
+            else (message.from_user if message is not None else None)
+        )
+        if not self.config.access_control_enabled:
+            await self._record_identity_if_private(message, sender)
+            return True
+
         if message is None or message.chat.type != ChatType.PRIVATE:
             if callback is not None:
                 await self.api.answer_callback_query(
@@ -354,7 +361,6 @@ class TelegramBot:
                 )
             return False
 
-        sender = callback.from_user if callback is not None else message.from_user
         if sender is None or sender.id != message.chat.id:
             return False
 
@@ -379,6 +385,29 @@ class TelegramBot:
         except Exception:
             logger.exception("Telegram access control failed closed")
             return False
+
+    async def _record_identity_if_private(
+        self,
+        message: Message | None,
+        sender: User | None,
+    ) -> None:
+        """Persist a direct-chat sender label when local storage is available."""
+        if (
+            message is None
+            or message.chat.type != ChatType.PRIVATE
+            or sender is None
+            or sender.id != message.chat.id
+        ):
+            return
+
+        try:
+            await self._get_access_storage().record_identity(
+                self._identity_from_user(sender)
+            )
+        except RuntimeError:
+            logger.debug("Telegram identity storage is unavailable; skipping label")
+        except Exception:
+            logger.exception("Telegram identity recording failed; continuing update")
 
     async def _grant_legacy_access_if_applicable(
         self,
