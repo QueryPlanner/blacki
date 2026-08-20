@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import logging
 import re
 from collections.abc import Coroutine, Sequence
@@ -28,6 +30,7 @@ from blacki.reminders.storage import Reminder
 from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig
+from .access import TelegramAccessStorage, TelegramIdentity, get_telegram_access_storage
 from .album_buffer import AlbumBuffer, _BufferedAlbum
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import escape_markdown_plain, format_for_telegram
@@ -42,6 +45,7 @@ from .types import (
     Message,
     ParseMode,
     Update,
+    User,
 )
 
 if TYPE_CHECKING:
@@ -97,11 +101,13 @@ class TelegramBot:
         config: TelegramConfig,
         runtime: AdkRuntime,
         google_health_service: GoogleHealthService | None = None,
+        access_storage: TelegramAccessStorage | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
         self.runtime = runtime
         self.google_health_service = google_health_service
+        self.access_storage = access_storage
         self._api: TelegramApiClient | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
@@ -270,6 +276,9 @@ class TelegramBot:
 
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
+        if not await self._authorize_update(update):
+            return
+
         if update.callback_query:
             # Handle callback queries immediately without cancelling conversation tasks
             try:
@@ -316,6 +325,137 @@ class TelegramBot:
 
         await self._run_sequenced_turn(
             conversation_key, current_seq, self._handle_update(update)
+        )
+
+    def _access_code_fingerprint(self) -> str:
+        """Return a non-plaintext marker used to invalidate rotated access codes."""
+        access_code = self.config.telegram_access_code
+        if access_code is None:  # pragma: no cover - guarded by caller
+            raise RuntimeError("Telegram access code is not configured")
+        return hashlib.sha256(access_code.encode("utf-8")).hexdigest()
+
+    def _get_access_storage(self) -> TelegramAccessStorage:
+        """Get the injected or process-wide access storage."""
+        return self.access_storage or get_telegram_access_storage()
+
+    async def _authorize_update(self, update: Update) -> bool:
+        """Allow only authenticated private Telegram traffic into the bot."""
+        if not self.config.access_control_enabled:
+            return True
+
+        message = update.message
+        callback = update.callback_query
+        if message is None and callback is not None:
+            message = callback.message
+        if message is None or message.chat.type != ChatType.PRIVATE:
+            if callback is not None:
+                await self.api.answer_callback_query(
+                    callback.id, text="Access required"
+                )
+            return False
+
+        sender = callback.from_user if callback is not None else message.from_user
+        if sender is None or sender.id != message.chat.id:
+            return False
+
+        storage = self._get_access_storage()
+        fingerprint = self._access_code_fingerprint()
+        try:
+            authorized = await storage.is_authorized(sender.id, fingerprint)
+            has_authorization_record = await storage.has_authorization_record(sender.id)
+            if not authorized and not has_authorization_record:
+                authorized = await self._grant_legacy_access_if_applicable(
+                    message, sender, storage
+                )
+            if authorized:
+                await storage.record_identity(self._identity_from_user(sender))
+                return True
+            if callback is not None:
+                await self.api.answer_callback_query(
+                    callback.id, text="Access required"
+                )
+                return False
+            return await self._handle_new_user_start(message, sender, storage)
+        except Exception:
+            logger.exception("Telegram access control failed closed")
+            return False
+
+    async def _grant_legacy_access_if_applicable(
+        self,
+        message: Message,
+        sender: User,
+        storage: TelegramAccessStorage,
+    ) -> bool:
+        """Grandfather a historical direct chat without changing its session key."""
+        session_identity = self._build_session_identity(
+            chat_id=str(message.chat.id),
+            message_thread_id=None,
+        )
+        has_history = await self.runtime.has_existing_session(
+            locator=SessionLocator(
+                user_id=session_identity.user_id,
+                session_id_prefix=session_identity.session_id_prefix,
+            )
+        )
+        if not has_history:
+            return False
+        await storage.grant(sender.id, source="legacy")
+        return True
+
+    async def _handle_new_user_start(
+        self,
+        message: Message,
+        sender: User,
+        storage: TelegramAccessStorage,
+    ) -> bool:
+        """Authenticate a new private user through the locally consumed /start code."""
+        command, separator, supplied_code = (message.text or "").partition(" ")
+        if command != "/start" or not separator:
+            await self.api.send_message(
+                chat_id=message.chat.id,
+                text="Access required. Send /start followed by your access code.",
+            )
+            return False
+
+        configured_code = self.config.telegram_access_code
+        if configured_code is None:  # pragma: no cover - guarded by caller
+            return False
+        is_valid = hmac.compare_digest(supplied_code.strip(), configured_code)
+        await self._delete_access_code_message(message)
+        if not is_valid:
+            await self.api.send_message(
+                chat_id=message.chat.id,
+                text="That access code is not valid. Please try again.",
+            )
+            return False
+
+        await storage.grant(
+            sender.id,
+            source="passphrase",
+            access_code_fingerprint=self._access_code_fingerprint(),
+        )
+        await storage.record_identity(self._identity_from_user(sender))
+        await self._send_start_message(message.chat.id)
+        return False
+
+    async def _delete_access_code_message(self, message: Message) -> None:
+        """Best-effort removal of an access code from the visible private chat."""
+        try:
+            await self.api.delete_message(message.chat.id, message.message_id)
+        except TelegramApiError:
+            logger.warning("Could not delete Telegram access-code message")
+
+    def _identity_from_user(self, user: User) -> TelegramIdentity:
+        """Build a bounded local-only display label from Telegram profile fields."""
+        display_name = " ".join(
+            part.strip()
+            for part in (user.first_name, user.last_name or "")
+            if part.strip()
+        )[:128]
+        return TelegramIdentity(
+            user_id=user.id,
+            display_name=display_name or "Telegram user",
+            username=user.username.strip()[:64] if user.username else None,
         )
 
     async def _run_sequenced_turn(

@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
     from blacki.health.storage import SqliteGoogleHealthStorage
     from blacki.reminders.storage import SqliteReminderStorage
+    from blacki.telegram.access import TelegramAccessStorage
     from blacki.user_files.storage import SqliteUserFileStorage
     from blacki.utils.preferences import SqlitePreferencesStorage
     from blacki.workouts.storage import SqliteWorkoutStorage
@@ -146,6 +147,9 @@ class AppContainer:
     _user_file_storage: SqliteUserFileStorage | None = field(
         default=None, init=False, repr=False
     )
+    _telegram_access_storage: TelegramAccessStorage | None = field(
+        default=None, init=False, repr=False
+    )
 
     @classmethod
     async def create(cls, sqlite_path: str | Path) -> Self:
@@ -198,6 +202,10 @@ class AppContainer:
             await self._user_file_storage.close()
             self._user_file_storage = None
 
+        if self._telegram_access_storage is not None:
+            await self._telegram_access_storage.close()
+            self._telegram_access_storage = None
+
     async def initialize_all_storages(self) -> None:
         """Initialize all storage instances.
 
@@ -211,6 +219,7 @@ class AppContainer:
         await self.declarative_db_storage.initialize()
         await self.google_health_storage.initialize()
         await self.user_file_storage.initialize()
+        await self.telegram_access_storage.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -283,3 +292,12 @@ class AppContainer:
 
             self._user_file_storage = SqliteUserFileStorage(self.conn, self._lock)
         return self._user_file_storage
+
+    @property
+    def telegram_access_storage(self) -> TelegramAccessStorage:
+        """Get or create local Telegram access and identity storage."""
+        if self._telegram_access_storage is None:
+            from blacki.telegram.access import TelegramAccessStorage
+
+            self._telegram_access_storage = TelegramAccessStorage(self.conn, self._lock)
+        return self._telegram_access_storage

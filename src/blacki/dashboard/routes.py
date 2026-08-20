@@ -217,6 +217,15 @@ def _session_db_path(env: ServerEnv) -> Path:
     return Path(env.agent_dir) / ".adk" / "sessions.db"
 
 
+def _tools_db_path(env: ServerEnv) -> Path:
+    """Return the local SQLite database containing dashboard identity labels."""
+    return (
+        Path(env.sqlite_path)
+        if env.sqlite_path
+        else Path(env.agent_dir) / ".adk" / "tools.db"
+    )
+
+
 def create_dashboard_router(
     env: ServerEnv,
     store: DashboardStoreProtocol | None = None,
@@ -235,6 +244,7 @@ def create_dashboard_router(
                 _session_db_path(env),
                 get_log_dir(),
                 "blacki",
+                _tools_db_path(env),
             )
         except Exception:
             logger.exception("Dashboard store initialization failed")

@@ -167,6 +167,12 @@ class ServerEnv(BaseModel):
         description="Telegram bot token from @BotFather",
     )
 
+    telegram_access_code: str | None = Field(
+        default=None,
+        alias="TELEGRAM_ACCESS_CODE",
+        description="Shared access code required for new private Telegram users",
+    )
+
     model_config = ConfigDict(
         populate_by_name=True,  # Allow both field names and aliases
         extra="ignore",  # Ignore extra env vars (system vars, etc.)
@@ -190,6 +196,8 @@ class ServerEnv(BaseModel):
         print(f"TELEGRAM_ENABLED:      {self.telegram_enabled}")
         masked_token = "********" if self.telegram_bot_token else "[not set]"
         print(f"TELEGRAM_BOT_TOKEN:    {masked_token}")
+        masked_access_code = "********" if self.telegram_access_code else "[not set]"
+        print(f"TELEGRAM_ACCESS_CODE:  {masked_access_code}")
         print()
 
     @property

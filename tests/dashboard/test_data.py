@@ -25,6 +25,7 @@ from blacki.dashboard.data import (
     _iter_raw_jsonl_lines,
     _JsonlScan,
     _load_snapshot_sync,
+    _load_telegram_identities_sync,
     _log_item,
     _normalize_epoch_seconds,
     _number,
@@ -113,6 +114,28 @@ def _insert_event(
             timestamp,
             json.dumps(data),
         ),
+    )
+    connection.commit()
+    connection.close()
+
+
+def _make_identity_db(path: Path) -> None:
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """
+        CREATE TABLE telegram_identities (
+            telegram_user_id INTEGER PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            username TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO telegram_identities VALUES (?, ?, ?, ?)
+        """,
+        (42, "Ada Lovelace", "ada", "2026-08-20T00:00:00+00:00"),
     )
     connection.commit()
     connection.close()
@@ -235,6 +258,7 @@ async def test_sessions_users_replay_versions_and_overview(tmp_path: Path) -> No
         "human",
         "model",
     ]
+
     assert replay["messages"][0]["text"] == "<script>alert(1)</script>"
     assert [
         message["mime_type"]
@@ -256,6 +280,34 @@ async def test_sessions_users_replay_versions_and_overview(tmp_path: Path) -> No
     assert overview["stats"]["messages"] == 3
     assert overview["stats"]["tokens"] == 11
     assert overview["activity"]
+
+
+@pytest.mark.asyncio
+async def test_dashboard_labels_private_telegram_users_from_local_identity_db(
+    tmp_path: Path,
+) -> None:
+    session_db = tmp_path / "sessions.db"
+    identity_db = tmp_path / "tools.db"
+    _make_db(session_db)
+    _insert_session(session_db, "telegram-chat-42", "telegram-chat-42-v1")
+    _make_identity_db(identity_db)
+
+    users = await DashboardStore(
+        session_db, tmp_path, identity_db_path=identity_db
+    ).list_users("ada", 50, 0)
+
+    assert users["total"] == 1
+    assert users["items"][0]["display_name"] == "Ada Lovelace"
+    assert users["items"][0]["username"] == "ada"
+
+
+def test_telegram_identity_reader_tolerates_missing_and_invalid_databases(
+    tmp_path: Path,
+) -> None:
+    assert _load_telegram_identities_sync(tmp_path / "missing.db") == {}
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_text("not a sqlite database", encoding="utf-8")
+    assert _load_telegram_identities_sync(corrupt) == {}
 
 
 @pytest.mark.asyncio

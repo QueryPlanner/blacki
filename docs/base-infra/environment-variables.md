@@ -93,10 +93,15 @@ its presence changes model routing.
 | --- | --- | --- |
 | `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
 | `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
+| `TELEGRAM_ACCESS_CODE` | unset | Shared code required for new private Telegram chats |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
 | `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
 
-The token is required and format-validated when Telegram is enabled.
+The token is required and format-validated when Telegram is enabled. When
+`TELEGRAM_ACCESS_CODE` is set, new users enter it with `/start <access-code>`;
+historical private chats with existing Blacki sessions remain authorized, while
+groups and topics are rejected. Rotating the code requires code-authorized
+users to authenticate again without deleting their stored Blacki data.
 
 `KOKORO_TTS_BASE_URL` is an optional HTTP or HTTPS base URL without a path to
 `/v1/audio/speech`; Blacki appends that fixed endpoint. The URL must be

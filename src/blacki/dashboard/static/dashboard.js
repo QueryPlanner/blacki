@@ -294,11 +294,16 @@
     target.replaceChildren();
     state.users.forEach((item) => {
       const userId = String(first(item, ["user_id", "userId", "chat_id", "chatId", "id"], "—"));
+      const displayName = first(item, ["display_name", "displayName"]);
+      const username = first(item, ["username"]);
       const button = el("button", "btn btn-ghost h-auto min-h-0 w-full justify-between gap-3 rounded-xl px-3 py-3 text-left normal-case hover:bg-base-200");
       button.type = "button";
       button.setAttribute("aria-label", `Inspect user ${userId}`);
       const copy = el("span", "min-w-0");
-      copy.append(el("span", "block break-all font-mono text-xs font-semibold", userId));
+      copy.append(el("span", "block break-all font-mono text-xs font-semibold", displayName || userId));
+      if (displayName) {
+        copy.append(el("span", "mt-1 block break-all font-mono text-xs text-base-content/55", username ? `${userId} · @${username}` : userId));
+      }
       const lastSeen = first(item, ["last_seen", "lastSeen", "updated_at", "updatedAt", "latest_update_at"]);
       copy.append(el("span", "mt-1 block text-xs text-base-content/55", lastSeen === undefined ? "Stored user ID" : `Seen ${formatDate(lastSeen)}`));
       const count = first(item, ["sessions", "session_count", "message_count", "messages"]);

@@ -22,10 +22,21 @@ In `.env`:
 ```dotenv
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=replace-me
+# Optional: restrict new private chats with one shared access code.
+# TELEGRAM_ACCESS_CODE=replace-with-a-dedicated-high-entropy-code
 ```
 
 Replace `replace-me` with the token from BotFather. Blacki validates that the
 token is present and follows Telegram's `number:string` format at startup.
+
+When `TELEGRAM_ACCESS_CODE` is set, new users must send `/start <access-code>`
+in a private chat before Blacki processes their messages. The bot consumes this
+command locally and attempts to delete it, but Telegram may retain it in
+server-side history or backups, so use a dedicated code rather than a password
+you use elsewhere. Historical private chats with persisted Blacki sessions are
+grandfathered; group chats and forum topics are rejected. Changing the access
+code requires passphrase-authorized users to authenticate again but does not
+delete any chat history, preferences, reminders, files, or health data.
 
 At least one model provider must also be configured. See
 [Configuration](base-infra/environment-variables.md).
