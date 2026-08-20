@@ -107,6 +107,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           ROOT_AGENT_MODEL: ${{ secrets.ROOT_AGENT_MODEL }}
           TELEGRAM_ENABLED: ${{ secrets.TELEGRAM_ENABLED }}
+          TELEGRAM_ACCESS_CODE: ${{ secrets.TELEGRAM_ACCESS_CODE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_TOOL_NOTIFICATIONS: ${{ secrets.TELEGRAM_TOOL_NOTIFICATIONS }}
           KOKORO_TTS_BASE_URL: ${{ secrets.KOKORO_TTS_BASE_URL }}
@@ -185,6 +186,7 @@ jobs:
             OPENROUTER_API_KEY \
             ROOT_AGENT_MODEL \
             TELEGRAM_ENABLED \
+            TELEGRAM_ACCESS_CODE \
             TELEGRAM_BOT_TOKEN \
             TELEGRAM_TOOL_NOTIFICATIONS \
             KOKORO_TTS_BASE_URL \
