@@ -140,12 +140,17 @@ def _callback_update(*, message: dict[str, object] | None) -> Update:
     )
 
 
-def _bot(storage: TelegramAccessStorage, *, has_history: bool) -> TelegramBot:
+def _bot(
+    storage: TelegramAccessStorage,
+    *,
+    has_history: bool,
+    access_code: str | None = "test-access-code",
+) -> TelegramBot:
     config = TelegramConfig.model_validate(
         {
             "TELEGRAM_ENABLED": True,
             "TELEGRAM_BOT_TOKEN": "test-token-123",
-            "TELEGRAM_ACCESS_CODE": "test-access-code",
+            "TELEGRAM_ACCESS_CODE": access_code,
         }
     )
     bot = TelegramBot(config, _Runtime(has_history), access_storage=storage)  # type: ignore[arg-type]
@@ -179,6 +184,52 @@ async def test_historical_private_chat_is_grandfathered(
 
     assert allowed is True
     assert await storage.is_authorized(42, "rotated-code") is True
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_access_control_still_records_identity(
+    storage: TelegramAccessStorage,
+) -> None:
+    """Legacy open mode must still populate dashboard identity labels."""
+    bot = _bot(storage, has_history=False, access_code=None)
+
+    assert await bot._authorize_update(_update("normal message")) is True
+
+    row = await storage._fetch_one(
+        """
+        SELECT display_name, username
+        FROM telegram_identities
+        WHERE telegram_user_id = ?
+        """,
+        (42,),
+    )
+    assert row == {"display_name": "Ada", "username": "ada"}
+
+
+@pytest.mark.asyncio
+async def test_open_mode_continues_when_identity_storage_is_unavailable(
+    storage: TelegramAccessStorage,
+) -> None:
+    """An unavailable optional label store must not block open-mode traffic."""
+    bot = _bot(storage, has_history=False, access_code=None)
+    bot.access_storage = None
+
+    with patch(
+        "blacki.telegram.bot.get_telegram_access_storage",
+        side_effect=RuntimeError("storage is not initialized"),
+    ):
+        assert await bot._authorize_update(_update("normal message")) is True
+
+
+@pytest.mark.asyncio
+async def test_open_mode_continues_when_identity_write_fails(
+    storage: TelegramAccessStorage,
+) -> None:
+    """A local identity write failure must not block the Telegram update."""
+    await storage._conn.close()
+    bot = _bot(storage, has_history=False, access_code=None)
+
+    assert await bot._authorize_update(_update("normal message")) is True
 
 
 @pytest.mark.asyncio
