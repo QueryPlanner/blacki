@@ -52,6 +52,7 @@ surface on every host interface.
 | `ALLOW_ORIGINS` | local origins JSON | JSON array of CORS origins |
 | `AGENT_ENGINE` | unset | Optional Agent Engine identifier |
 | `SQLITE_PATH` | `{AGENT_DIR}/.adk/tools.db` | SQLite file for application tools |
+| `BLACKI_COST_LEDGER_PATH` | `{AGENT_DIR}/.adk/costs.db` | Content-free model usage and cost ledger |
 
 For `ALLOW_ORIGINS`, use a JSON array string:
 

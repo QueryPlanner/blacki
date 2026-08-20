@@ -176,6 +176,9 @@ def _build_model() -> str | LiteLlm:
             litellm_kwargs: dict[str, Any] = {}
             if model_name.lower().startswith("openrouter/") and openrouter_api_key:
                 litellm_kwargs["api_key"] = openrouter_api_key
+            from .llm_costs import CostAwareLiteLLMClient
+
+            litellm_kwargs["llm_client"] = CostAwareLiteLLMClient()
 
             logger.info("Using LiteLlm for model: %s", model_name)
             return LiteLlm(model=model_name, **litellm_kwargs)

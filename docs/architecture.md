@@ -16,7 +16,9 @@ python -m blacki.server
 Telegram long polling, and exposes `/live`, `/ready`, and `/health`.
 It also mounts the package-backed private observability dashboard at
 `/dashboard` with APIs for aggregate statistics, users, sessions, local logs,
-and local traces.
+and local traces. LiteLLM-backed requests additionally write content-free
+usage and cost records to the local SQLite ledger so the dashboard can show
+per-user and per-session spend without parsing prompts or responses.
 
 `src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or a
 LiteLLM/OpenRouter model from the environment, registers tools, and assembles

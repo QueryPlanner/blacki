@@ -22,6 +22,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..usage_ledger import (
+    LedgerSummary,
+    UsageLedgerSnapshot,
+    fixed_cost_to_usd,
+    read_usage_ledger,
+)
 from .models import (
     DEGRADED_DATABASE_WARNING,
     MAX_ACCEPTED_JSONL_RECORDS,
@@ -93,8 +99,12 @@ _TRACE_NUMERIC_ATTRIBUTE_KEYS = frozenset(
         "llm.token_count.total",
         "llm.token_count.prompt",
         "llm.token_count.completion",
+        "gen_ai.usage.cost",
+        "gen_ai.usage.cost_estimate",
+        "gen_ai.cost.upstream_inference_cost",
     }
 )
+COST_METADATA_KEY = "blacki.cost"
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,6 +745,215 @@ def _event_usage(event: _EventRow) -> tuple[int, int, int]:
     return input_tokens, output_tokens, total_tokens
 
 
+def _money_value(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return round(number, 9)
+
+
+def _event_cost(event: _EventRow) -> dict[str, Any] | None:
+    metadata = event.data.get("custom_metadata") or event.data.get("customMetadata")
+    if isinstance(metadata, str):
+        metadata, malformed = _parse_json_object(metadata)
+        if malformed:
+            return None
+    if not isinstance(metadata, Mapping):
+        return None
+    raw_cost = metadata.get(COST_METADATA_KEY) or metadata.get("blacki_cost")
+    if raw_cost is None and any(
+        key in metadata
+        for key in (
+            "cost_usd",
+            "upstream_cost_usd",
+            "estimated_cost_usd",
+            "cost_kind",
+        )
+    ):
+        raw_cost = metadata
+    if isinstance(raw_cost, str):
+        raw_cost, malformed = _parse_json_object(raw_cost)
+        if malformed:
+            return None
+    if not isinstance(raw_cost, Mapping):
+        return None
+    cost = _money_value(raw_cost.get("cost_usd", raw_cost.get("cost")))
+    upstream = _money_value(
+        raw_cost.get(
+            "upstream_cost_usd",
+            raw_cost.get("upstream_inference_cost"),
+        )
+    )
+    estimated = _money_value(
+        raw_cost.get("estimated_cost_usd", raw_cost.get("estimate"))
+    )
+    if cost is None and upstream is None and estimated is None:
+        cost_kind = str(raw_cost.get("cost_kind", "unknown"))
+        if cost_kind != "unknown":
+            return None
+    return {
+        "cost_usd": cost,
+        "upstream_cost_usd": upstream,
+        "estimated_cost_usd": estimated,
+        "cost_kind": str(raw_cost.get("cost_kind", "reported")),
+        "cost_source": str(raw_cost.get("cost_source", "event_metadata")),
+    }
+
+
+def _event_cost_summary(
+    events: Iterable[_EventRow],
+    *,
+    since: float | None = None,
+    until: float | None = None,
+) -> dict[str, Any]:
+    if until is None:
+        until = datetime.now(tz=UTC).timestamp()
+    selected = [event for event in events if _in_window(event.timestamp, since, until)]
+    records = 0
+    reported_records = 0
+    estimated_records = 0
+    input_tokens = output_tokens = total_tokens = 0
+    costs: list[float] = []
+    upstream_costs: list[float] = []
+    estimates: list[float] = []
+    for event in selected:
+        input_count, output_count, total_count = _event_usage(event)
+        if input_count or output_count or total_count:
+            input_tokens += input_count
+            output_tokens += output_count
+            total_tokens += total_count
+        cost = _event_cost(event)
+        if cost is None:
+            continue
+        records += 1
+        if cost["cost_usd"] is not None:
+            reported_records += 1
+            costs.append(cost["cost_usd"])
+        if cost["estimated_cost_usd"] is not None:
+            estimated_records += 1
+            estimates.append(cost["estimated_cost_usd"])
+        if cost["upstream_cost_usd"] is not None:
+            upstream_costs.append(cost["upstream_cost_usd"])
+    usage_records = sum(1 for event in selected if any(_event_usage(event)))
+    return {
+        "records": records,
+        "reported_records": reported_records,
+        "estimated_records": estimated_records,
+        "usage_records": usage_records,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": round(sum(costs), 9) if costs else None,
+        "upstream_cost_usd": (
+            round(sum(upstream_costs), 9) if upstream_costs else None
+        ),
+        "estimated_cost_usd": round(sum(estimates), 9) if estimates else None,
+    }
+
+
+def _ledger_cost_summary(summary: LedgerSummary) -> dict[str, Any]:
+    return {
+        "records": summary.records,
+        "reported_records": summary.reported_records,
+        "estimated_records": summary.estimated_records,
+        "usage_records": summary.records,
+        "input_tokens": summary.input_tokens,
+        "output_tokens": summary.output_tokens,
+        "total_tokens": summary.total_tokens,
+        "cost_usd": fixed_cost_to_usd(summary.cost_nano_usd),
+        "upstream_cost_usd": fixed_cost_to_usd(summary.upstream_cost_nano_usd),
+        "estimated_cost_usd": fixed_cost_to_usd(summary.estimated_cost_nano_usd),
+    }
+
+
+def _cost_coverage(summary: Mapping[str, Any]) -> float | None:
+    denominator = max(
+        int(summary.get("records", 0)),
+        int(summary.get("usage_records", 0)),
+    )
+    if denominator <= 0:
+        return None
+    return round(int(summary.get("reported_records", 0)) / denominator, 4)
+
+
+def _cost_fields(
+    cumulative: Mapping[str, Any],
+    monthly: Mapping[str, Any],
+) -> JsonObject:
+    cost = cumulative.get("cost_usd")
+    estimated = cumulative.get("estimated_cost_usd")
+    if cost is not None:
+        source = "reported"
+    elif estimated is not None:
+        source = "estimated"
+    elif cumulative.get("upstream_cost_usd") is not None:
+        source = "upstream_only"
+    elif cumulative.get("usage_records", 0):
+        source = "unavailable"
+    else:
+        source = "none"
+    return {
+        "cost_usd": cost,
+        "cumulative_cost_usd": cost,
+        "monthly_cost_usd": monthly.get("cost_usd"),
+        "provider_cost_usd": cumulative.get("upstream_cost_usd"),
+        "monthly_provider_cost_usd": monthly.get("upstream_cost_usd"),
+        "estimated_cost_usd": estimated,
+        "monthly_estimated_cost_usd": monthly.get("estimated_cost_usd"),
+        "cost_records": cumulative.get("reported_records", 0),
+        "usage_records": cumulative.get("usage_records", 0),
+        "cost_coverage": _cost_coverage(cumulative),
+        "cost_source": source,
+    }
+
+
+def _average_monthly_cost(groups: Mapping[str, Mapping[str, Any]]) -> float | None:
+    values = [
+        float(summary["cost_usd"])
+        if summary.get("cost_usd") is not None
+        else float(summary["estimated_cost_usd"])
+        for summary in groups.values()
+        if summary.get("cost_usd") is not None
+        or summary.get("estimated_cost_usd") is not None
+    ]
+    return round(sum(values) / len(values), 9) if values else None
+
+
+def _month_start_timestamp(now: float) -> float:
+    current = datetime.fromtimestamp(now, tz=UTC)
+    return datetime(current.year, current.month, 1, tzinfo=UTC).timestamp()
+
+
+def _group_event_costs(
+    events: Iterable[_EventRow],
+    *,
+    group_key: str,
+    month_start: float,
+    now: float,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    grouped: dict[str, list[_EventRow]] = defaultdict(list)
+    for event in events:
+        key = (
+            event.user_id
+            if group_key == "user_id"
+            else f"{event.user_id}\x00{event.session_id}"
+        )
+        grouped[key].append(event)
+    cumulative = {
+        key: _event_cost_summary(items, until=now) for key, items in grouped.items()
+    }
+    monthly = {
+        key: _event_cost_summary(items, since=month_start, until=now)
+        for key, items in grouped.items()
+    }
+    return cumulative, monthly
+
+
 def _event_is_error(event: _EventRow) -> bool:
     if event.data.get("error_code") or event.data.get("errorCode"):
         return True
@@ -835,10 +1054,20 @@ def _session_item(
     *,
     is_current: bool,
     retained_session_ids: list[str],
+    cost_fields: Mapping[str, Any] | None = None,
 ) -> JsonObject:
     event_list = list(events)
     _, version = _session_version(session.session_id)
     stats = _event_stats(event_list)
+    if cost_fields is None:
+        now = datetime.now(tz=UTC).timestamp()
+        cumulative_cost = _event_cost_summary(event_list, until=now)
+        monthly_cost = _event_cost_summary(
+            event_list,
+            since=_month_start_timestamp(now),
+            until=now,
+        )
+        cost_fields = _cost_fields(cumulative_cost, monthly_cost)
     reset_generation = max(0, version - 1) if version is not None else None
     return {
         "id": session.session_id,
@@ -860,6 +1089,7 @@ def _session_item(
         "tokens": stats["tokens"],
         "error_count": stats["errors"],
         "latency_ms": stats["latency_ms"],
+        **cost_fields,
     }
 
 
@@ -1074,6 +1304,7 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
                 "attributes": _allowlisted_attributes(raw_event.get("attributes")),
             }
             events.append(event_item)
+    attributes = _allowlisted_attributes(record.get("attributes"))
     return {
         "trace_id": trace_id,
         "span_id": span_id if isinstance(span_id, str) else None,
@@ -1086,7 +1317,15 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
         "status": _trace_status(record),
         "span_count": 1,
         "spans": 1,
-        "attributes": _allowlisted_attributes(record.get("attributes")),
+        "attributes": attributes,
+        "cost_usd": _money_value(attributes.get("gen_ai.usage.cost")),
+        "estimated_cost_usd": _money_value(
+            attributes.get("gen_ai.usage.cost_estimate")
+        ),
+        "upstream_cost_usd": _money_value(
+            attributes.get("gen_ai.cost.upstream_inference_cost")
+        ),
+        "cost_source": attributes.get("gen_ai.cost.source"),
         "events": events,
     }
 
@@ -1140,6 +1379,21 @@ def _trace_summary(spans: list[JsonObject]) -> JsonObject:
         raw_attributes = span.get("attributes")
         if isinstance(raw_attributes, Mapping):
             attributes.update(raw_attributes)
+    cost_values = [
+        value
+        for span in spans
+        if (value := _money_value(span.get("cost_usd"))) is not None
+    ]
+    estimated_values = [
+        value
+        for span in spans
+        if (value := _money_value(span.get("estimated_cost_usd"))) is not None
+    ]
+    upstream_values = [
+        value
+        for span in spans
+        if (value := _money_value(span.get("upstream_cost_usd"))) is not None
+    ]
     return {
         "trace_id": latest.get("trace_id"),
         "span_id": latest.get("span_id"),
@@ -1153,6 +1407,13 @@ def _trace_summary(spans: list[JsonObject]) -> JsonObject:
         "span_count": len(spans),
         "spans": len(spans),
         "attributes": attributes,
+        "cost_usd": round(sum(cost_values), 9) if cost_values else None,
+        "estimated_cost_usd": (
+            round(sum(estimated_values), 9) if estimated_values else None
+        ),
+        "upstream_cost_usd": (
+            round(sum(upstream_values), 9) if upstream_values else None
+        ),
         "events": [],
     }
 
@@ -1198,11 +1459,17 @@ class DashboardStore:
         log_dir: Path,
         app_name: str = "blacki",
         identity_db_path: Path | None = None,
+        cost_ledger_path: Path | None = None,
     ) -> None:
         self.session_db_path = Path(session_db_path)
         self.log_dir = Path(log_dir)
         self.app_name = str(app_name)
         self.identity_db_path = Path(identity_db_path) if identity_db_path else None
+        self.cost_ledger_path = (
+            Path(cost_ledger_path)
+            if cost_ledger_path is not None
+            else self.log_dir / "blacki-costs.db"
+        )
 
     async def _snapshot(self) -> _Snapshot:
         return await asyncio.to_thread(
@@ -1225,6 +1492,22 @@ class DashboardStore:
                 )
             )
         return grouped
+
+    async def _cost_ledger(
+        self,
+        *,
+        selected_since: float | None,
+        selected_until: float,
+    ) -> UsageLedgerSnapshot:
+        now = datetime.now(tz=UTC).timestamp()
+        return await asyncio.to_thread(
+            read_usage_ledger,
+            self.cost_ledger_path,
+            selected_since=selected_since,
+            selected_until=selected_until,
+            month_start=_month_start_timestamp(now),
+            now=now,
+        )
 
     async def get_overview(self, window: str) -> JsonObject:
         snapshot, log_scan, trace_scan = await asyncio.gather(
@@ -1263,6 +1546,91 @@ class DashboardStore:
         selected_users = {session.user_id for session in selected_sessions}
         selected_users.update(event.user_id for event in selected_events)
         stats = _event_stats(selected_events)
+        now = datetime.now(tz=UTC).timestamp()
+        month_start = _month_start_timestamp(now)
+        cost_ledger = await self._cost_ledger(
+            selected_since=since,
+            selected_until=until,
+        )
+        fallback_selected_cost = _event_cost_summary(
+            selected_events,
+            since=since,
+            until=until,
+        )
+        fallback_cumulative_cost = _event_cost_summary(
+            snapshot.events,
+            until=until,
+        )
+        fallback_monthly_cost = _event_cost_summary(
+            snapshot.events,
+            since=month_start,
+            until=until,
+        )
+        _, fallback_monthly_user_costs = _group_event_costs(
+            snapshot.events,
+            group_key="user_id",
+            month_start=month_start,
+            now=until,
+        )
+        if cost_ledger.available:
+            selected_cost = _ledger_cost_summary(cost_ledger.selected)
+            cumulative_cost = _ledger_cost_summary(cost_ledger.cumulative)
+            monthly_cost = _ledger_cost_summary(cost_ledger.monthly)
+            monthly_user_costs = {
+                key: _ledger_cost_summary(value)
+                for key, value in cost_ledger.monthly_users.items()
+            }
+        else:
+            selected_cost = fallback_selected_cost
+            cumulative_cost = fallback_cumulative_cost
+            monthly_cost = fallback_monthly_cost
+            monthly_user_costs = fallback_monthly_user_costs
+        stats["cost_usd"] = selected_cost["cost_usd"]
+        stats["cumulative_cost_usd"] = cumulative_cost["cost_usd"]
+        stats["monthly_cost_usd"] = monthly_cost["cost_usd"]
+        stats["provider_cost_usd"] = selected_cost["upstream_cost_usd"]
+        stats["cumulative_provider_cost_usd"] = cumulative_cost["upstream_cost_usd"]
+        stats["monthly_provider_cost_usd"] = monthly_cost["upstream_cost_usd"]
+        stats["estimated_cost_usd"] = selected_cost["estimated_cost_usd"]
+        stats["cumulative_estimated_cost_usd"] = cumulative_cost["estimated_cost_usd"]
+        stats["monthly_estimated_cost_usd"] = monthly_cost["estimated_cost_usd"]
+        stats["cost_records"] = selected_cost["reported_records"]
+        stats["cost_usage_records"] = selected_cost["usage_records"]
+        stats["cost_coverage"] = _cost_coverage(selected_cost)
+        stats["cost_kind"] = (
+            "reported"
+            if selected_cost["cost_usd"] is not None
+            else "estimated"
+            if selected_cost["estimated_cost_usd"] is not None
+            else "unavailable"
+            if selected_cost["usage_records"]
+            else "none"
+        )
+        stats["monthly_cost_users"] = sum(
+            1
+            for summary in monthly_user_costs.values()
+            if summary.get("cost_usd") is not None
+            or summary.get("estimated_cost_usd") is not None
+        )
+        stats["average_user_monthly_cost_usd"] = _average_monthly_cost(
+            monthly_user_costs
+        )
+        stats["cost_available"] = cost_ledger.available or bool(
+            selected_cost["records"]
+        )
+        stats["cost"] = {
+            "window_usd": selected_cost["cost_usd"],
+            "cumulative_usd": cumulative_cost["cost_usd"],
+            "monthly_usd": monthly_cost["cost_usd"],
+            "estimated_window_usd": selected_cost["estimated_cost_usd"],
+            "estimated_cumulative_usd": cumulative_cost["estimated_cost_usd"],
+            "estimated_monthly_usd": monthly_cost["estimated_cost_usd"],
+            "average_user_monthly_usd": stats["average_user_monthly_cost_usd"],
+            "monthly_users": stats["monthly_cost_users"],
+            "coverage": stats["cost_coverage"],
+            "kind": stats["cost_kind"],
+            "source": "ledger" if cost_ledger.available else "event_metadata",
+        }
         selected_log_items = [
             item
             for item in log_items
@@ -1319,6 +1687,7 @@ class DashboardStore:
         warnings.extend(_scan_warning(log_scan, missing=MISSING_TELEMETRY_WARNING))
         warnings.extend(_scan_warning(trace_scan, missing=MISSING_TRACES_WARNING))
         warnings.extend(window_warnings)
+        warnings.extend(cost_ledger.warnings)
         warnings = list(dict.fromkeys(warnings))
         result: JsonObject = {
             "window": normalized_window,
@@ -1346,6 +1715,13 @@ class DashboardStore:
             "requests",
             "tokens",
             "errors",
+            "cost_usd",
+            "cumulative_cost_usd",
+            "monthly_cost_usd",
+            "estimated_cost_usd",
+            "cumulative_estimated_cost_usd",
+            "monthly_estimated_cost_usd",
+            "average_user_monthly_cost_usd",
         ):
             result[key] = stats[key]
         result["error_rate"] = stats["error_rate"]
@@ -1354,6 +1730,18 @@ class DashboardStore:
 
     async def list_users(self, search: str, limit: int, offset: int) -> JsonObject:
         snapshot = await self._snapshot()
+        now = datetime.now(tz=UTC).timestamp()
+        month_start = _month_start_timestamp(now)
+        cost_ledger = await self._cost_ledger(
+            selected_since=None,
+            selected_until=now,
+        )
+        fallback_user_costs, fallback_monthly_user_costs = _group_event_costs(
+            snapshot.events,
+            group_key="user_id",
+            month_start=month_start,
+            now=now,
+        )
         identities = (
             await asyncio.to_thread(
                 _load_telegram_identities_sync, self.identity_db_path
@@ -1367,6 +1755,7 @@ class DashboardStore:
         user_ids = sorted(
             {session.user_id for session in snapshot.sessions}
             | {event.user_id for event in snapshot.events}
+            | (set(cost_ledger.users) if cost_ledger.available else set())
         )
         items: list[JsonObject] = []
         for user_id in user_ids:
@@ -1393,6 +1782,25 @@ class DashboardStore:
             sessions.sort(key=_session_sort_key, reverse=True)
             events = [event for event in snapshot.events if event.user_id == user_id]
             stats = _event_stats(events)
+            if cost_ledger.available:
+                cumulative_cost = _ledger_cost_summary(
+                    cost_ledger.users.get(user_id, LedgerSummary())
+                )
+                monthly_cost = _ledger_cost_summary(
+                    cost_ledger.monthly_users.get(user_id, LedgerSummary())
+                )
+            else:
+                cumulative_cost = fallback_user_costs.get(
+                    user_id, _event_cost_summary(events, until=now)
+                )
+                monthly_cost = fallback_monthly_user_costs.get(
+                    user_id,
+                    _event_cost_summary(
+                        events,
+                        since=month_start,
+                        until=now,
+                    ),
+                )
             latest = sessions[0] if sessions else None
             versions = [
                 version
@@ -1417,9 +1825,11 @@ class DashboardStore:
                     "invocation_count": stats["invocations"],
                     "tokens": stats["tokens"],
                     "error_count": stats["errors"],
+                    **_cost_fields(cumulative_cost, monthly_cost),
                 }
             )
         warnings = list(snapshot.warnings)
+        warnings.extend(cost_ledger.warnings)
         return page_result(
             items[page_offset : page_offset + page_limit],
             total=len(items),
@@ -1430,6 +1840,18 @@ class DashboardStore:
 
     async def list_sessions(self, user_id: str, limit: int, offset: int) -> JsonObject:
         snapshot = await self._snapshot()
+        now = datetime.now(tz=UTC).timestamp()
+        month_start = _month_start_timestamp(now)
+        cost_ledger = await self._cost_ledger(
+            selected_since=None,
+            selected_until=now,
+        )
+        fallback_session_costs, fallback_monthly_session_costs = _group_event_costs(
+            snapshot.events,
+            group_key="session_id",
+            month_start=month_start,
+            now=now,
+        )
         page_limit = clamp_limit(limit)
         page_offset = clamp_offset(offset)
         selected = [
@@ -1445,15 +1867,46 @@ class DashboardStore:
                 grouped.get((user_id, session.session_id), []),
                 is_current=session.session_id == latest,
                 retained_session_ids=retained_ids,
+                cost_fields=_cost_fields(
+                    _ledger_cost_summary(
+                        cost_ledger.sessions.get(
+                            (user_id, session.session_id), LedgerSummary()
+                        )
+                    )
+                    if cost_ledger.available
+                    else fallback_session_costs.get(
+                        f"{user_id}\x00{session.session_id}",
+                        _event_cost_summary(
+                            grouped.get((user_id, session.session_id), []),
+                            until=now,
+                        ),
+                    ),
+                    _ledger_cost_summary(
+                        cost_ledger.monthly_sessions.get(
+                            (user_id, session.session_id), LedgerSummary()
+                        )
+                    )
+                    if cost_ledger.available
+                    else fallback_monthly_session_costs.get(
+                        f"{user_id}\x00{session.session_id}",
+                        _event_cost_summary(
+                            grouped.get((user_id, session.session_id), []),
+                            since=month_start,
+                            until=now,
+                        ),
+                    ),
+                ),
             )
             for session in selected
         ]
+        warnings = list(snapshot.warnings)
+        warnings.extend(cost_ledger.warnings)
         return page_result(
             items[page_offset : page_offset + page_limit],
             total=len(items),
             limit=page_limit,
             offset=page_offset,
-            warnings=list(snapshot.warnings),
+            warnings=warnings,
         )
 
     async def get_session(self, user_id: str, session_id: str) -> JsonObject | None:
@@ -1481,17 +1934,40 @@ class DashboardStore:
         selected_events = _session_events(
             snapshot.events, user_id=user_id, session_id=session_id
         )
+        now = datetime.now(tz=UTC).timestamp()
+        month_start = _month_start_timestamp(now)
+        cost_ledger = await self._cost_ledger(
+            selected_since=None,
+            selected_until=now,
+        )
+        if cost_ledger.available:
+            cumulative_cost = _ledger_cost_summary(
+                cost_ledger.sessions.get((user_id, session_id), LedgerSummary())
+            )
+            monthly_cost = _ledger_cost_summary(
+                cost_ledger.monthly_sessions.get((user_id, session_id), LedgerSummary())
+            )
+        else:
+            cumulative_cost = _event_cost_summary(selected_events, until=now)
+            monthly_cost = _event_cost_summary(
+                selected_events,
+                since=month_start,
+                until=now,
+            )
         item = _session_item(
             session,
             selected_events,
             is_current=session.session_id == latest,
             retained_session_ids=retained_ids,
+            cost_fields=_cost_fields(cumulative_cost, monthly_cost),
         )
         item["messages"] = [
             message for event in selected_events for message in _event_messages(event)
         ]
         item["degraded"] = bool(snapshot.warnings)
-        item["warnings"] = list(snapshot.warnings)
+        warnings = list(snapshot.warnings)
+        warnings.extend(cost_ledger.warnings)
+        item["warnings"] = warnings
         return item
 
     async def list_logs(self, level: str | None, search: str, limit: int) -> JsonObject:

@@ -68,6 +68,13 @@
     return new Intl.NumberFormat().format(number);
   };
 
+  const formatMoney = (value) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    const decimals = Math.abs(number) < 0.01 && number !== 0 ? 6 : 2;
+    return `$${number.toFixed(decimals)}`;
+  };
+
   const formatPercent = (value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return "—";
@@ -201,6 +208,23 @@
     setText("metric-errors-desc", errorCount === undefined ? "Based on available logs" : `${formatCount(errorCount)} records marked error`);
 
     setText("metric-tokens", formatCount(first(metrics, ["tokens", "tokens_processed", "total_tokens", "token_count"])));
+    const cost = isObject(metrics?.cost) ? metrics.cost : metrics;
+    const monthlyCost = first(metrics, ["monthly_cost_usd", "monthly_estimated_cost_usd"], first(cost, ["monthly_usd", "estimated_monthly_usd"]));
+    const cumulativeCost = first(metrics, ["cumulative_cost_usd", "cumulative_estimated_cost_usd", "estimated_cost_usd"], first(cost, ["cumulative_usd", "estimated_cumulative_usd"]));
+    const averageMonthlyCost = first(metrics, ["average_user_monthly_cost_usd"], first(cost, ["average_user_monthly_usd"]));
+    const costCoverage = first(metrics, ["cost_coverage"], first(cost, ["coverage"]));
+    setText("metric-cost-month", formatMoney(monthlyCost));
+    setText("metric-cost-total", formatMoney(cumulativeCost));
+    setText("metric-cost-average", formatMoney(averageMonthlyCost));
+    setText("metric-cost-coverage", formatPercent(costCoverage));
+    const costKind = first(metrics, ["cost_kind"], first(cost, ["kind"]));
+    if (costKind === "estimated") {
+      setText("performance-note", "Some costs are LiteLLM estimates; provider-reported OpenRouter costs are preferred when available.");
+    } else if (costKind === "unavailable" || (monthlyCost === undefined && cumulativeCost === undefined)) {
+      setText("performance-note", "Exact cost is unavailable for records without provider cost metadata. New LiteLLM responses are recorded going forward.");
+    } else if (costCoverage !== undefined && Number(costCoverage) < 1) {
+      setText("performance-note", `Provider-reported cost coverage: ${formatPercent(costCoverage)}. Older or incomplete records remain unavailable.`);
+    }
     const latency = isObject(first(metrics, ["latency_ms", "latency"])) ? first(metrics, ["latency_ms", "latency"]) : {};
     setText("metric-latency", formatMs(first(metrics, ["avg_latency_ms", "average_latency_ms", "mean_latency_ms"], first(latency, ["average", "avg"]))));
     setText("metric-p95", formatMs(first(metrics, ["p95_latency_ms", "latency_p95_ms", "p95_ms"], first(latency, ["p95", "percentile95"]))));
@@ -282,11 +306,26 @@
     });
   };
 
+  const costDescription = (item) => {
+    const monthly = first(item, ["monthly_cost_usd", "monthly_estimated_cost_usd", "month_cost_usd"]);
+    const cumulative = first(item, ["cumulative_cost_usd", "cost_usd", "estimated_cost_usd"]);
+    if (monthly === undefined && cumulative === undefined) return "Cost unavailable for these records";
+    const source = first(item, ["cost_source"]);
+    const qualifier = source === "estimated" ? " · estimated" : "";
+    return `This month ${formatMoney(monthly)} · cumulative ${formatMoney(cumulative)}${qualifier}`;
+  };
+
+  const renderSelectedUserSummary = () => {
+    const item = state.users.find((candidate) => String(first(candidate, ["user_id", "userId", "chat_id", "chatId", "id"], "")) === state.selectedUser);
+    setText("selected-user-cost", item ? costDescription(item) : "Cost unavailable until a user is selected.");
+  };
+
   const renderUsers = () => {
     const target = byId("users-list");
     const summary = byId("users-summary");
     if (!target) return;
     if (summary) summary.textContent = state.users.length ? `${formatCount(state.users.length)} user records` : "No users found";
+    renderSelectedUserSummary();
     if (!state.users.length) {
       showEmpty(target, "No matching users", "Try a different stored user or chat ID.");
       return;
@@ -307,7 +346,10 @@
       const lastSeen = first(item, ["last_seen", "lastSeen", "updated_at", "updatedAt", "latest_update_at"]);
       copy.append(el("span", "mt-1 block text-xs text-base-content/55", lastSeen === undefined ? "Stored user ID" : `Seen ${formatDate(lastSeen)}`));
       const count = first(item, ["sessions", "session_count", "message_count", "messages"]);
-      button.append(copy, el("span", "badge badge-ghost shrink-0", count === undefined ? "View" : formatCount(count)));
+      const summary = el("span", "flex shrink-0 flex-col items-end gap-1");
+      summary.append(el("span", "badge badge-ghost", count === undefined ? "View" : formatCount(count)));
+      summary.append(el("span", "text-right text-[0.68rem] text-base-content/55", formatMoney(first(item, ["monthly_cost_usd"]))));
+      button.append(copy, summary);
       button.addEventListener("click", () => selectUser(userId));
       target.append(button);
     });
@@ -327,7 +369,7 @@
     const table = el("table", "table table-sm");
     const head = el("thead");
     const headerRow = el("tr");
-    ["Session", "Version", "Messages", "Last activity"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
+    ["Session", "Version", "Messages", "Tokens", "Total cost", "This month", "Last activity"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
     head.append(headerRow);
     const body = el("tbody");
     state.sessions.forEach((item) => {
@@ -348,6 +390,9 @@
       if (reset === true || String(reset).toLowerCase() === "true" || Number(version) > 1 || generation > 0) versionCell.append(el("span", "badge badge-info badge-sm ml-1", "reset"));
       row.append(sessionCell, versionCell);
       row.append(el("td", "tabular-nums", formatCount(first(item, ["message_count", "messages", "turns"]))));
+      row.append(el("td", "tabular-nums", formatCount(first(item, ["tokens", "total_tokens", "token_count"]))));
+      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["cumulative_cost_usd", "cost_usd"]))));
+      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["monthly_cost_usd", "monthly_estimated_cost_usd", "month_cost_usd"]))));
       row.append(el("td", "whitespace-nowrap text-xs text-base-content/60", formatDate(first(item, ["updated_at", "updatedAt", "last_seen", "lastSeen"]))));
       body.append(row);
     });
@@ -387,11 +432,17 @@
     if (!target) return;
     const root = rootOf(payload);
     const messages = listFrom(root, ["messages", "turns", "events", "conversation"]);
+    const summary = el("div", "mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-base-300 bg-base-100/70 px-3 py-2 text-xs");
+    summary.append(
+      el("span", "badge badge-ghost badge-sm", `Cost ${formatMoney(first(root, ["cumulative_cost_usd", "cost_usd", "estimated_cost_usd"]))}`),
+      el("span", "badge badge-ghost badge-sm", `This month ${formatMoney(first(root, ["monthly_cost_usd", "monthly_estimated_cost_usd"]))}`),
+      el("span", "badge badge-ghost badge-sm", `Tokens ${formatCount(first(root, ["tokens", "total_tokens", "token_count"]))}`),
+    );
+    target.replaceChildren(summary);
     if (!messages.length) {
-      showEmpty(target, "No messages recorded", "This session has no chat events available on disk.");
+      target.append(el("div", "rounded-xl border border-dashed border-base-300 bg-base-200/40 p-6 text-center", "No messages recorded. This session has no chat events available on disk."));
       return;
     }
-    target.replaceChildren();
     messages.forEach((item) => {
       const type = normalizeStatus(first(item, ["type", "kind"], ""));
       const role = normalizeStatus(first(item, ["role", "author", "sender"], "assistant"));
@@ -434,7 +485,7 @@
     const table = el("table", "table table-zebra table-sm");
     const head = el("thead");
     const headerRow = el("tr");
-    ["Trace", "Status", "Duration", "Spans", "Started"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
+    ["Trace", "Status", "Duration", "Spans", "Cost", "Started"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
     head.append(headerRow);
     const body = el("tbody");
     state.traces.forEach((item) => {
@@ -452,6 +503,7 @@
       row.cells[1].append(badgeFor(first(item, ["status", "state", "outcome"], "unknown")));
       row.append(el("td", "whitespace-nowrap tabular-nums", formatMs(first(item, ["duration_ms", "latency_ms", "duration"]))));
       row.append(el("td", "tabular-nums", formatCount(first(item, ["span_count", "spans", "events"]))));
+      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["cost_usd", "estimated_cost_usd"]))));
       row.append(el("td", "whitespace-nowrap text-xs text-base-content/60", formatDate(first(item, ["start_time", "started_at", "timestamp", "created_at"]))));
       body.append(row);
     });
@@ -490,6 +542,7 @@
       card.append(title);
       const details = el("div", "mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60");
       details.append(el("span", "font-mono", spanId), el("span", "tabular-nums", formatMs(first(span, ["duration_ms", "latency_ms", "duration"]))));
+      details.append(el("span", "tabular-nums", `Cost ${formatMoney(first(span, ["cost_usd", "estimated_cost_usd"]))}`));
       const service = first(span, ["service", "component", "source"]);
       if (service !== undefined) details.append(el("span", "break-all", service));
       card.append(details);
@@ -566,6 +619,7 @@
   const loadSessionDetail = async () => {
     if (!state.selectedUser || !state.selectedSession) return;
     const payload = await requestJson(`${API.session}${encodeURIComponent(state.selectedUser)}&session_id=${encodeURIComponent(state.selectedSession)}`);
+    setText("selected-session-cost", costDescription(rootOf(payload)));
     renderChat(payload);
   };
 
@@ -625,7 +679,9 @@
     state.selectedUser = String(userId);
     state.selectedSession = "";
     setText("selected-user", state.selectedUser);
+    renderSelectedUserSummary();
     setText("selected-session", "Select a session to inspect messages.");
+    setText("selected-session-cost", "Cost details will appear with the session.");
     showEmpty(byId("chat-view"), "No session selected", "Choose a session to inspect its conversation.");
     try {
       setConnection("Loading user sessions", "pending");
@@ -641,6 +697,7 @@
   const selectSession = async (sessionId) => {
     state.selectedSession = String(sessionId);
     setText("selected-session", state.selectedSession);
+    setText("selected-session-cost", "Loading session cost…");
     showEmpty(byId("chat-view"), "Loading conversation", "Reading this session's messages…");
     try {
       await loadSessionDetail();

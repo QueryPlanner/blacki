@@ -288,6 +288,28 @@ class TestModelCallbacks:
         assert "*** After LLM call" in caplog.text
         assert "LLM response:" not in caplog.text
 
+    def test_after_model_logs_captured_cost(
+        self,
+        mock_logging_callback_context: MockLoggingCallbackContext,
+        mock_llm_response: MockLlmResponse,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(
+            "blacki.callbacks.attach_cost_metadata",
+            lambda _response: {
+                "cost_usd": 0.01,
+                "upstream_cost_usd": 0.009,
+                "cost_kind": "reported",
+            },
+        )
+        callbacks = LoggingCallbacks()
+
+        callbacks.after_model(mock_logging_callback_context, mock_llm_response)  # type: ignore
+
+        assert "LLM cost captured" in caplog.text
+
 
 class TestToolCallbacks:
     """Tests for tool invocation callbacks (before_tool and after_tool)."""
