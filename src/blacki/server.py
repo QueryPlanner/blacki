@@ -107,6 +107,7 @@ async def _start_telegram_bot() -> None:
             {
                 "TELEGRAM_ENABLED": env.telegram_enabled,
                 "TELEGRAM_BOT_TOKEN": env.telegram_bot_token,
+                "TELEGRAM_ACCESS_CODE": env.telegram_access_code,
             }
         )
         telegram_app = create_app(

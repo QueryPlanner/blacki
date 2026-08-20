@@ -42,6 +42,7 @@ from .models import (
 )
 
 _SESSION_VERSION_RE = re.compile(r"^(?P<prefix>.+)-v(?P<version>[0-9]+)$")
+_TELEGRAM_DIRECT_USER_ID_RE = re.compile(r"^telegram-chat-(?P<user_id>[0-9]+)$")
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])/(?:Users|home|var|tmp|private|app|workspace|opt|srv|etc)/[^\s\"']+"
 )
@@ -436,6 +437,36 @@ def _load_snapshot_sync(path: Path, app_name: str) -> _Snapshot:
         tuple(events),
         tuple(dict.fromkeys(warnings)),
     )
+
+
+def _load_telegram_identities_sync(path: Path) -> dict[int, tuple[str, str | None]]:
+    """Read dashboard-only Telegram labels without modifying the tools database."""
+    if not path.is_file():
+        return {}
+    connection: sqlite3.Connection | None = None
+    try:
+        uri = f"file:{quote(path.resolve().as_posix(), safe='/')}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=1.0, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        rows = connection.execute(
+            """
+            SELECT telegram_user_id, display_name, username
+            FROM telegram_identities
+            """
+        ).fetchall()
+        return {
+            int(row["telegram_user_id"]): (str(row["display_name"]), row["username"])
+            for row in rows
+            if isinstance(row["telegram_user_id"], int)
+            and isinstance(row["display_name"], str)
+            and (row["username"] is None or isinstance(row["username"], str))
+        }
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _iter_raw_jsonl_lines(handle: Any) -> Iterator[tuple[bytes, bool]]:
@@ -1166,10 +1197,12 @@ class DashboardStore:
         session_db_path: Path,
         log_dir: Path,
         app_name: str = "blacki",
+        identity_db_path: Path | None = None,
     ) -> None:
         self.session_db_path = Path(session_db_path)
         self.log_dir = Path(log_dir)
         self.app_name = str(app_name)
+        self.identity_db_path = Path(identity_db_path) if identity_db_path else None
 
     async def _snapshot(self) -> _Snapshot:
         return await asyncio.to_thread(
@@ -1321,6 +1354,13 @@ class DashboardStore:
 
     async def list_users(self, search: str, limit: int, offset: int) -> JsonObject:
         snapshot = await self._snapshot()
+        identities = (
+            await asyncio.to_thread(
+                _load_telegram_identities_sync, self.identity_db_path
+            )
+            if self.identity_db_path is not None
+            else {}
+        )
         query = bounded_search(search).lower()
         page_limit = clamp_limit(limit)
         page_offset = clamp_offset(offset)
@@ -1330,7 +1370,22 @@ class DashboardStore:
         )
         items: list[JsonObject] = []
         for user_id in user_ids:
-            if query and query not in user_id.lower():
+            identity_match = _TELEGRAM_DIRECT_USER_ID_RE.match(user_id)
+            identity = (
+                identities.get(int(identity_match.group("user_id")))
+                if identity_match is not None
+                else None
+            )
+            display_name = identity[0] if identity else None
+            username = identity[1] if identity else None
+            searchable_identity = " ".join(
+                item for item in (display_name, username) if item
+            ).lower()
+            if (
+                query
+                and query not in user_id.lower()
+                and query not in searchable_identity
+            ):
                 continue
             sessions = [
                 session for session in snapshot.sessions if session.user_id == user_id
@@ -1349,6 +1404,8 @@ class DashboardStore:
             items.append(
                 {
                     "user_id": user_id,
+                    "display_name": display_name,
+                    "username": username,
                     "session_count": len(sessions),
                     "reset_count": max(0, max(versions, default=1) - 1),
                     "retained_history": len(sessions) > 1,

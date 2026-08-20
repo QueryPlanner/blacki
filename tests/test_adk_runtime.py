@@ -193,6 +193,19 @@ async def test_create_next_session_increments_version() -> None:
     assert second_session.id == "telegram-chat-123-v2"
 
 
+@pytest.mark.asyncio
+async def test_has_existing_session_does_not_create_a_new_session() -> None:
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-123",
+        session_id_prefix="telegram-chat-123",
+    )
+
+    assert await runtime.has_existing_session(locator=locator) is False
+    await runtime.create_next_session(locator=locator)
+    assert await runtime.has_existing_session(locator=locator) is True
+
+
 async def test_get_or_create_session_reuses_latest_version() -> None:
     """Test that the active session resolves to the latest version."""
     runtime = AdkRuntime(InMemorySessionService())

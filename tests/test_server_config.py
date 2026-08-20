@@ -28,6 +28,7 @@ def mock_dependencies() -> Generator[MagicMock]:
         mock_env.serve_web_interface = True
         mock_env.reload_agents = False
         mock_env.sqlite_path = None
+        mock_env.telegram_access_code = None
         mock_env.agent_dir = "src"
 
         mock_env.host = "127.0.0.1"

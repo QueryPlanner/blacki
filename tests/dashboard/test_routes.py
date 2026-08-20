@@ -235,7 +235,12 @@ def test_default_store_uses_session_db_log_dir_and_app_name(tmp_path: Path) -> N
         client, _ = _client(tmp_path, use_default_store=True)
 
     assert client.get("/dashboard/api/overview").status_code == 200
-    ctor.assert_called_once_with(tmp_path / ".adk" / "sessions.db", log_dir, "blacki")
+    ctor.assert_called_once_with(
+        tmp_path / ".adk" / "sessions.db",
+        log_dir,
+        "blacki",
+        tmp_path / ".adk" / "tools.db",
+    )
 
 
 def test_real_store_degrades_cleanly_when_local_records_are_missing(

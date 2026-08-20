@@ -360,6 +360,10 @@ class AdkRuntime:
             state=state,
         )
 
+    async def has_existing_session(self, *, locator: SessionLocator) -> bool:
+        """Return whether a locator has a persisted session without creating one."""
+        return await self._get_latest_session(locator=locator) is not None
+
     async def run_user_turn(
         self,
         *,

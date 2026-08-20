@@ -196,6 +196,16 @@ class TestAppContainer:
         assert container._preferences_storage is storage
 
     @pytest.mark.asyncio
+    async def test_telegram_access_storage_property(self, conn, lock) -> None:
+        """Should lazily instantiate Telegram access storage."""
+        container = AppContainer(conn=conn, _lock=lock)
+
+        storage = container.telegram_access_storage
+
+        assert storage is not None
+        assert container._telegram_access_storage is storage
+
+    @pytest.mark.asyncio
     async def test_declarative_db_storage_property(self, conn, lock) -> None:
         """Should lazily instantiate declarative DB storage."""
         container = AppContainer(conn=conn, _lock=lock)
