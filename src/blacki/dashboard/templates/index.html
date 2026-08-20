@@ -120,7 +120,7 @@
             <p class="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-primary">Blacki / telemetry</p>
             <h1 class="text-3xl font-semibold tracking-tight sm:text-4xl">See what your users experience.</h1>
             <p class="mt-2 max-w-2xl text-sm leading-6 text-base-content/65 sm:text-base">
-              A local view of activity written to disk: sessions, traces, structured logs, latency, and token use.
+              A local view of activity written to disk: sessions, traces, structured logs, latency, token use, and model cost.
             </p>
           </div>
           <div class="flex items-center gap-2 text-xs text-base-content/60">
@@ -211,6 +211,22 @@
                     <dd id="metric-tokens" class="font-semibold tabular-nums">—</dd>
                   </div>
                   <div class="flex items-center justify-between gap-4 py-3">
+                    <dt class="text-sm text-base-content/65">Cost this month</dt>
+                    <dd id="metric-cost-month" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3">
+                    <dt class="text-sm text-base-content/65">Cumulative cost</dt>
+                    <dd id="metric-cost-total" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3">
+                    <dt class="text-sm text-base-content/65">Average user / month</dt>
+                    <dd id="metric-cost-average" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3">
+                    <dt class="text-sm text-base-content/65">Cost coverage</dt>
+                    <dd id="metric-cost-coverage" class="font-semibold tabular-nums">—</dd>
+                  </div>
+                  <div class="flex items-center justify-between gap-4 py-3">
                     <dt class="text-sm text-base-content/65">Average latency</dt>
                     <dd id="metric-latency" class="font-semibold tabular-nums">—</dd>
                   </div>
@@ -220,7 +236,7 @@
                   </div>
                 </dl>
                 <div id="performance-note" class="mt-5 rounded-xl bg-base-200 p-3 text-xs leading-5 text-base-content/65">
-                  Metrics are calculated from records currently available on disk.
+                  Metrics are calculated from local records; provider-reported cost is shown when available.
                 </div>
               </div>
             </article>
@@ -270,6 +286,7 @@
                     <div>
                       <p class="text-xs font-semibold uppercase tracking-wide text-base-content/55">Selected user</p>
                       <h2 id="selected-user" class="mt-1 break-all text-lg font-semibold">Choose a user</h2>
+                      <p id="selected-user-cost" class="mt-1 text-xs text-base-content/60">Cost unavailable until a user is selected.</p>
                     </div>
                     <span id="sessions-summary" class="badge badge-ghost">No sessions</span>
                   </div>
@@ -283,6 +300,7 @@
                     <div>
                       <h2 class="card-title text-lg">Session conversation</h2>
                       <p id="selected-session" class="break-all text-sm text-base-content/60">Select a session to inspect messages.</p>
+                      <p id="selected-session-cost" class="text-xs text-base-content/60">Cost details will appear with the session.</p>
                     </div>
                     <span class="badge badge-outline">Read-only</span>
                   </div>

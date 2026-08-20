@@ -121,6 +121,18 @@ Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
+For LiteLLM-backed requests, Blacki also writes a content-free SQLite usage
+ledger at `{AGENT_DIR}/.adk/costs.db` (override with
+`BLACKI_COST_LEDGER_PATH`). The ledger stores identity, model, token, provider
+response, and fixed-point cost fields, but never prompts, responses, or tool
+arguments. Provider-reported OpenRouter account cost and upstream inference
+cost are kept separately; a LiteLLM catalog calculation is labelled estimated.
+The dashboard uses UTC calendar months for monthly totals and averages. The
+average is across users with an exact or estimated cost in the current month;
+users with unavailable cost are excluded and the reported coverage is shown.
+Records created before cost capture, or responses without a provider cost,
+remain unavailable rather than being treated as zero.
+
 This is an admin-only, private-data surface. The application does not add
 HTTP Basic auth, cookies, or Tailscale identity-header authentication. For
 direct tailnet access, set `HOST_BIND_IP` to the host's Tailscale IPv4 address

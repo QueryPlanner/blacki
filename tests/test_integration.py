@@ -17,7 +17,9 @@ from blacki import app
 from blacki.agent import (
     AUTO_COMPACTION_EVENT_RETENTION_SIZE,
     AUTO_COMPACTION_TOKEN_THRESHOLD,
+    _build_model,
 )
+from blacki.llm_costs import CostAwareLiteLLMClient
 
 
 class AgentConfigLike(Protocol):
@@ -154,3 +156,12 @@ class TestAgentIntegration:
 
         assert "save_memory" in tool_names
         assert "search_memory" in tool_names
+
+    def test_litellm_models_use_cost_aware_client(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+        monkeypatch.setenv("ROOT_AGENT_MODEL", "google/gemini-2.5-flash")
+
+        model = _build_model()
+
+        assert not isinstance(model, str)
+        assert isinstance(model.llm_client, CostAwareLiteLLMClient)

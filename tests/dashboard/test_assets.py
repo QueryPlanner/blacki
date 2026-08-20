@@ -53,6 +53,30 @@ def test_chat_metadata_events_render_as_safe_rows() -> None:
     assert 'el("div", `chat ' in script
 
 
+def test_dashboard_renders_cumulative_and_monthly_cost_signals() -> None:
+    template = TEMPLATE.read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+
+    for marker in (
+        "metric-cost-month",
+        "metric-cost-total",
+        "metric-cost-average",
+        "selected-user-cost",
+        "selected-session-cost",
+    ):
+        assert marker in template
+    for marker in (
+        "formatMoney",
+        "monthly_cost_usd",
+        "monthly_estimated_cost_usd",
+        "cumulative_cost_usd",
+        "cumulative_estimated_cost_usd",
+        "average_user_monthly_cost_usd",
+        "cost_coverage",
+    ):
+        assert marker in script
+
+
 def test_template_exposes_accessible_view_tabs_and_landmarks() -> None:
     template = TEMPLATE.read_text(encoding="utf-8")
 

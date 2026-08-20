@@ -24,6 +24,7 @@ from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 
+from ..usage_ledger import default_usage_ledger_path
 from ..utils.config import ServerEnv
 from ..utils.observability import get_log_dir
 from .data import DashboardStore
@@ -245,6 +246,7 @@ def create_dashboard_router(
                 get_log_dir(),
                 "blacki",
                 _tools_db_path(env),
+                default_usage_ledger_path(env.agent_dir),
             )
         except Exception:
             logger.exception("Dashboard store initialization failed")

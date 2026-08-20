@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, tzinfo
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,6 +15,9 @@ from blacki.dashboard.data import (
     _activity_series,
     _allowlisted_attributes,
     _attachment_item,
+    _cost_fields,
+    _event_cost,
+    _event_cost_summary,
     _event_is_error,
     _event_messages,
     _event_stats,
@@ -27,6 +30,7 @@ from blacki.dashboard.data import (
     _load_snapshot_sync,
     _load_telegram_identities_sync,
     _log_item,
+    _money_value,
     _normalize_epoch_seconds,
     _number,
     _parse_json_object,
@@ -36,7 +40,9 @@ from blacki.dashboard.data import (
     _scan_jsonl_sync,
     _scan_warning,
     _select_table_rows,
+    _session_item,
     _session_version,
+    _SessionRow,
     _tool_status,
     _trace_groups,
     _trace_item,
@@ -46,6 +52,7 @@ from blacki.dashboard.data import (
     _window_bounds,
 )
 from blacki.dashboard.models import clamp_limit, clamp_offset
+from blacki.usage_ledger import UsageRecord, write_usage_record
 
 
 def _make_db(path: Path) -> None:
@@ -279,7 +286,180 @@ async def test_sessions_users_replay_versions_and_overview(tmp_path: Path) -> No
     assert overview["stats"]["sessions"] == 3
     assert overview["stats"]["messages"] == 3
     assert overview["stats"]["tokens"] == 11
+    assert overview["stats"]["cumulative_cost_usd"] is None
     assert overview["activity"]
+
+
+@pytest.mark.asyncio
+async def test_cost_ledger_projects_cumulative_monthly_and_average_user_cost(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    ledger_path = tmp_path / "costs.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-1", "session-1")
+    _insert_session(db_path, "user-2", "session-2")
+    now = datetime.now(tz=UTC).timestamp()
+    current_month_event = _text_event(
+        "model-current", "model", "current", now - 20, invocation_id="inv-1"
+    )
+    current_month_event["usage_metadata"] = {
+        "promptTokenCount": 10,
+        "candidatesTokenCount": 5,
+        "totalTokenCount": 15,
+    }
+    _insert_event(
+        db_path, "model-current", "user-1", "session-1", now - 20, current_month_event
+    )
+    write_usage_record(
+        ledger_path,
+        UsageRecord(
+            dedupe_key="current-user-1",
+            observed_at=now - 20,
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="inv-1",
+            model="openrouter/test",
+            provider_response_id="generation-1",
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            cost_usd=0.25,
+            upstream_cost_usd=0.2,
+            estimated_cost_usd=None,
+            cost_kind="reported",
+            cost_source="provider_usage",
+        ),
+    )
+    write_usage_record(
+        ledger_path,
+        UsageRecord(
+            dedupe_key="previous-user-1",
+            observed_at=now - 40 * 86400,
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="inv-old",
+            model="openrouter/test",
+            provider_response_id="generation-old",
+            input_tokens=20,
+            output_tokens=10,
+            total_tokens=30,
+            cost_usd=0.75,
+            upstream_cost_usd=0.7,
+            estimated_cost_usd=None,
+            cost_kind="reported",
+            cost_source="provider_usage",
+        ),
+    )
+    write_usage_record(
+        ledger_path,
+        UsageRecord(
+            dedupe_key="current-user-2",
+            observed_at=now - 10,
+            user_id="user-2",
+            session_id="session-2",
+            invocation_id="inv-2",
+            model="openrouter/test",
+            provider_response_id="generation-2",
+            input_tokens=8,
+            output_tokens=4,
+            total_tokens=12,
+            cost_usd=0.5,
+            upstream_cost_usd=0.45,
+            estimated_cost_usd=None,
+            cost_kind="reported",
+            cost_source="provider_usage",
+        ),
+    )
+
+    store = DashboardStore(db_path, tmp_path, cost_ledger_path=ledger_path)
+    overview = await store.get_overview("all")
+    assert overview["stats"]["cumulative_cost_usd"] == 1.5
+    assert overview["stats"]["monthly_cost_usd"] == 0.75
+    assert overview["stats"]["average_user_monthly_cost_usd"] == 0.375
+    assert overview["stats"]["monthly_cost_users"] == 2
+    assert overview["stats"]["cost_coverage"] == 1.0
+
+    users = await store.list_users("", 50, 0)
+    user_one = next(item for item in users["items"] if item["user_id"] == "user-1")
+    assert user_one["cumulative_cost_usd"] == 1.0
+    assert user_one["monthly_cost_usd"] == 0.25
+
+    sessions = await store.list_sessions("user-1", 50, 0)
+    assert sessions["items"][0]["cost_usd"] == 1.0
+    assert sessions["items"][0]["monthly_cost_usd"] == 0.25
+    detail = await store.get_session("user-1", "session-1")
+    assert detail is not None
+    assert detail["cumulative_cost_usd"] == 1.0
+    assert detail["monthly_cost_usd"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_estimated_costs_are_visible_when_exact_cost_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    ledger_path = tmp_path / "costs.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-estimated", "session-estimated")
+    now = datetime.now(tz=UTC).timestamp()
+    write_usage_record(
+        ledger_path,
+        UsageRecord(
+            dedupe_key="estimated-only",
+            observed_at=now - 10,
+            user_id="user-estimated",
+            session_id="session-estimated",
+            invocation_id="inv-estimated",
+            model="openrouter/test",
+            provider_response_id="generation-estimated",
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=15,
+            cost_usd=None,
+            upstream_cost_usd=None,
+            estimated_cost_usd=0.125,
+            cost_kind="estimated",
+            cost_source="litellm_response_cost",
+        ),
+    )
+
+    store = DashboardStore(db_path, tmp_path, cost_ledger_path=ledger_path)
+    overview = await store.get_overview("all")
+    assert overview["stats"]["cost_kind"] == "estimated"
+    assert overview["stats"]["monthly_estimated_cost_usd"] == 0.125
+    assert overview["stats"]["cumulative_estimated_cost_usd"] == 0.125
+    assert overview["stats"]["average_user_monthly_cost_usd"] == 0.125
+    assert overview["stats"]["monthly_cost_users"] == 1
+
+    users = await store.list_users("", 50, 0)
+    assert users["items"][0]["monthly_estimated_cost_usd"] == 0.125
+    sessions = await store.list_sessions("user-estimated", 50, 0)
+    assert sessions["items"][0]["monthly_estimated_cost_usd"] == 0.125
+
+
+@pytest.mark.asyncio
+async def test_event_metadata_cost_is_used_when_ledger_is_not_present(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-1", "session-1")
+    timestamp = datetime.now(tz=UTC).timestamp() - 10
+    event = _text_event("cost-event", "model", "answer", timestamp)
+    event["usage_metadata"] = {"totalTokenCount": 3}
+    event["custom_metadata"] = {
+        "blacki.cost": {
+            "cost_usd": 0.003,
+            "upstream_cost_usd": 0.002,
+            "cost_kind": "reported",
+        }
+    }
+    _insert_event(db_path, "cost-event", "user-1", "session-1", timestamp, event)
+
+    overview = await DashboardStore(db_path, tmp_path).get_overview("all")
+    assert overview["stats"]["cumulative_cost_usd"] == 0.003
+    assert overview["stats"]["cost"]["source"] == "event_metadata"
 
 
 @pytest.mark.asyncio
@@ -761,6 +941,20 @@ def test_defensive_adapters_cover_scalars_windows_and_trace_shapes() -> None:
     assert str(attrs["service.name"]).startswith("<object object")
     assert _trace_item({"context": {"trace_id": "t"}}) is not None
     assert _trace_item({"name": "no-id"}) is None
+    cost_trace = _trace_item(
+        {
+            "context": {"trace_id": "cost-trace"},
+            "attributes": {
+                "gen_ai.usage.cost": 0.004,
+                "gen_ai.usage.cost_estimate": 0.005,
+                "gen_ai.cost.upstream_inference_cost": 0.003,
+                "gen_ai.cost.source": "provider_usage",
+            },
+        }
+    )
+    assert cost_trace is not None
+    assert cost_trace["cost_usd"] == 0.004
+    assert _trace_summary([cost_trace])["upstream_cost_usd"] == 0.003
     typed_trace = _trace_item(
         {
             "context": {"trace_id": "typed"},
@@ -779,6 +973,103 @@ def test_defensive_adapters_cover_scalars_windows_and_trace_shapes() -> None:
     )
     assert string_kind_trace is not None
     assert string_kind_trace["kind"] == "internal"
+
+
+def test_cost_metadata_adapters_cover_invalid_sources_and_session_fallback() -> None:
+    timestamp = datetime.now(tz=UTC).timestamp() - 1
+
+    def event(data: dict[str, Any]) -> _EventRow:
+        return _EventRow("event", "user-1", "session-1", "inv-1", timestamp, data)
+
+    assert _event_cost(event({"custom_metadata": "not-json"})) is None
+    assert _money_value("not-a-number") is None
+    assert _money_value(float("nan")) is None
+    assert _money_value(-1) is None
+    assert _event_cost(event({"custom_metadata": []})) is None
+    assert (
+        _event_cost(
+            event({"custom_metadata": json.dumps({"blacki.cost": {"cost_usd": 0.1}})})
+        )
+        is not None
+    )
+    assert _event_cost(event({"custom_metadata": {"blacki.cost": "not-json"}})) is None
+    assert _event_cost(event({"custom_metadata": {"blacki.cost": []}})) is None
+    assert (
+        _event_cost(
+            event({"custom_metadata": {"blacki.cost": {"cost_kind": "invalid"}}})
+        )
+        is None
+    )
+    assert (
+        _event_cost(
+            event({"custom_metadata": {"blacki.cost": {"cost_kind": "unknown"}}})
+        )
+        is not None
+    )
+
+    direct = _event_cost(event({"custom_metadata": {"cost_usd": 0.2}}))
+    assert direct is not None
+    assert direct["cost_usd"] == 0.2
+    string_value = _event_cost(
+        event(
+            {
+                "custom_metadata": {
+                    "blacki.cost": json.dumps({"estimated_cost_usd": 0.3})
+                }
+            }
+        )
+    )
+    assert string_value is not None
+    assert string_value["estimated_cost_usd"] == 0.3
+
+    estimated_event = event(
+        {
+            "usage_metadata": {"totalTokenCount": 2},
+            "custom_metadata": {
+                "blacki.cost": {"estimated_cost_usd": 0.3, "cost_kind": "estimated"}
+            },
+        }
+    )
+    summary = _event_cost_summary([estimated_event])
+    assert summary["estimated_records"] == 1
+    assert summary["usage_records"] == 1
+
+    assert (
+        _cost_fields(
+            {"cost_usd": None, "estimated_cost_usd": 0.3, "usage_records": 1},
+            {"cost_usd": None},
+        )["cost_source"]
+        == "estimated"
+    )
+    assert (
+        _cost_fields(
+            {"cost_usd": None, "estimated_cost_usd": None, "upstream_cost_usd": 0.2},
+            {"cost_usd": None},
+        )["cost_source"]
+        == "upstream_only"
+    )
+    assert (
+        _cost_fields(
+            {"cost_usd": None, "estimated_cost_usd": None, "usage_records": 1},
+            {"cost_usd": None},
+        )["cost_source"]
+        == "unavailable"
+    )
+    assert (
+        _cost_fields(
+            {"cost_usd": None, "estimated_cost_usd": None, "usage_records": 0},
+            {"cost_usd": None},
+        )["cost_source"]
+        == "none"
+    )
+
+    session = _session_item(
+        _SessionRow("user-1", "session-1", timestamp, timestamp),
+        [estimated_event],
+        is_current=True,
+        retained_session_ids=[],
+    )
+    assert session["estimated_cost_usd"] == 0.3
     assert _trace_matches({"trace_id": "trace"}, "") is True
     assert _trace_groups([{"trace_id": ""}]) == []
     empty_summary = _trace_summary([{"trace_id": "manual", "attributes": None}])

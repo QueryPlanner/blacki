@@ -19,6 +19,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
+from .llm_costs import attach_cost_metadata, begin_cost_capture
 from .privacy import is_private_tool, private_tool_privacy_enabled
 from .telegram.api import TelegramApiClient, TelegramApiError
 from .telegram.formatting import format_for_telegram
@@ -531,6 +532,12 @@ class LoggingCallbacks:
             f"*** Before LLM call for agent '{callback_context.agent_name}' "
             f"with invocation_id '{callback_context.invocation_id}' ***"
         )
+        session = getattr(callback_context, "session", None)
+        begin_cost_capture(
+            user_id=getattr(callback_context, "user_id", None),
+            session_id=getattr(session, "id", None),
+            invocation_id=getattr(callback_context, "invocation_id", None),
+        )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
         redact_content = private_tool_privacy_enabled()
@@ -577,6 +584,22 @@ class LoggingCallbacks:
         elif llm_content := llm_response.content:
             response_data = llm_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"LLM response: {response_data}")
+
+        cost_observation = attach_cost_metadata(llm_response)
+        if cost_observation:
+            self.logger.debug(
+                "LLM cost captured: %s",
+                {
+                    key: cost_observation[key]
+                    for key in (
+                        "cost_usd",
+                        "upstream_cost_usd",
+                        "estimated_cost_usd",
+                        "cost_kind",
+                    )
+                    if key in cost_observation
+                },
+            )
 
         return None
 

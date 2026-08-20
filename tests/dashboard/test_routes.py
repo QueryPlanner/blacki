@@ -240,6 +240,7 @@ def test_default_store_uses_session_db_log_dir_and_app_name(tmp_path: Path) -> N
         log_dir,
         "blacki",
         tmp_path / ".adk" / "tools.db",
+        tmp_path / ".adk" / "costs.db",
     )
 
 
