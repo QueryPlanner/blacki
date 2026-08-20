@@ -518,6 +518,25 @@ def test_production_deployment_serializes_host_bind_secret() -> None:
     assert 'HOST_BIND_IP="$DEPLOY_HOST_BIND_IP"' in deploy_script
 
 
+def test_production_deployment_serializes_telegram_access_code() -> None:
+    """The Telegram access-control secret must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    assert deploy_step["env"]["TELEGRAM_ACCESS_CODE"] == (
+        "${{ secrets.TELEGRAM_ACCESS_CODE }}"
+    )
+    assert "TELEGRAM_ACCESS_CODE" in writer_names
+
+
 def test_production_deployment_shell_is_valid_bash() -> None:
     """Nested staging and preflight heredocs must remain valid shell syntax."""
     assert BASH_EXECUTABLE is not None
