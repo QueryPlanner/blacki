@@ -41,6 +41,27 @@ delete any chat history, preferences, reminders, files, or health data.
 At least one model provider must also be configured. See
 [Configuration](base-infra/environment-variables.md).
 
+### Optional voice-note transcription
+
+To let Blacki turn Telegram's native voice-note button into a normal text
+conversation, add a Cloudflare Workers AI account ID and API token:
+
+```dotenv
+CLOUDFLARE_ACCOUNT_ID=replace-me
+CLOUDFLARE_API_TOKEN=replace-me
+```
+
+The token should have Workers AI Read and Write permissions. Blacki sends
+voice notes to Cloudflare's hosted
+`@cf/openai/whisper-large-v3-turbo` model, then passes the transcript through
+the existing Telegram text-turn path so conversation history and tool
+confirmations continue to work. Voice notes are kept transiently in memory;
+regular audio files continue to use the existing file-upload behavior. If the
+credentials are absent, Blacki reports that voice transcription is not
+configured instead of failing startup. The raw voice bytes are transient; the
+resulting transcript is handled like ordinary Telegram text and follows the
+existing conversation-history and logging/privacy settings.
+
 ### Optional Kokoro speech replies
 
 To let the Telegram-only root agent turn text into playable MP3 audio, add:

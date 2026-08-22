@@ -1366,6 +1366,10 @@ async def test_health_service_sync_failure_modes(
     client.refresh_access_token = AsyncMock(
         return_value=GoogleTokenResponse("access", 3600, None, GOOGLE_HEALTH_SCOPES)
     )
+    stale_date, _ = _date_window(7)
+    provider_date = (
+        (datetime.fromisoformat(stale_date) + timedelta(days=1)).date().isoformat()
+    )
 
     async def list_points(*args: object, **kwargs: object) -> list[dict[str, object]]:
         data_type = str(args[1])
@@ -1379,8 +1383,8 @@ async def test_health_service_sync_failure_modes(
                     "steps": {
                         "count": 8420,
                         "interval": {
-                            "startTime": "2026-08-16T00:00:00Z",
-                            "endTime": "2026-08-17T00:00:00Z",
+                            "startTime": f"{provider_date}T00:00:00Z",
+                            "endTime": f"{provider_date}T23:59:59Z",
                         },
                     }
                 }
@@ -1388,7 +1392,6 @@ async def test_health_service_sync_failure_modes(
         return []
 
     client.list_data_points = AsyncMock(side_effect=list_points)
-    stale_date, _ = _date_window(7)
     await health_storage.upsert_daily_summaries(
         "telegram-chat-42", [{"date": stale_date, "steps": 1}]
     )

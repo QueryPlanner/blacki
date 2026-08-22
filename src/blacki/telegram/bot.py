@@ -9,7 +9,7 @@ import re
 from collections.abc import Coroutine, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from google.genai import types
 
@@ -36,6 +36,12 @@ from .api import TelegramApiClient, TelegramApiError
 from .formatting import escape_markdown_plain, format_for_telegram
 from .settings_menu import SettingsMenu
 from .streaming import split_long_message
+from .transcription import (
+    MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES,
+    MAX_CONCURRENT_CLOUDFLARE_TRANSCRIPTIONS,
+    CloudflareWhisperError,
+    CloudflareWhisperTranscriber,
+)
 from .types import (
     BotCommand,
     CallbackQuery,
@@ -93,6 +99,16 @@ class TelegramSessionIdentity:
     session_id_prefix: str
 
 
+class VoiceTranscriber(Protocol):
+    """Protocol implemented by the Telegram voice transcription service."""
+
+    async def transcribe(self, audio_bytes: bytes) -> str:
+        """Return the transcript for one voice note."""
+
+    async def close(self) -> None:
+        """Release any provider resources."""
+
+
 class TelegramBot:
     """Telegram bot client that sends typing indicators and final replies."""
 
@@ -102,12 +118,19 @@ class TelegramBot:
         runtime: AdkRuntime,
         google_health_service: GoogleHealthService | None = None,
         access_storage: TelegramAccessStorage | None = None,
+        voice_transcriber: VoiceTranscriber | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
         self.runtime = runtime
         self.google_health_service = google_health_service
         self.access_storage = access_storage
+        self._voice_transcriber = (
+            voice_transcriber or CloudflareWhisperTranscriber.from_environment()
+        )
+        self._voice_transcription_semaphore = asyncio.Semaphore(
+            MAX_CONCURRENT_CLOUDFLARE_TRANSCRIPTIONS
+        )
         self._api: TelegramApiClient | None = None
         self._running = False
         self._polling_task: asyncio.Task[None] | None = None
@@ -166,7 +189,11 @@ class TelegramBot:
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
-        await self.runtime.close()
+        try:
+            await self.runtime.close()
+        finally:
+            if self._voice_transcriber is not None:
+                await self._voice_transcriber.close()
 
         await self._settings_menu.aclose()
 
@@ -737,12 +764,16 @@ class TelegramBot:
             mime_type = message.video.mime_type
             media_kind = "video"
         elif message.voice:
-            file_id = message.voice.file_id
-            file_unique_id = message.voice.file_unique_id
-            file_name = "voice.ogg"
-            file_size = message.voice.file_size
-            mime_type = message.voice.mime_type
-            media_kind = "voice"
+            await self._handle_voice_upload(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                file_id=message.voice.file_id,
+                file_size=message.voice.file_size,
+                mime_type=message.voice.mime_type,
+                caption=message.caption,
+                sender_user_id=sender_user_id,
+            )
+            return
         else:
             logger.debug("Unsupported non-text message from chat %s", chat_id)
             return
@@ -759,6 +790,92 @@ class TelegramBot:
             caption=message.caption,
             sender_user_id=sender_user_id,
         )
+
+    async def _handle_voice_upload(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        file_id: str,
+        file_size: int | None,
+        mime_type: str | None,
+        caption: str | None,
+        sender_user_id: int | None = None,
+    ) -> None:
+        """Transcribe a Telegram voice note and process it as a text turn."""
+        if self._voice_transcriber is None:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=(
+                    "Voice transcription is not configured. Add "
+                    "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to Blacki's "
+                    "environment."
+                ),
+                message_thread_id=message_thread_id,
+            )
+            return
+
+        if file_size is not None and file_size > MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Voice notes must be 8 MB or smaller to transcribe.",
+                message_thread_id=message_thread_id,
+            )
+            return
+
+        try:
+            async with self._voice_transcription_semaphore:
+                await self.api.send_chat_action(
+                    chat_id=chat_id,
+                    action="typing",
+                    message_thread_id=message_thread_id,
+                )
+                file_info = await self.api.get_file(file_id)
+                file_path_api = file_info.get("file_path")
+                if not file_path_api:
+                    raise ValueError("Failed to get voice file path from Telegram API")
+
+                audio_bytes = await self.api.download_file(file_path_api)
+                if not audio_bytes:
+                    raise ValueError("Telegram returned an empty voice note")
+                if len(audio_bytes) > MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES:
+                    raise ValueError("Telegram voice note exceeds the 8 MB limit")
+
+                transcript = await self._voice_transcriber.transcribe(audio_bytes)
+                del audio_bytes
+
+            user_message = transcript
+            if caption and caption.strip():
+                user_message = f"{caption.strip()}\n\n{transcript}"
+
+            await self._handle_message(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                user_message=user_message,
+                sender_user_id=sender_user_id,
+            )
+        except CloudflareWhisperError as exc:
+            logger.warning(
+                "Failed to transcribe Telegram voice note (%s)",
+                type(exc).__name__,
+            )
+            await self.api.send_message(
+                chat_id=chat_id,
+                text=(
+                    "❌ Sorry, I couldn't transcribe that voice note. Please try again."
+                ),
+                message_thread_id=message_thread_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to handle Telegram voice note (%s)",
+                type(exc).__name__,
+            )
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="❌ Sorry, I failed to process the voice note.",
+                message_thread_id=message_thread_id,
+            )
 
     async def _handle_photo_upload(
         self,

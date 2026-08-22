@@ -95,6 +95,8 @@ its presence changes model routing.
 | `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
 | `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
 | `TELEGRAM_ACCESS_CODE` | unset | Shared code required for new private Telegram chats |
+| `CLOUDFLARE_ACCOUNT_ID` | unset | Cloudflare account ID for Telegram voice transcription |
+| `CLOUDFLARE_API_TOKEN` | unset | Cloudflare Workers AI API token for Telegram voice transcription |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
 | `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
 
@@ -110,6 +112,14 @@ reachable from inside the Blacki container. Do not use `localhost` for a
 Kokoro process on another Tailscale host; configure that host's Tailscale IP or
 MagicDNS name instead. Plain HTTP is suitable only across a trusted private
 network such as the encrypted Tailscale connection.
+
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are an optional pair. When
+both are configured, Telegram voice notes are transcribed with Cloudflare
+Workers AI's `@cf/openai/whisper-large-v3-turbo` model. The token should have
+Workers AI Read and Write permissions. Blacki keeps the downloaded voice note
+and provider request payload transient; it does not send the raw voice note to
+the normal sandbox/file-ingestion path. The resulting transcript follows the
+same conversation-history and logging/privacy policy as ordinary Telegram text.
 
 ### Google Health connector
 
