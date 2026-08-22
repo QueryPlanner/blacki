@@ -110,6 +110,8 @@ jobs:
           TELEGRAM_ACCESS_CODE: ${{ secrets.TELEGRAM_ACCESS_CODE }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_TOOL_NOTIFICATIONS: ${{ secrets.TELEGRAM_TOOL_NOTIFICATIONS }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           KOKORO_TTS_BASE_URL: ${{ secrets.KOKORO_TTS_BASE_URL }}
           KOKORO_TTS_VOICE: ${{ secrets.KOKORO_TTS_VOICE }}
           ZEPTO_MCP_ENABLED: ${{ secrets.ZEPTO_MCP_ENABLED }}
@@ -189,6 +191,8 @@ jobs:
             TELEGRAM_ACCESS_CODE \
             TELEGRAM_BOT_TOKEN \
             TELEGRAM_TOOL_NOTIFICATIONS \
+            CLOUDFLARE_ACCOUNT_ID \
+            CLOUDFLARE_API_TOKEN \
             KOKORO_TTS_BASE_URL \
             KOKORO_TTS_VOICE \
             ZEPTO_MCP_ENABLED \

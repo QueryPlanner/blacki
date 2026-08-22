@@ -41,6 +41,11 @@ from blacki.telegram.streaming import (
     _merge_stream_text,
     split_long_message,
 )
+from blacki.telegram.transcription import (
+    MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES,
+    CloudflareWhisperError,
+    CloudflareWhisperTranscriber,
+)
 from blacki.telegram.types import BotCommand, ChatType, Message, ParseMode, Update
 from blacki.user_files.service import IngestResult, StoredUserFile
 
@@ -1536,6 +1541,28 @@ class TestTelegramBotLifecycle:
 
         mock_api.close.assert_called_once()
         assert runtime_recorder.closed is True
+
+    @pytest.mark.asyncio
+    async def test_stop_closes_voice_transcriber(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        transcriber = create_autospec(
+            CloudflareWhisperTranscriber,
+            spec_set=True,
+            instance=True,
+        )
+        transcriber.close = AsyncMock()
+        bot = TelegramBot(
+            telegram_config,
+            cast(AdkRuntime, runtime_recorder),
+            voice_transcriber=cast(Any, transcriber),
+        )
+
+        await bot.stop()
+
+        transcriber.close.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_register_commands_success(
@@ -3277,7 +3304,7 @@ class TestRouteNonTextMessage:
     ) -> None:
         """Test routing a voice message."""
         bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
-        bot._handle_file_upload = AsyncMock()  # type: ignore[method-assign]
+        bot._handle_voice_upload = AsyncMock()  # type: ignore[method-assign]
 
         message = Message.model_validate(
             {
@@ -3294,15 +3321,12 @@ class TestRouteNonTextMessage:
 
         await bot._route_non_text_message(message)
 
-        bot._handle_file_upload.assert_called_once_with(
+        bot._handle_voice_upload.assert_called_once_with(
             chat_id=123,
             message_thread_id=None,
             file_id="voi123",
-            file_unique_id="uniq123",
-            file_name="voice.ogg",
             file_size=None,
             mime_type=None,
-            media_kind="voice",
             caption=None,
             sender_user_id=None,
         )
@@ -3328,6 +3352,247 @@ class TestRouteNonTextMessage:
         await bot._route_non_text_message(message)
 
         bot._handle_file_upload.assert_not_called()
+
+
+class TestHandleVoiceUpload:
+    """Tests for transient voice-note transcription."""
+
+    def _bot_with_transcriber(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> tuple[TelegramBot, Any, Any]:
+        transcriber = create_autospec(
+            CloudflareWhisperTranscriber,
+            spec_set=True,
+            instance=True,
+        )
+        transcriber.transcribe = AsyncMock(return_value="Transcript text")
+        transcriber.close = AsyncMock()
+        bot = TelegramBot(
+            telegram_config,
+            cast(AdkRuntime, runtime_recorder),
+            voice_transcriber=cast(Any, transcriber),
+        )
+        mock_api = create_autospec(TelegramApiClient, spec_set=True, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.send_message = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "voice.ogg"})
+        mock_api.download_file = AsyncMock(return_value=b"ogg-audio")
+        bot._api = mock_api
+        return bot, transcriber, mock_api
+
+    @pytest.mark.asyncio
+    async def test_transcribes_voice_and_preserves_caption(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, transcriber, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=77,
+            file_id="voice123",
+            file_size=100,
+            mime_type="audio/ogg",
+            caption="Summarize this",
+            sender_user_id=456,
+        )
+
+        mock_api.get_file.assert_awaited_once_with("voice123")
+        mock_api.download_file.assert_awaited_once_with("voice.ogg")
+        transcriber.transcribe.assert_awaited_once_with(b"ogg-audio")
+        bot._handle_message.assert_awaited_once_with(
+            chat_id=123,
+            message_thread_id=77,
+            user_message="Summarize this\n\nTranscript text",
+            sender_user_id=456,
+        )
+
+    @pytest.mark.asyncio
+    async def test_transcribes_voice_without_caption(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, _, _ = self._bot_with_transcriber(telegram_config, runtime_recorder)
+        bot._handle_message = AsyncMock()  # type: ignore[method-assign]
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption="   ",
+        )
+
+        bot._handle_message.assert_awaited_once_with(
+            chat_id=123,
+            message_thread_id=None,
+            user_message="Transcript text",
+            sender_user_id=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_reports_missing_configuration_without_downloading(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+        monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, spec_set=True, instance=True)
+        mock_api.send_message = AsyncMock()
+        mock_api.get_file = AsyncMock()
+        bot._api = mock_api
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "CLOUDFLARE_ACCOUNT_ID" in mock_api.send_message.call_args.kwargs["text"]
+        mock_api.get_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_rejects_reported_oversize_before_download(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, transcriber, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES + 1,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "8 MB" in mock_api.send_message.call_args.kwargs["text"]
+        mock_api.get_file.assert_not_awaited()
+        transcriber.transcribe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("audio_bytes", [b"", b"12345"])
+    async def test_reports_invalid_downloaded_audio(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        audio_bytes: bytes,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        import blacki.telegram.bot as bot_module
+
+        monkeypatch.setattr(bot_module, "MAX_CLOUDFLARE_WHISPER_AUDIO_BYTES", 4)
+        bot, transcriber, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+        mock_api.download_file = AsyncMock(return_value=audio_bytes)
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "failed to process" in mock_api.send_message.call_args.kwargs["text"]
+        transcriber.transcribe.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reports_provider_failure_without_exposing_details(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, transcriber, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+        transcriber.transcribe = AsyncMock(
+            side_effect=CloudflareWhisperError("private provider response")
+        )
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "couldn't transcribe" in mock_api.send_message.call_args.kwargs["text"]
+        assert "private provider response" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reports_unexpected_voice_failure(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, _, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+        mock_api.get_file = AsyncMock(side_effect=RuntimeError("telegram detail"))
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "failed to process" in mock_api.send_message.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_reports_missing_telegram_file_path(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot, transcriber, mock_api = self._bot_with_transcriber(
+            telegram_config,
+            runtime_recorder,
+        )
+        mock_api.get_file = AsyncMock(return_value={})
+
+        await bot._handle_voice_upload(
+            chat_id=123,
+            message_thread_id=None,
+            file_id="voice123",
+            file_size=None,
+            mime_type=None,
+            caption=None,
+        )
+
+        assert "failed to process" in mock_api.send_message.call_args.kwargs["text"]
+        transcriber.transcribe.assert_not_awaited()
 
 
 class TestHandlePhotoUpload:
