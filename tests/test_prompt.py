@@ -131,6 +131,18 @@ def test_health_policy_is_enabled_only_for_health_tool() -> None:
     assert "never infer, diagnose" in instruction
 
 
+def test_nutrition_policy_separates_local_save_and_google_sync() -> None:
+    instruction = build_domain_instruction(
+        "Log my lunch", {"log_meal", "edit_meal", "delete_meal"}
+    )
+
+    assert "google_health_sync status separately" in instruction
+    assert "saved in Blacki" in instruction
+    assert "Never claim Google Health accepted" in instruction
+    assert "Do not repeat a meal mutation" in instruction
+    assert "no historical backfill" in instruction
+
+
 class TestDomainPolicyAssembly:
     """Verify conditional policy content for behavior-sensitive requests."""
 

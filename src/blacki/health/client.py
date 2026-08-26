@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import isfinite
 from typing import Any
 
 import httpx
@@ -28,10 +32,14 @@ class GoogleHealthApiError(RuntimeError):
         *,
         status_code: int | None = None,
         error_code: str | None = None,
+        retry_after_seconds: float | None = None,
+        transport: bool = False,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.error_code = error_code
+        self.retry_after_seconds = retry_after_seconds
+        self.transport = transport
 
 
 class GoogleHealthAuthError(GoogleHealthApiError):
@@ -54,6 +62,21 @@ class GoogleHealthIdentity:
 
     health_user_id: str
     legacy_fitbit_user_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class GoogleHealthOperation:
+    """The safe subset of a Health API long-running operation."""
+
+    done: bool
+    name: str | None = None
+    error_code: str | None = None
+    response: dict[str, Any] | None = None
+
+    @property
+    def successful(self) -> bool:
+        """Return true only for a completed operation without an error."""
+        return self.done and self.error_code is None
 
 
 class GoogleHealthClient:
@@ -166,14 +189,75 @@ class GoogleHealthClient:
                 return points
             page_token = next_page_token
 
+    async def create_nutrition_log(
+        self,
+        access_token: str,
+        resource_name: str,
+        payload: Mapping[str, Any],
+    ) -> GoogleHealthOperation:
+        """Create one named anonymous nutrition log.
+
+        The API requires the canonical account in both the parent path and the
+        DataPoint ``name``. ``payload`` is the DataPoint value, usually
+        ``{"nutritionLog": ...}``; this method adds only the immutable name.
+        """
+        parent = _nutrition_parent(resource_name)
+        body = dict(payload)
+        body["name"] = resource_name
+        result = await self._api_request(
+            "POST",
+            f"/v4/{parent}/dataPoints",
+            access_token=access_token,
+            json_body=body,
+        )
+        return _parse_operation(result)
+
+    async def get_data_point(
+        self, access_token: str, resource_name: str
+    ) -> dict[str, Any]:
+        """Fetch one exact named data point for write reconciliation."""
+        _nutrition_parent(resource_name)
+        return await self._api_request(
+            "GET",
+            f"/v4/{resource_name}",
+            access_token=access_token,
+        )
+
+    async def delete_nutrition_log(
+        self, access_token: str, resource_name: str
+    ) -> GoogleHealthOperation:
+        """Request deletion of one named nutrition log."""
+        parent = _nutrition_parent(resource_name)
+        result = await self._api_request(
+            "POST",
+            f"/v4/{parent}/dataPoints:batchDelete",
+            access_token=access_token,
+            json_body={"names": [resource_name]},
+        )
+        return _parse_operation(result)
+
     async def _token_request(self, form: Mapping[str, str]) -> dict[str, Any]:
         client = await self._ensure_client()
-        response = await client.post(
-            GOOGLE_HEALTH_TOKEN_URL, data=dict(form), timeout=30.0
+        try:
+            response = await client.post(
+                GOOGLE_HEALTH_TOKEN_URL, data=dict(form), timeout=30.0
+            )
+        except httpx.RequestError as exc:
+            raise GoogleHealthApiError(
+                "Google OAuth request could not reach the provider",
+                error_code="transport_error",
+                transport=True,
+            ) from exc
+        payload = _json_object(
+            response, retry_after_seconds=_retry_after_seconds(response)
         )
-        payload = _json_object(response)
         if response.status_code >= 400:
-            _raise_provider_error(payload, response.status_code, token_endpoint=True)
+            _raise_provider_error(
+                payload,
+                response.status_code,
+                token_endpoint=True,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
         return payload
 
     async def _api_request(
@@ -183,21 +267,37 @@ class GoogleHealthClient:
         *,
         access_token: str,
         params: Mapping[str, Any] | None = None,
+        json_body: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         client = await self._ensure_client()
-        response = await client.request(
-            method,
-            f"{GOOGLE_HEALTH_API_BASE_URL}{path}",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Accept": "application/json",
-            },
-            params=dict(params) if params is not None else None,
-            timeout=30.0,
+        try:
+            response = await client.request(
+                method,
+                f"{GOOGLE_HEALTH_API_BASE_URL}{path}",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                },
+                params=dict(params) if params is not None else None,
+                json=dict(json_body) if json_body is not None else None,
+                timeout=30.0,
+            )
+        except httpx.RequestError as exc:
+            raise GoogleHealthApiError(
+                "Google Health request could not reach the provider",
+                error_code="transport_error",
+                transport=True,
+            ) from exc
+        payload = _json_object(
+            response, retry_after_seconds=_retry_after_seconds(response)
         )
-        payload = _json_object(response)
         if response.status_code >= 400:
-            _raise_provider_error(payload, response.status_code, token_endpoint=False)
+            _raise_provider_error(
+                payload,
+                response.status_code,
+                token_endpoint=False,
+                retry_after_seconds=_retry_after_seconds(response),
+            )
         return payload
 
     async def _ensure_client(self) -> httpx.AsyncClient:
@@ -238,22 +338,32 @@ def _parse_token_response(
     )
 
 
-def _json_object(response: httpx.Response) -> dict[str, Any]:
+def _json_object(
+    response: httpx.Response, *, retry_after_seconds: float | None = None
+) -> dict[str, Any]:
     try:
         payload = response.json()
     except ValueError as exc:
         raise GoogleHealthApiError(
-            "Google returned a non-JSON response", status_code=response.status_code
+            "Google returned a non-JSON response",
+            status_code=response.status_code,
+            retry_after_seconds=retry_after_seconds,
         ) from exc
     if not isinstance(payload, dict):
         raise GoogleHealthApiError(
-            "Google returned an unexpected response", status_code=response.status_code
+            "Google returned an unexpected response",
+            status_code=response.status_code,
+            retry_after_seconds=retry_after_seconds,
         )
     return payload
 
 
 def _raise_provider_error(
-    payload: Mapping[str, Any], status_code: int, *, token_endpoint: bool
+    payload: Mapping[str, Any],
+    status_code: int,
+    *,
+    token_endpoint: bool,
+    retry_after_seconds: float | None = None,
 ) -> None:
     raw_error = payload.get("error")
     safe_error_code: str | None = None
@@ -281,7 +391,77 @@ def _raise_provider_error(
     error_type = (
         GoogleHealthAuthError if status_code in {401, 403} else GoogleHealthApiError
     )
-    raise error_type(message, status_code=status_code, error_code=safe_error_code)
+    raise error_type(
+        message,
+        status_code=status_code,
+        error_code=safe_error_code,
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+def _parse_operation(payload: Mapping[str, Any]) -> GoogleHealthOperation:
+    """Parse an Operation without exposing provider payloads in exceptions."""
+    done = payload.get("done")
+    if not isinstance(done, bool):
+        raise GoogleHealthApiError("Google Health operation response was incomplete")
+    raw_name = payload.get("name")
+    name = raw_name if isinstance(raw_name, str) and raw_name else None
+    raw_error = payload.get("error")
+    error_code: str | None = None
+    if isinstance(raw_error, Mapping):
+        status = raw_error.get("status")
+        if isinstance(status, str) and status.isascii() and status.isprintable():
+            error_code = status[:80]
+        elif isinstance(raw_error.get("code"), int):
+            error_code = f"provider_error_{raw_error['code']}"
+        else:
+            error_code = "provider_error"
+    elif isinstance(raw_error, str) and raw_error.isascii() and raw_error.isprintable():
+        error_code = raw_error[:80]
+    elif raw_error is not None:
+        error_code = "provider_error"
+    raw_response = payload.get("response")
+    response = dict(raw_response) if isinstance(raw_response, Mapping) else None
+    if done and error_code is None and response is None:
+        raise GoogleHealthApiError("Google Health operation response was incomplete")
+    return GoogleHealthOperation(
+        done=done,
+        name=name,
+        error_code=error_code,
+        response=response,
+    )
+
+
+def _nutrition_parent(resource_name: str) -> str:
+    """Validate and return the canonical parent for a nutrition data point."""
+    match = re.fullmatch(
+        r"users/[^/?#]+/dataTypes/nutrition-log/dataPoints/"
+        r"[a-z0-9-]{4,63}",
+        resource_name,
+    )
+    if match is None:
+        raise ValueError("resource_name is not a valid nutrition data point name")
+    return resource_name.rsplit("/dataPoints/", 1)[0]
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse a bounded Retry-After header without trusting arbitrary values."""
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        seconds = retry_at.timestamp() - datetime.now(UTC).timestamp()
+    if not isfinite(seconds):
+        return None
+    return max(0.0, seconds)
 
 
 def _filter_for_data_type(data_type: str, start_time: str, end_time: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec
 
@@ -15,7 +16,11 @@ from blacki.health.service import (
 )
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient
-from blacki.telegram.bot import TelegramBot, _format_health_sync_result
+from blacki.telegram.bot import (
+    TelegramBot,
+    _format_google_health_sync_counts,
+    _format_health_sync_result,
+)
 from blacki.telegram.types import CallbackQuery, ChatType, Message
 
 
@@ -77,6 +82,10 @@ async def test_connect_health_sends_protected_authorization_link() -> None:
         .inline_keyboard[0][0]
         .url.startswith("https://accounts.google.com/")
     )
+    assert "future meal logs, edits, and deletions" in kwargs["text"]
+    assert "not backfilled" in kwargs["text"]
+    assert "verify records it created" in kwargs["text"]
+    assert "Read-only summaries remain available" in kwargs["text"]
     assert "Apple ID" in kwargs["text"]
 
 
@@ -123,6 +132,23 @@ async def test_health_summary_and_refresh_are_readable() -> None:
     assert all(
         call.kwargs["protect_content"] for call in api.send_message.await_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_health_refresh_success_includes_sync_counts() -> None:
+    """A successful refresh still reports durable meal-export counts."""
+    bot, service, api = _bot()
+    service.refresh_user.return_value = SyncResult(
+        status="success",
+        telegram_user_id="telegram-chat-42",
+        days_upserted=1,
+        records_fetched=2,
+        google_health_sync={"pending": 1, "synced": 3},
+    )
+    await bot._handle_command(_message(), "/health_refresh")
+    text = api.send_message.call_args.kwargs["text"]
+    assert "1 pending" in text
+    assert "3 synced" in text
 
 
 @pytest.mark.asyncio
@@ -182,7 +208,11 @@ async def test_disconnect_requires_confirmation_and_checks_callback_user() -> No
     )
     await bot._handle_callback_query(confirmed)
     service.disconnect.assert_awaited_once_with("telegram-chat-42")
-    assert "deleted" in api.send_message.call_args.kwargs["text"]
+    text = api.send_message.call_args.kwargs["text"]
+    assert "Pending meal sync was cancelled" in text
+    assert "local calorie logs remain" in text
+    assert "did not delete records already sent" in text
+    assert "may still finish" in text
 
 
 @pytest.mark.asyncio
@@ -293,3 +323,31 @@ def test_health_sync_formatter_covers_safe_statuses() -> None:
     assert "could not" in _format_health_sync_result(
         SyncResult("failed", "telegram-chat-42")
     )
+    result_with_counts = cast(
+        SyncResult,
+        SimpleNamespace(
+            status="failed",
+            google_health_sync={
+                "pending": 2,
+                "synced": 3,
+                "failed": 1,
+                "authorization_required": 4,
+            },
+        ),
+    )
+    text = _format_health_sync_result(result_with_counts)
+    assert "2 pending" in text
+    assert "3 synced" in text
+    assert "1 failed" in text
+    assert "4 awaiting authorization" in text
+    assert "pending includes deletions" in text
+
+
+def test_format_google_health_sync_counts_skips_invalid_entries() -> None:
+    """Non-mapping input, missing keys, and negative counts are all safe."""
+    assert _format_google_health_sync_counts("not-a-mapping") == ""
+    assert _format_google_health_sync_counts({}) == ""
+    assert _format_google_health_sync_counts({"pending": -1, "synced": "bad"}) == ""
+
+    partial = _format_google_health_sync_counts({"pending": 2, "synced": "bad"})
+    assert partial == "Meal sync status (pending includes deletions): 2 pending"

@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import logging
 import re
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
@@ -72,22 +72,56 @@ _MAX_ALBUM_PHOTOS = 10
 _MAX_ALBUM_BYTES = 20 * 1024 * 1024
 
 
+def _format_google_health_sync_counts(value: object) -> str:
+    """Render safe durable meal-sync counts without provider details."""
+    if not isinstance(value, Mapping):
+        return ""
+
+    labels = (
+        ("pending", "pending"),
+        ("synced", "synced"),
+        ("failed", "failed"),
+        ("authorization_required", "awaiting authorization"),
+    )
+    parts: list[str] = []
+    for key, label in labels:
+        count = value.get(key)
+        if isinstance(count, int) and count >= 0:
+            parts.append(f"{count} {label}")
+    if not parts:
+        return ""
+    return "Meal sync status (pending includes deletions): " + ", ".join(parts)
+
+
 def _format_health_sync_result(result: SyncResult) -> str:
     """Render a provider-sync result without exposing IDs or error payloads."""
     if result.status == "not_connected":
-        return "Google Health is not connected. Use /connect_health first."
+        text = "Google Health is not connected. Use /connect_health first."
+        return _append_google_health_sync_counts(text, result)
     if result.status == "reauthorization_required":
-        return (
+        text = (
             "Google Health needs authorization again. Use /connect_health to reconnect."
         )
+        return _append_google_health_sync_counts(text, result)
     if result.status == "rate_limited":
-        return "A Google Health refresh was requested recently. Please try again later."
+        text = "A Google Health refresh was requested recently. Please try again later."
+        return _append_google_health_sync_counts(text, result)
     if result.status == "success":
-        return (
+        text = (
             f"Google Health refreshed {result.days_upserted} day(s) from "
             f"{result.records_fetched} record(s)."
         )
-    return "Google Health could not be refreshed right now. Please try again later."
+        return _append_google_health_sync_counts(text, result)
+    text = "Google Health could not be refreshed right now. Please try again later."
+    return _append_google_health_sync_counts(text, result)
+
+
+def _append_google_health_sync_counts(text: str, result: object) -> str:
+    """Append durable meal-sync counts when the health service provides them."""
+    counts = _format_google_health_sync_counts(
+        getattr(result, "google_health_sync", None)
+    )
+    return f"{text}\n{counts}" if counts else text
 
 
 @dataclass(slots=True, frozen=True)
@@ -221,7 +255,7 @@ class TelegramBot:
                 [
                     BotCommand(
                         command="connect_health",
-                        description="Connect Google Health read-only data",
+                        description="Connect Google Health and meal sync",
                     ),
                     BotCommand(
                         command="health_summary",
@@ -233,7 +267,7 @@ class TelegramBot:
                     ),
                     BotCommand(
                         command="disconnect_health",
-                        description="Disconnect and delete Google Health data",
+                        description="Disconnect Google Health and meal sync",
                     ),
                 ]
             )
@@ -1127,11 +1161,17 @@ class TelegramBot:
             await self.api.send_message(
                 chat_id=message.chat.id,
                 text=(
-                    "Google Health connection is read-only. It can summarize "
+                    "Google Health can provide read-only wellness summaries from "
                     "data that reaches Google Health from Fitbit-compatible sources. "
+                    "If you grant both Google Health nutrition permissions, Blacki "
+                    "will automatically export future meal logs, edits, and "
+                    "deletions from this private chat. The nutrition read permission "
+                    "also lets Blacki verify records it created; it does not import "
+                    "unrelated food logs. Older meals are not backfilled. "
+                    "Read-only summaries remain available without nutrition "
+                    "permissions. Existing connections must reconnect to add them. "
                     "Blacki does not receive Apple ID credentials or raw Apple Health "
-                    "records. Authorize only if you want this private chat to read "
-                    "the selected health categories."
+                    "records. Authorize only if you want these selected categories."
                 ),
                 message_thread_id=message.message_thread_id,
                 reply_markup=InlineKeyboardMarkup(
@@ -1183,7 +1223,9 @@ class TelegramBot:
             result = await service.refresh_user(f"telegram-chat-{message.chat.id}")
             if result.status == "success":
                 summary = await service.summary(f"telegram-chat-{message.chat.id}")
-                text = format_health_summary(summary)
+                text = _append_google_health_sync_counts(
+                    format_health_summary(summary), result
+                )
             else:
                 text = _format_health_sync_result(result)
             await self._send_health_text(message, text)
@@ -1200,21 +1242,24 @@ class TelegramBot:
             )
 
     async def _request_health_disconnect(self, message: Message) -> None:
-        """Ask for a final Telegram click before deleting local health data."""
+        """Ask for a final Telegram click before disconnecting health sync."""
         if not await self._health_command_ready(message):
             return
         await self.api.send_message(
             chat_id=message.chat.id,
             text=(
-                "Disconnect Google Health and delete Blacki's stored health "
-                "data for this chat? This cannot be undone locally."
+                "Disconnect Google Health and cancel future meal sync for this "
+                "chat? Blacki will remove its stored health credentials and "
+                "summaries, but keep local calorie logs. Blacki will not delete "
+                "records already sent to Google Health; requests already submitted "
+                "may still finish."
             ),
             message_thread_id=message.message_thread_id,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="Disconnect and delete data",
+                            text="Disconnect and cancel sync",
                             callback_data="health:disconnect",
                         ),
                         InlineKeyboardButton(
@@ -1274,7 +1319,9 @@ class TelegramBot:
                 f"telegram-chat-{chat.id}"
             )
             text = (
-                "Google Health was disconnected and stored health data was deleted."
+                "Google Health was disconnected. Pending meal sync was cancelled, "
+                "local calorie logs remain, and Blacki did not delete records already "
+                "sent to Google Health. Requests already submitted may still finish."
                 if deleted
                 else "Google Health was already disconnected."
             )
@@ -1295,7 +1342,9 @@ class TelegramBot:
             return
         text = (
             "Google Health is connected. Use /health_refresh for a fresh sync or "
-            "/health_summary to read the latest stored records."
+            "/health_summary to read the latest stored records. If both nutrition "
+            "permissions were granted, future private meal logs, edits, and "
+            "deletions will sync automatically; older meals are not backfilled."
             if connected
             else (
                 "Google Health authorization was cancelled. No credentials were stored."
@@ -1336,10 +1385,10 @@ class TelegramBot:
         if self.google_health_service is not None:
             health_commands = (
                 "\n"
-                "/connect_health - Connect Google Health read-only data\n"
+                "/connect_health - Connect Google Health and optional meal sync\n"
                 "/health_summary - Show the latest health summary\n"
                 "/health_refresh - Refresh health data\n"
-                "/disconnect_health - Disconnect and delete health data"
+                "/disconnect_health - Disconnect and cancel meal sync"
             )
         text = escape_markdown_plain(
             "👋 Hello! I'm blacki, your AI assistant.\n\n"
@@ -1366,10 +1415,10 @@ class TelegramBot:
         health_commands = ""
         if self.google_health_service is not None:
             health_commands = (
-                "• /connect_health \\- Connect Google Health read-only data\n"
+                "• /connect_health \\- Connect Google Health and optional meal sync\n"
                 "• /health_summary \\- Show the latest health summary\n"
                 "• /health_refresh \\- Refresh health data\n"
-                "• /disconnect_health \\- Disconnect and delete health data\n"
+                "• /disconnect_health \\- Disconnect and cancel meal sync\n"
             )
         text = (
             "🤖 *blacki \\- AI Assistant*\n\n"

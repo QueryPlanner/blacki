@@ -737,3 +737,90 @@ async def test_google_health_stop_suppresses_scheduler_and_client_errors(
     await server._stop_google_health()
     assert getattr(server, "_google_health_scheduler", object()) is None
     assert getattr(server, "_google_health_service", object()) is None
+
+
+@pytest.mark.asyncio
+async def test_google_health_export_worker_start_failure_rolls_back(
+    mock_dependencies: MagicMock,
+) -> None:
+    """A failing export worker must not leave the scheduler/service dangling."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    from cryptography.fernet import Fernet
+
+    import blacki.server as server
+    from blacki.health.config import GoogleHealthConfig
+    from blacki.health.nutrition_worker import NutritionExportWorker
+    from blacki.health.scheduler import GoogleHealthScheduler
+
+    server._container = MagicMock()
+    config = GoogleHealthConfig(
+        client_id="id",
+        client_secret="secret",
+        redirect_uri="https://example.test/callback",
+        token_encryption_key=Fernet.generate_key().decode(),
+    )
+    with (
+        patch(
+            "blacki.health.config.GoogleHealthConfig.from_environment",
+            return_value=config,
+        ),
+        patch.object(GoogleHealthScheduler, "start", new=AsyncMock()),
+        patch.object(GoogleHealthScheduler, "stop", new=AsyncMock()),
+        patch.object(
+            NutritionExportWorker,
+            "start",
+            new=AsyncMock(side_effect=RuntimeError("worker boot failure")),
+        ),
+        patch.object(NutritionExportWorker, "close", new=AsyncMock()),
+    ):
+        await server._start_google_health()
+
+    assert server._google_health_service is None
+    assert server._google_health_scheduler is None
+    assert server._google_health_export_worker is None
+    server._container = None
+
+
+@pytest.mark.asyncio
+async def test_google_health_stop_without_container_skips_clearing_worker_ref(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Shutdown must not crash if the container was already torn down."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    server._container = None
+    worker = MagicMock()
+    worker.stop = AsyncMock()
+    worker.close = AsyncMock()
+    server._google_health_export_worker = worker
+
+    await server._stop_google_health()
+
+    worker.stop.assert_awaited_once()
+    assert getattr(server, "_google_health_export_worker", object()) is None
+
+
+@pytest.mark.asyncio
+async def test_google_health_stop_suppresses_export_worker_errors(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Shutdown clears the export worker global even if it fails to stop."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    server._container = MagicMock()
+    worker = MagicMock()
+    worker.stop = AsyncMock(side_effect=RuntimeError("worker"))
+    server._google_health_export_worker = worker
+
+    await server._stop_google_health()
+
+    assert getattr(server, "_google_health_export_worker", object()) is None
+    server._container = None

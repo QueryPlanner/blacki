@@ -55,6 +55,20 @@ def test_private_tool_identification_uses_zepto_prefix() -> None:
     assert is_private_tool(_tool("get_health_summary")) is True
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "log_meal",
+        "edit_meal",
+        "delete_meal",
+        "get_calorie_summary",
+        "set_calorie_goal",
+    ],
+)
+def test_calorie_tools_are_private(tool_name: str) -> None:
+    assert is_private_tool(_tool(tool_name)) is True
+
+
 def test_kokoro_tts_enables_content_redaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -167,6 +181,40 @@ async def test_privacy_logging_plugin_redacts_tts_payloads(
     output = capsys.readouterr().out
     assert "send_text_to_speech" in output
     assert "private speech" not in output
+
+
+@pytest.mark.asyncio
+async def test_privacy_logging_plugin_redacts_calorie_payloads(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin = PrivacyAwareLoggingPlugin()
+    context = MagicMock()
+    context.function_call_id = "call-meal"
+    context.agent_name = "blacki"
+    tool = _tool("log_meal")
+
+    await plugin.before_tool_callback(
+        tool=tool,
+        tool_args={"description": "private dinner", "estimated_calories": 900},
+        tool_context=context,
+    )
+    await plugin.after_tool_callback(
+        tool=tool,
+        tool_args={"description": "private dinner", "estimated_calories": 900},
+        tool_context=context,
+        result={"message": "private dinner", "daily_total": 900},
+    )
+    await plugin.on_tool_error_callback(
+        tool=tool,
+        tool_args={"description": "private dinner", "estimated_calories": 900},
+        tool_context=context,
+        error=RuntimeError("private meal failure"),
+    )
+
+    output = capsys.readouterr().out
+    assert "log_meal" in output
+    for private_value in ("private dinner", "900", "private meal failure"):
+        assert private_value not in output
 
 
 @pytest.mark.asyncio

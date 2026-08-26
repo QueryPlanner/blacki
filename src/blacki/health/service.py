@@ -65,6 +65,7 @@ class SyncResult:
     records_fetched: int = 0
     unavailable_data_types: tuple[str, ...] = ()
     next_allowed_at: str | None = None
+    google_health_sync: dict[str, int] | None = None
 
 
 class GoogleHealthService:
@@ -171,6 +172,23 @@ class GoogleHealthService:
                     logger.warning("Google Health remote token revocation failed")
         return await self.storage.delete_connection(user_id)
 
+    async def _sync_result(
+        self, *, status: str, telegram_user_id: str, **fields: Any
+    ) -> SyncResult:
+        """Build a ``SyncResult`` carrying durable meal-sync counts.
+
+        Every caller reports these counts regardless of provider outcome, so
+        Telegram can show pending/synced/failed meal exports even when the
+        health-data sync itself failed or the account needs reauthorization.
+        """
+        counts = await self.storage.nutrition.counts(telegram_user_id)
+        return SyncResult(
+            status=status,
+            telegram_user_id=telegram_user_id,
+            google_health_sync=counts,
+            **fields,
+        )
+
     async def refresh_user(
         self, telegram_user_id: str, *, days: int = 14
     ) -> SyncResult:
@@ -183,8 +201,10 @@ class GoogleHealthService:
         if not allowed:
             status = await self.connection_status(user_id)
             if status["status"] != "connected":
-                return SyncResult(status=status["status"], telegram_user_id=user_id)
-            return SyncResult(
+                return await self._sync_result(
+                    status=status["status"], telegram_user_id=user_id
+                )
+            return await self._sync_result(
                 status="rate_limited",
                 telegram_user_id=user_id,
                 next_allowed_at=next_allowed_at.isoformat()
@@ -198,12 +218,16 @@ class GoogleHealthService:
         user_id = _canonical_user_id(telegram_user_id)
         connection = await self.storage.get_connection(user_id)
         if connection is None:
-            return SyncResult(status="not_connected", telegram_user_id=user_id)
+            return await self._sync_result(
+                status="not_connected", telegram_user_id=user_id
+            )
         if (
             connection.status != "connected"
             or connection.encrypted_refresh_token is None
         ):
-            return SyncResult(status=connection.status, telegram_user_id=user_id)
+            return await self._sync_result(
+                status=connection.status, telegram_user_id=user_id
+            )
 
         try:
             refresh_token = self.config.cipher.decrypt(
@@ -213,7 +237,7 @@ class GoogleHealthService:
             await self.storage.mark_reauthorization_required(
                 user_id, "stored_token_invalid"
             )
-            return SyncResult(
+            return await self._sync_result(
                 status="reauthorization_required", telegram_user_id=user_id
             )
 
@@ -229,7 +253,7 @@ class GoogleHealthService:
             await self.storage.mark_reauthorization_required(
                 user_id, exc.error_code or "authorization_required"
             )
-            return SyncResult(
+            return await self._sync_result(
                 status="reauthorization_required", telegram_user_id=user_id
             )
         except GoogleHealthApiError as exc:
@@ -237,7 +261,7 @@ class GoogleHealthService:
                 await self.storage.mark_reauthorization_required(
                     user_id, "invalid_grant"
                 )
-                return SyncResult(
+                return await self._sync_result(
                     status="reauthorization_required", telegram_user_id=user_id
                 )
             logger.warning(
@@ -245,7 +269,7 @@ class GoogleHealthService:
                 exc.status_code,
                 exc.error_code,
             )
-            return SyncResult(status="failed", telegram_user_id=user_id)
+            return await self._sync_result(status="failed", telegram_user_id=user_id)
 
         start_time, end_time = _sync_window(days)
         data_by_type: dict[str, list[dict[str, Any]]] = {}
@@ -273,7 +297,7 @@ class GoogleHealthService:
                 await self.storage.mark_reauthorization_required(
                     user_id, exc.error_code or "authorization_required"
                 )
-                return SyncResult(
+                return await self._sync_result(
                     status="reauthorization_required", telegram_user_id=user_id
                 )
             except GoogleHealthApiError as exc:
@@ -284,7 +308,9 @@ class GoogleHealthService:
                     exc.status_code,
                     exc.error_code,
                 )
-                return SyncResult(status="failed", telegram_user_id=user_id)
+                return await self._sync_result(
+                    status="failed", telegram_user_id=user_id
+                )
             data_by_type[data_type] = points
             records_fetched += len(points)
 
@@ -303,7 +329,7 @@ class GoogleHealthService:
             len(normalized_days),
             len(unavailable),
         )
-        return SyncResult(
+        return await self._sync_result(
             status="success",
             telegram_user_id=user_id,
             days_upserted=len(normalized_days),
