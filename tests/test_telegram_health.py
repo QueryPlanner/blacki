@@ -135,6 +135,23 @@ async def test_health_summary_and_refresh_are_readable() -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_refresh_success_includes_sync_counts() -> None:
+    """A successful refresh still reports durable meal-export counts."""
+    bot, service, api = _bot()
+    service.refresh_user.return_value = SyncResult(
+        status="success",
+        telegram_user_id="telegram-chat-42",
+        days_upserted=1,
+        records_fetched=2,
+        google_health_sync={"pending": 1, "synced": 3},
+    )
+    await bot._handle_command(_message(), "/health_refresh")
+    text = api.send_message.call_args.kwargs["text"]
+    assert "1 pending" in text
+    assert "3 synced" in text
+
+
+@pytest.mark.asyncio
 async def test_health_refresh_status_messages() -> None:
     """Non-success sync states remain provider- and identity-safe."""
     bot, service, api = _bot()

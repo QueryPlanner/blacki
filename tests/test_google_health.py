@@ -1655,10 +1655,19 @@ async def test_health_service_sync_failure_modes(
     await health_storage.upsert_daily_summaries(
         "telegram-chat-42", [{"date": stale_date, "steps": 1}]
     )
+    await health_storage.nutrition.enqueue(
+        meal_id=1,
+        owner_id="telegram-chat-42",
+        telegram_user_id="telegram-chat-42",
+        health_user_id="health-id",
+        payload={"nutritionLog": {}},
+        operation="upsert",
+    )
     result = await service.sync_user("telegram-chat-42", days=7)
     assert result.status == "success"
     assert result.records_fetched == 1
     assert "exercise" in result.unavailable_data_types
+    assert result.google_health_sync == {"pending": 1}
     summary = await service.summary("telegram-chat-42", days=7)
     assert summary["status"] == "success"
     assert summary["days"][0]["steps"] == 8420

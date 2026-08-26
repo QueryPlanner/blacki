@@ -17,7 +17,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .client import GoogleHealthApiError, GoogleHealthAuthError, GoogleHealthClient
-from .config import GoogleHealthConfig, TokenEncryptionError
+from .config import (
+    GOOGLE_HEALTH_NUTRITION_SCOPES,
+    GoogleHealthConfig,
+    TokenEncryptionError,
+)
 from .storage import SqliteGoogleHealthStorage
 
 logger = logging.getLogger(__name__)
@@ -137,6 +141,19 @@ class NutritionExportWorker:
             await self.storage.mark_reauthorization_required(telegram_user_id)
             return
 
+        if not set(GOOGLE_HEALTH_NUTRITION_SCOPES) <= set(connection.scopes):
+            # The connection itself is fine, only nutrition write scope is
+            # missing (e.g. the user reconnected with read-only scopes).
+            # Pause just this export instead of nuking the whole connection,
+            # which would also disable read-only Health summaries.
+            await nutrition.result(
+                meal_id,
+                "authorization_required",
+                error="nutrition_scope_missing",
+                expected_revision=desired_revision,
+            )
+            return
+
         try:
             refresh_token = self.config.cipher.decrypt(
                 connection.encrypted_refresh_token
@@ -230,7 +247,11 @@ class NutritionExportWorker:
     ) -> tuple[str, Exception | None]:
         sequence = int(revision["sequence"])
         resource_name = str(revision["resource_name"])
-        if str(revision["state"]) == "uncertain":
+        if str(revision["state"]) in {"uncertain", "in_flight"}:
+            # A crash between marking "in_flight" and recording the create's
+            # outcome leaves that state persisted across restarts, not just
+            # set in memory. Reconcile it the same way as "uncertain" instead
+            # of blindly re-POSTing a create that may have already landed.
             return await self._verify_upsert(nutrition, access_token, revision)
 
         payload = json.loads(revision["payload_json"])
@@ -287,7 +308,10 @@ class NutritionExportWorker:
     ) -> tuple[str, Exception | None]:
         sequence = int(revision["sequence"])
         resource_name = str(revision["resource_name"])
-        if str(revision["state"]) == "uncertain":
+        if str(revision["state"]) in {"uncertain", "in_flight"}:
+            # Same restart hazard as the upsert path: a persisted "in_flight"
+            # delete must be reconciled with a GET before retrying, since the
+            # delete itself may have already succeeded before the crash.
             try:
                 await self.client.get_data_point(access_token, resource_name)
             except GoogleHealthAuthError:

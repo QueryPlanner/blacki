@@ -1223,7 +1223,9 @@ class TelegramBot:
             result = await service.refresh_user(f"telegram-chat-{message.chat.id}")
             if result.status == "success":
                 summary = await service.summary(f"telegram-chat-{message.chat.id}")
-                text = format_health_summary(summary)
+                text = _append_google_health_sync_counts(
+                    format_health_summary(summary), result
+                )
             else:
                 text = _format_health_sync_result(result)
             await self._send_health_text(message, text)

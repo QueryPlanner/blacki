@@ -17,7 +17,11 @@ from blacki.health.client import (
     GoogleHealthOperation,
     GoogleTokenResponse,
 )
-from blacki.health.config import GOOGLE_HEALTH_SCOPES, GoogleHealthConfig
+from blacki.health.config import (
+    GOOGLE_HEALTH_READ_SCOPES,
+    GOOGLE_HEALTH_SCOPES,
+    GoogleHealthConfig,
+)
 from blacki.health.nutrition_worker import NutritionExportWorker
 from blacki.health.storage import SqliteGoogleHealthStorage
 
@@ -216,6 +220,42 @@ async def test_worker_pauses_on_auth_error(
     assert connection.status == "reauthorization_required"
 
 
+async def test_worker_preserves_connection_when_nutrition_scope_missing(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    """A read-only reconnect must not disable the whole Health connection."""
+    config = _config()
+    await storage.upsert_connection(
+        telegram_user_id=USER_ID,
+        encrypted_refresh_token=config.cipher.encrypt("refresh-token"),
+        health_user_id=HEALTH_USER_ID,
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_READ_SCOPES,
+    )
+    await storage.nutrition.enqueue(
+        meal_id=100,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=PAYLOAD,
+        operation="upsert",
+    )
+    worker, client = _worker(storage, config)
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(100)
+    assert row is not None
+    assert row["status"] == "authorization_required"
+    assert row["error_code"] == "nutrition_scope_missing"
+    connection = await storage.get_connection(USER_ID)
+    assert connection is not None
+    assert connection.status == "connected"
+    assert connection.encrypted_refresh_token is not None
+    client.refresh_access_token.assert_not_awaited()
+    client.create_nutrition_log.assert_not_awaited()
+
+
 async def test_worker_dispatches_delete_success(
     storage: SqliteGoogleHealthStorage,
 ) -> None:
@@ -277,6 +317,42 @@ async def test_worker_resolves_uncertain_delete_via_404(
     row = await storage.nutrition.meal(6)
     assert row is not None
     assert row["status"] == "deleted"
+    client.delete_nutrition_log.assert_not_awaited()
+
+
+async def test_worker_reconciles_persisted_in_flight_delete(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    """A crash right after "in_flight" persists must verify, not re-delete."""
+    config = _config()
+    await _connect(storage, config)
+    resource_name = (
+        f"users/{HEALTH_USER_ID}/dataTypes/nutrition-log/dataPoints/blacki-z"
+    )
+    await storage.nutrition.enqueue(
+        meal_id=102,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=None,
+        operation="delete",
+        target_resource_name=resource_name,
+    )
+    await storage.nutrition.revision_state(1, "in_flight")
+    worker, client = _worker(storage, config)
+    client.refresh_access_token.return_value = _token()
+    client.get_data_point.side_effect = GoogleHealthApiError(
+        "not found", status_code=404
+    )
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(102)
+    assert row is not None
+    assert row["status"] == "deleted"
+    revisions = await storage.nutrition.revisions(102)
+    assert revisions[0]["state"] == "deleted"
+    client.get_data_point.assert_awaited_once()
     client.delete_nutrition_log.assert_not_awaited()
 
 
@@ -372,6 +448,36 @@ async def test_worker_uncertain_upsert_still_processing(
     row = await storage.nutrition.meal(9)
     assert row is not None
     assert row["status"] == "pending"
+    client.create_nutrition_log.assert_not_awaited()
+
+
+async def test_worker_reconciles_persisted_in_flight_upsert(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    """A crash right after "in_flight" persists must not re-POST blindly."""
+    config = _config()
+    await _connect(storage, config)
+    await storage.nutrition.enqueue(
+        meal_id=101,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=PAYLOAD,
+        operation="upsert",
+    )
+    await storage.nutrition.revision_state(1, "in_flight")
+    worker, client = _worker(storage, config)
+    client.refresh_access_token.return_value = _token()
+    client.get_data_point.return_value = PAYLOAD
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(101)
+    assert row is not None
+    assert row["status"] == "synced"
+    revisions = await storage.nutrition.revisions(101)
+    assert revisions[0]["state"] == "synced"
+    client.get_data_point.assert_awaited_once()
     client.create_nutrition_log.assert_not_awaited()
 
 
