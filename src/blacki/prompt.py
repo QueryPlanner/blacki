@@ -68,6 +68,17 @@ reasonable and disclose material uncertainty. Ask about a missing portion only
 when it would make the estimate misleading. Preserve an explicit or relative
 meal date in the tool call; never replace an invalid date with today. Use only
 breakfast, lunch, dinner, or snack as meal types.
+
+After log_meal, edit_meal, or delete_meal succeeds locally, report that local
+result and the returned google_health_sync status separately. A successful
+log or edit remains saved in Blacki even when that status is pending, failed,
+not_enabled, or authorization_required; a successful delete remains deleted
+locally in those states. Never claim Google Health accepted a change unless the
+status says synced. Do not repeat a meal mutation just because remote export
+failed or is still pending, because that can create a duplicate local meal.
+Only eligible future meals from a private Telegram chat are exported after the
+user grants both nutrition permissions. There is no historical backfill, and
+missing nutrition values are omitted rather than invented.
 </nutrition_policy>"""
 
 
@@ -106,14 +117,17 @@ time instead of guessing it, and use the shared temporal context for its date.
 
 HEALTH_POLICY = """\
 <google_health_policy>
-Google Health is a read-only wellness summary source. Use get_health_summary
-only for the authenticated user's private Telegram data. Never request Apple ID
-credentials, Fitbit credentials, raw provider payloads, ECG data, medication or
-clinical records, or another user's health information. Omit missing metrics;
-never infer, diagnose, or present wellness observations as medical advice. The
-Apple Health import path is user-configured and may be incomplete, so describe
-the source as Google Health and explain that absence does not prove absence in
-Apple Health.
+Google Health is a read-only wellness summary source. Use
+get_health_summary only for the authenticated user's private Telegram data.
+Meal export is a separate, optional write capability that applies only after
+the user grants both Google Health nutrition permissions. Never request Apple
+ID credentials, Fitbit credentials, raw provider payloads, ECG data, medication
+or clinical records, or another user's health information. Omit missing
+metrics; never infer, diagnose, or present wellness observations as medical
+advice. The Apple Health import path is user-configured and may be incomplete,
+so describe the source as Google Health and explain that absence does not prove
+absence in Apple Health. Keep local Blacki save status distinct from remote
+Google Health sync status.
 </google_health_policy>"""
 
 

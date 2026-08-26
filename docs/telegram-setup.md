@@ -87,30 +87,56 @@ retains the model's tool call and arguments.
 ### Optional Connect Google Health
 
 Blacki can read normalized health summaries after a user completes Google OAuth
-from a private Telegram chat. This is intentionally named **Connect Google
-Health**: Blacki does not request Apple ID credentials, access HealthKit, scrape
-Fitbit, or receive arbitrary Apple Health records. The user must first configure
-an Apple Health-to-Google Health/Fitbit-compatible import path if their account
-and app version support it.
+from a private Telegram chat. If the user grants both nutrition permissions,
+Blacki also exports future meal logs, edits, and deletions from that private
+chat. This is intentionally named **Connect Google Health**: Blacki does not
+request Apple ID credentials, access HealthKit, scrape Fitbit, or receive
+arbitrary Apple Health records. The user must first configure an Apple
+Health-to-Google Health/Fitbit-compatible import path if their account and app
+version support it.
 
 Configure the Google Cloud OAuth web client and the `GOOGLE_HEALTH_*` values in
 [Configuration](base-infra/environment-variables.md), then set the callback URL
 to the exact public HTTPS URL. In Telegram:
 
 1. Send `/connect_health` in a private chat.
-2. Open the one-time Google authorization link and grant only the requested
-   read-only categories.
+2. Open the one-time Google authorization link. Grant the read-only categories
+   for summaries. Grant both `googlehealth.nutrition.readonly` and
+   `googlehealth.nutrition.writeonly` if you want future meal export. Existing
+   connections must reconnect to add these nutrition permissions. The nutrition
+   read permission lets Blacki verify records it created by exact data point
+   ID; it does not import unrelated food logs.
 3. Return to Telegram and use `/health_refresh` for an on-demand sync or
    `/health_summary` for the latest stored records.
-4. Use `/disconnect_health`, then confirm the button, to revoke the token
-   best-effort and delete Blacki's stored token, normalized records, and pending
-   OAuth state.
+4. Log meals normally. Eligible new meals show a `google_health_sync` status;
+   `pending` is retried in the background, `synced` confirms the remote write,
+   `authorization_required` asks you to reconnect, and `failed` remains visible
+   for follow-up. A local Blacki save is still successful when remote sync is
+   pending or fails, and the meal must not be logged again.
+5. Use `/disconnect_health`, then confirm the button, to revoke the token
+   best-effort, cancel pending meal sync, and remove Blacki's stored token and
+   normalized health summaries. Local calorie logs remain. Blacki does not
+   delete records already sent to Google Health, and requests already submitted
+   may still finish.
 
 The background sync runs every 12 hours by default and fetches a bounded recent
 window so late device imports can replace earlier daily records. Missing values
 are omitted rather than guessed. Stored data is limited to normalized daily
 activity, workout, sleep, heart-rate, weight, and body-fat summaries; raw
-Google payloads and provider IDs are not persisted in the summary table.
+Google payloads and provider IDs are not persisted in the summary table. Meal
+exports are persisted separately with retry state and opaque data point IDs;
+there is no historical backfill. The meal export worker runs every minute
+independently of health imports. Run only one active scheduler process per
+`tools.db` so a deployment does not dispatch duplicate work.
+
+Google's v4 discovery document currently lists `nutrition-log` as a supported
+data type. Blacki writes only the local meal description, kcal, available
+macros, meal type, and selected local date; it omits unknown nutrients and does
+not substitute food-database estimates. See Google's [nutrition data type]
+and [data point REST reference] for the provider contract.
+
+[nutrition data type]: https://developers.google.com/health/data-types/nutrition
+[data point REST reference]: https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints
 
 Google Health availability does not prove that a particular Apple Health metric
 was imported. Test the desired categories on a non-production account before
@@ -145,10 +171,10 @@ Open the bot in Telegram and send:
 | `/model` | Open the model and thinking settings panel |
 | `/thinking` | Open the supported reasoning-effort choices for the active model |
 | `/reset` | Start a fresh conversation session |
-| `/connect_health` | Send a Google Health authorization link |
+| `/connect_health` | Send a Google Health authorization link and consent for optional meal sync |
 | `/health_refresh` | Fetch recent Google Health data (rate limited) |
 | `/health_summary` | Show normalized daily records and trends |
-| `/disconnect_health` | Confirm disconnection and local health-data deletion |
+| `/disconnect_health` | Confirm disconnection and cancellation of meal sync |
 
 Then send a normal message and confirm the model responds. Blacki does not
 currently implement a `/clear` command.

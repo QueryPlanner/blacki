@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from urllib.parse import parse_qs, urlsplit
@@ -21,11 +23,15 @@ from blacki.health.client import (
     GoogleHealthAuthError,
     GoogleHealthClient,
     GoogleHealthIdentity,
+    GoogleHealthOperation,
     GoogleTokenResponse,
     _filter_for_data_type,
     _json_object,
+    _nutrition_parent,
+    _parse_operation,
     _parse_token_response,
     _raise_provider_error,
+    _retry_after_seconds,
 )
 from blacki.health.config import (
     GOOGLE_HEALTH_SCOPES,
@@ -108,6 +114,8 @@ def test_health_config_and_cipher() -> None:
         "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
         "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
         "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+        "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly",
     )
 
     query = parse_qs(urlsplit(config.authorization_url("state-value")).query)
@@ -322,6 +330,25 @@ async def test_google_health_client_errors_are_safe() -> None:
         _parse_token_response({}, require_refresh_token=False)
 
 
+@pytest.mark.asyncio
+async def test_google_health_token_request_wraps_transport_errors() -> None:
+    """A network failure reaching Google's token endpoint is a safe, typed error."""
+    config = _config()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = GoogleHealthClient(
+        config,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(GoogleHealthApiError) as error:
+        await client.refresh_access_token("refresh")
+    assert error.value.error_code == "transport_error"
+    assert error.value.transport is True
+    await client.close()
+
+
 def test_structured_google_health_error_exposes_only_reason_code() -> None:
     """Extract Google RPC ErrorInfo reasons without exposing provider text."""
     with pytest.raises(GoogleHealthApiError) as error:
@@ -398,6 +425,211 @@ async def test_google_health_client_handles_non_list_pages_and_lazy_client() -> 
     lazy_client = GoogleHealthClient(config)
     assert await lazy_client._ensure_client() is not None
     await lazy_client.close()
+
+
+_NUTRITION_RESOURCE_NAME = (
+    "users/health-user-1/dataTypes/nutrition-log/dataPoints/blacki-test1234"
+)
+
+
+@pytest.mark.asyncio
+async def test_google_health_client_nutrition_methods_use_safe_requests() -> None:
+    """Create, fetch, and delete a nutrition log through the expected endpoints."""
+    config = _config()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "POST" and request.url.path.endswith("/dataPoints"):
+            return _response(200, {"done": True, "response": {}})
+        if request.method == "GET":
+            return _response(200, {"name": _NUTRITION_RESOURCE_NAME})
+        if request.method == "POST" and request.url.path.endswith(
+            "/dataPoints:batchDelete"
+        ):
+            return _response(200, {"done": True, "response": {}})
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = GoogleHealthClient(
+        config,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    created = await client.create_nutrition_log(
+        "access", _NUTRITION_RESOURCE_NAME, {"nutritionLog": {"calories": 500}}
+    )
+    fetched = await client.get_data_point("access", _NUTRITION_RESOURCE_NAME)
+    deleted = await client.delete_nutrition_log("access", _NUTRITION_RESOURCE_NAME)
+    await client.close()
+
+    assert created == GoogleHealthOperation(done=True, response={})
+    assert fetched == {"name": _NUTRITION_RESOURCE_NAME}
+    assert deleted == GoogleHealthOperation(done=True, response={})
+    assert len(requests) == 3
+    assert requests[0].url.path == (
+        "/v4/users/health-user-1/dataTypes/nutrition-log/dataPoints"
+    )
+    assert requests[1].url.path == f"/v4/{_NUTRITION_RESOURCE_NAME}"
+    assert requests[2].url.path == (
+        "/v4/users/health-user-1/dataTypes/nutrition-log/dataPoints:batchDelete"
+    )
+    create_body = json.loads(requests[0].content)
+    assert create_body["name"] == _NUTRITION_RESOURCE_NAME
+    assert create_body["nutritionLog"] == {"calories": 500}
+    delete_body = json.loads(requests[2].content)
+    assert delete_body == {"names": [_NUTRITION_RESOURCE_NAME]}
+
+
+@pytest.mark.asyncio
+async def test_google_health_client_api_transport_error_is_safe() -> None:
+    """A network failure against the Health API never leaks transport details."""
+    config = _config()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("secret transport failure", request=request)
+
+    client = GoogleHealthClient(
+        config,
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(GoogleHealthApiError) as error:
+        await client.get_identity("access")
+    assert error.value.transport is True
+    assert error.value.error_code == "transport_error"
+    assert "secret transport failure" not in str(error.value)
+    await client.close()
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"done": True, "error": {"status": "NOT_FOUND"}},
+            GoogleHealthOperation(done=True, error_code="NOT_FOUND"),
+        ),
+        (
+            {"done": True, "error": {"status": "x" * 90}},
+            GoogleHealthOperation(done=True, error_code="x" * 80),
+        ),
+        (
+            {"done": True, "error": {"code": 404}},
+            GoogleHealthOperation(done=True, error_code="provider_error_404"),
+        ),
+        (
+            {"done": True, "error": {}},
+            GoogleHealthOperation(done=True, error_code="provider_error"),
+        ),
+        (
+            {"done": True, "error": "quota exceeded"},
+            GoogleHealthOperation(done=True, error_code="quota exceeded"),
+        ),
+        (
+            {"done": True, "error": "x" * 90},
+            GoogleHealthOperation(done=True, error_code="x" * 80),
+        ),
+        (
+            {"done": True, "error": "café"},
+            GoogleHealthOperation(done=True, error_code="provider_error"),
+        ),
+        (
+            {"done": True, "error": "\x01bad"},
+            GoogleHealthOperation(done=True, error_code="provider_error"),
+        ),
+        (
+            {"done": True, "error": 123},
+            GoogleHealthOperation(done=True, error_code="provider_error"),
+        ),
+        (
+            {"done": True, "response": {"ok": True}, "name": "operations/1"},
+            GoogleHealthOperation(
+                done=True, name="operations/1", response={"ok": True}
+            ),
+        ),
+        (
+            {"done": False, "name": ""},
+            GoogleHealthOperation(done=False, name=None),
+        ),
+    ],
+)
+def test_parse_operation_handles_all_error_shapes(
+    payload: dict[str, object], expected: GoogleHealthOperation
+) -> None:
+    """Every provider-supplied error shape maps to a bounded, safe error code."""
+    assert _parse_operation(payload) == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"done": "true"},
+        {"done": None},
+        {"done": True},
+        {"done": True, "error": None, "response": None},
+    ],
+)
+def test_parse_operation_rejects_incomplete_payloads(
+    payload: dict[str, object],
+) -> None:
+    """Missing ``done`` or a completed operation without error/response fails closed."""
+    with pytest.raises(GoogleHealthApiError, match="incomplete"):
+        _parse_operation(payload)
+
+
+def test_nutrition_parent_validates_resource_name() -> None:
+    """Only a well-formed nutrition data point name yields its parent path."""
+    assert _nutrition_parent(_NUTRITION_RESOURCE_NAME) == (
+        "users/health-user-1/dataTypes/nutrition-log"
+    )
+    with pytest.raises(ValueError, match="not a valid nutrition data point name"):
+        _nutrition_parent("users/health-user-1/dataTypes/nutrition-log/dataPoints/abc")
+    with pytest.raises(ValueError, match="not a valid nutrition data point name"):
+        _nutrition_parent("users/health-user-1/dataTypes/steps/dataPoints/blacki-1234")
+
+
+def test_retry_after_seconds_parses_bounded_values() -> None:
+    """Numeric, HTTP-date, missing, garbage, and non-finite values are all safe."""
+    assert _retry_after_seconds(_response(200, {})) is None
+
+    numeric = httpx.Response(
+        200,
+        headers={"Retry-After": "120"},
+        request=httpx.Request("GET", "https://example.test"),
+    )
+    assert _retry_after_seconds(numeric) == 120.0
+
+    future = datetime.now(UTC) + timedelta(seconds=90)
+    date_response = httpx.Response(
+        200,
+        headers={"Retry-After": format_datetime(future, usegmt=True)},
+        request=httpx.Request("GET", "https://example.test"),
+    )
+    parsed = _retry_after_seconds(date_response)
+    assert parsed is not None
+    assert 80.0 <= parsed <= 100.0
+
+    garbage = httpx.Response(
+        200,
+        headers={"Retry-After": "not-a-number-or-date"},
+        request=httpx.Request("GET", "https://example.test"),
+    )
+    assert _retry_after_seconds(garbage) is None
+
+    for non_finite in ("nan", "inf", "-inf"):
+        response = httpx.Response(
+            200,
+            headers={"Retry-After": non_finite},
+            request=httpx.Request("GET", "https://example.test"),
+        )
+        assert _retry_after_seconds(response) is None
+
+    naive_date_response = httpx.Response(
+        200,
+        headers={"Retry-After": "Mon, 01 Jan 2077 00:00:00"},
+        request=httpx.Request("GET", "https://example.test"),
+    )
+    naive_parsed = _retry_after_seconds(naive_date_response)
+    assert naive_parsed is not None
+    assert naive_parsed > 0.0
 
 
 @pytest.mark.parametrize(
@@ -921,6 +1153,34 @@ async def test_health_storage_lifecycle(
     assert await health_storage.delete_connection("telegram-chat-42") is True
     assert await health_storage.delete_connection("telegram-chat-42") is False
     assert _parse_timestamp("2026-08-16T00:00:00").tzinfo == UTC
+
+
+@pytest.mark.asyncio
+async def test_delete_connection_rolls_back_on_failure(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    """A mid-transaction failure must not leave a partially deleted connection."""
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-99",
+        encrypted_refresh_token=_config().cipher.encrypt("refresh"),
+        health_user_id="health-id-99",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    original_cancel = health_storage.nutrition.cancel
+
+    async def _boom(user_id: str) -> None:
+        raise RuntimeError("simulated failure")
+
+    health_storage.nutrition.cancel = _boom  # type: ignore[method-assign]
+    try:
+        with pytest.raises(RuntimeError, match="simulated failure"):
+            await health_storage.delete_connection("telegram-chat-99")
+    finally:
+        health_storage.nutrition.cancel = original_cancel  # type: ignore[method-assign]
+
+    connection = await health_storage.get_connection("telegram-chat-99")
+    assert connection is not None
 
 
 @pytest.mark.asyncio

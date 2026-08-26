@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+import aiosqlite
 
 from blacki.storage.base import SqlStorage
 from blacki.utils.timezone import now_utc
 
-if TYPE_CHECKING:
-    pass
+from .config import GOOGLE_HEALTH_NUTRITION_SCOPES
+from .nutrition_storage import NutritionStorage
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,10 @@ class HealthConnection:
 
 class SqliteGoogleHealthStorage(SqlStorage):
     """Store encrypted credentials, OAuth state, and normalized daily records."""
+
+    def __init__(self, conn: aiosqlite.Connection, lock: asyncio.Lock) -> None:
+        super().__init__(conn, lock)
+        self._nutrition = NutritionStorage(conn, lock)
 
     async def _create_tables(self) -> None:
         await self._conn.execute("""
@@ -72,6 +79,21 @@ class SqliteGoogleHealthStorage(SqlStorage):
             ON google_health_oauth_states (expires_at)
             """
         )
+        # This is called while the health storage owns the shared write lock.
+        # Calling NutritionStorage.initialize() here would deadlock on that lock.
+        await self._nutrition._create_tables()
+        self._nutrition._schema_ready = True
+
+    @property
+    def nutrition(self) -> NutritionStorage:
+        """Return durable meal export storage on this same connection."""
+        return self._nutrition
+
+    async def close(self) -> None:
+        """Reset both health schemas without acquiring the lock twice."""
+        async with self._lock:
+            self._schema_ready = False
+            self._nutrition._schema_ready = False
 
     async def store_oauth_state(
         self,
@@ -153,6 +175,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
                         "WHERE telegram_user_id = ?",
                         (telegram_user_id,),
                     )
+                    await self._nutrition.cancel(telegram_user_id)
 
                 await self._conn.execute(
                     """
@@ -191,6 +214,10 @@ class SqliteGoogleHealthStorage(SqlStorage):
                         connected_at,
                     ),
                 )
+                if not identity_changed and set(GOOGLE_HEALTH_NUTRITION_SCOPES) <= set(
+                    scopes
+                ):
+                    await self._nutrition.resume(telegram_user_id, health_user_id)
                 await self._conn.execute("COMMIT")
             except Exception:
                 await self._conn.execute("ROLLBACK")
@@ -236,7 +263,9 @@ class SqliteGoogleHealthStorage(SqlStorage):
             )
 
     async def mark_reauthorization_required(
-        self, telegram_user_id: str, error_code: str = "authorization_required"
+        self,
+        telegram_user_id: str,
+        error_code: str = "authorization_required",
     ) -> None:
         """Disable scheduled pulls while retaining only safe status metadata."""
         safe_error = (
@@ -254,6 +283,14 @@ class SqliteGoogleHealthStorage(SqlStorage):
                     status = 'reauthorization_required',
                     last_sync_error = ?
                 WHERE telegram_user_id = ?
+                """,
+                (safe_error, telegram_user_id),
+            )
+            await self._conn.execute(
+                """
+                UPDATE nutrition_exports
+                SET status = 'authorization_required', error_code = ?
+                WHERE telegram_user_id = ? AND status = 'pending'
                 """,
                 (safe_error, telegram_user_id),
             )
@@ -402,19 +439,27 @@ class SqliteGoogleHealthStorage(SqlStorage):
     async def delete_connection(self, telegram_user_id: str) -> bool:
         """Delete credentials, OAuth state, and normalized health data."""
         async with self._lock:
-            cursor = await self._conn.execute(
-                "DELETE FROM google_health_connections WHERE telegram_user_id = ?",
-                (telegram_user_id,),
-            )
-            await self._conn.execute(
-                "DELETE FROM google_health_oauth_states WHERE telegram_user_id = ?",
-                (telegram_user_id,),
-            )
-            await self._conn.execute(
-                "DELETE FROM google_health_daily_summaries WHERE telegram_user_id = ?",
-                (telegram_user_id,),
-            )
-            return cursor.rowcount > 0
+            await self._conn.execute("BEGIN")
+            try:
+                await self._nutrition.cancel(telegram_user_id)
+                cursor = await self._conn.execute(
+                    "DELETE FROM google_health_connections WHERE telegram_user_id = ?",
+                    (telegram_user_id,),
+                )
+                await self._conn.execute(
+                    "DELETE FROM google_health_oauth_states WHERE telegram_user_id = ?",
+                    (telegram_user_id,),
+                )
+                await self._conn.execute(
+                    "DELETE FROM google_health_daily_summaries "
+                    "WHERE telegram_user_id = ?",
+                    (telegram_user_id,),
+                )
+                await self._conn.execute("COMMIT")
+                return cursor.rowcount > 0
+            except Exception:
+                await self._conn.execute("ROLLBACK")
+                raise
 
 
 def _connection_from_row(row: Mapping[str, Any]) -> HealthConnection:

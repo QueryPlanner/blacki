@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from blacki.calories.storage import SqliteCalorieStorage
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
+    from blacki.health.nutrition_worker import NutritionExportWorker
     from blacki.health.storage import SqliteGoogleHealthStorage
     from blacki.reminders.storage import SqliteReminderStorage
     from blacki.telegram.access import TelegramAccessStorage
@@ -148,6 +149,13 @@ class AppContainer:
         default=None, init=False, repr=False
     )
     _telegram_access_storage: TelegramAccessStorage | None = field(
+        default=None, init=False, repr=False
+    )
+    # Set by the server once the Google Health export worker is running, so
+    # MealService.mutate() can wake the dispatch loop right after a commit
+    # instead of waiting up to 60s for the next poll. None when the
+    # connector is not configured or not running (e.g. most tests).
+    nutrition_export_worker: NutritionExportWorker | None = field(
         default=None, init=False, repr=False
     )
 

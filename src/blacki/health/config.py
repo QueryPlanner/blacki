@@ -17,11 +17,16 @@ GOOGLE_HEALTH_API_BASE_URL = "https://health.googleapis.com"
 GOOGLE_HEALTH_DEFAULT_REDIRECT_URI = (
     "http://127.0.0.1:8080/integrations/google-health/callback"
 )
-GOOGLE_HEALTH_SCOPES = (
+GOOGLE_HEALTH_READ_SCOPES = (
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
     "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
 )
+GOOGLE_HEALTH_NUTRITION_SCOPES = (
+    "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
+    "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly",
+)
+GOOGLE_HEALTH_SCOPES = GOOGLE_HEALTH_READ_SCOPES + GOOGLE_HEALTH_NUTRITION_SCOPES
 
 _TELEGRAM_HEALTH_USER_PATTERN = re.compile(
     r"^telegram-chat-(?P<chat_id>-?\d+)(?:-thread-\d+)?$"

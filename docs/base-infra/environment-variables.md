@@ -138,11 +138,31 @@ identities.
 | `GOOGLE_HEALTH_OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of one-time OAuth state |
 
 Blacki requests the current Google Health read-only activity/fitness,
-health-metrics/measurements, and sleep scopes. Do not paste the client secret
-or Fernet key into logs, chat, or source control. The callback URL must exactly
-match the Google Cloud OAuth client configuration. The Apple Health-to-Google
-Health or Fitbit import step is configured separately by the user and may be
-incomplete; Blacki does not access HealthKit directly.
+health-metrics/measurements, and sleep scopes plus
+`googlehealth.nutrition.readonly` and `googlehealth.nutrition.writeonly`. The
+read-only scopes support summaries. Both nutrition scopes are
+required for automatic export of future private-chat meal logs, edits, and
+deletions. Existing connections must reconnect to request the added scopes;
+Blacki never backfills meals logged before consent. Do not paste the client
+secret or Fernet key into logs, chat, or source control. The callback URL must
+exactly match the Google Cloud OAuth client configuration. The Apple
+Health-to-Google Health or Fitbit import step is configured separately by the
+user and may be incomplete; Blacki does not access HealthKit directly.
+
+The v4 discovery document lists `nutrition-log` as the write data type. Blacki
+exports only the fields already present in a meal entry: food name, kcal,
+available protein/carbohydrate/fat values, meal type, and the selected local
+date. Unknown nutrients are omitted and no food database lookup is performed.
+This contract was checked against Google's [Health scopes][health-scopes],
+[v4 discovery document][health-discovery], [nutrition data type][health-nutrition],
+and [data point REST reference][health-datapoints] before rollout. Do not
+enable live health-record writes until the OAuth project has the nutrition
+scopes configured and the resulting consent is verified.
+
+[health-scopes]: https://developers.google.com/health/scopes
+[health-discovery]: https://health.googleapis.com/$discovery/rest?version=v4
+[health-nutrition]: https://developers.google.com/health/data-types/nutrition
+[health-datapoints]: https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints
 
 ## Search and browser tools
 

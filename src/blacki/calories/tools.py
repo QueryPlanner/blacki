@@ -1,4 +1,5 @@
 import logging
+import math
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +11,7 @@ from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
 
+from .service import VALID_MEAL_TYPES, get_meal_service, validate_meal
 from .storage import CalorieEntry, get_storage
 
 logger = logging.getLogger(__name__)
@@ -41,11 +43,10 @@ async def log_meal(
     if not description.strip():
         return {"status": "error", "message": "description cannot be empty"}
 
-    valid_meal_types = {"breakfast", "lunch", "dinner", "snack"}
-    if meal_type and meal_type.lower() not in valid_meal_types:
+    if meal_type and meal_type.lower() not in VALID_MEAL_TYPES:
         return {
             "status": "error",
-            "message": f"meal_type must be one of {valid_meal_types}",
+            "message": f"meal_type must be one of {set(VALID_MEAL_TYPES)}",
         }
 
     user_id = tool_context.user_id
@@ -66,27 +67,49 @@ async def log_meal(
             logged_at=now.isoformat(timespec="seconds"),
             logged_date=local_date,
         )
+        validate_meal(entry)
+
+        service = _try_get_meal_service()
+        if service is None:
+            storage = get_storage()
+            entry_id = await storage.add_entry(entry)
+            google_health_sync = "not_enabled"
+        else:
+            entry_id, google_health_sync = await service.mutate(
+                user_id,
+                private=_is_private_tool_context(tool_context),
+                entry=entry,
+            )
 
         storage = get_storage()
-        entry_id = await storage.add_entry(entry)
 
         # Get running daily total
-        summary = await storage.get_daily_summary(user_id, local_date)
-
-        # Get user goal
-        pref_storage = get_preferences_storage()
-        goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
-
-        remaining = goal - summary.total_calories
-
-        return {
+        result: dict[str, Any] = {
             "status": "success",
             "entry_id": entry_id,
-            "message": f"Logged {estimated_calories} kcal for '{description}'.",
-            "daily_total": summary.total_calories,
-            "calorie_goal": goal,
-            "remaining": remaining,
+            "message": _meal_saved_message(
+                f"Logged {estimated_calories} kcal for '{description}'.",
+                google_health_sync,
+            ),
+            "google_health_sync": google_health_sync,
         }
+        try:
+            summary = await storage.get_daily_summary(user_id, local_date)
+            result["daily_total"] = summary.total_calories
+        except Exception:
+            logger.exception("Failed to read meal summary after local commit")
+            result["message"] += (
+                " The meal was saved, but the daily summary is unavailable."
+            )
+        try:
+            pref_storage = get_preferences_storage()
+            goal = await pref_storage.get(user_id, "calorie_goal", DEFAULT_CALORIE_GOAL)
+            result["calorie_goal"] = goal
+            if "daily_total" in result:
+                result["remaining"] = goal - result["daily_total"]
+        except Exception:
+            logger.exception("Failed to read calorie goal after local commit")
+        return result
     except ValidationError as e:
         return {"status": "error", "message": f"Validation failed: {str(e)}"}
     except ValueError as e:
@@ -182,6 +205,11 @@ async def edit_meal(
         except ValueError as e:
             return {"status": "error", "message": str(e)}
     if meal_type is not None:  # pragma: no cover
+        if meal_type.lower() not in VALID_MEAL_TYPES:
+            return {
+                "status": "error",
+                "message": f"meal_type must be one of {set(VALID_MEAL_TYPES)}",
+            }
         updates["meal_type"] = meal_type.lower()
     if protein_g is not None:  # pragma: no cover
         updates["protein_g"] = protein_g
@@ -190,23 +218,55 @@ async def edit_meal(
     if fat_g is not None:  # pragma: no cover
         updates["fat_g"] = fat_g
 
+    if description is not None and not description.strip():
+        return {"status": "error", "message": "description cannot be empty"}
+    if estimated_calories is not None and estimated_calories <= 0:
+        return {"status": "error", "message": "estimated_calories must be > 0"}
+    for value in (protein_g, carbs_g, fat_g):
+        if value is not None and (
+            not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0
+        ):
+            return {
+                "status": "error",
+                "message": "macros must be finite and nonnegative",
+            }
+
     if not updates:  # pragma: no cover
         return {"status": "error", "message": "No fields provided to update"}
 
     try:
-        storage = get_storage()
-        updated = await storage.update_entry(entry_id, user_id, **updates)
+        service = _try_get_meal_service()
+        if service is None:
+            storage = get_storage()
+            updated = await storage.update_entry(entry_id, user_id, **updates)
+            sync_status = "not_enabled"
+        else:
+            _, sync_status = await service.mutate(
+                user_id,
+                private=_is_private_tool_context(tool_context),
+                entry_id=entry_id,
+                updates=updates,
+            )
+            updated = True
 
         if updated:
-            return {"status": "success", "message": f"Updated entry {entry_id}"}
+            return {
+                "status": "success",
+                "message": _meal_saved_message(
+                    f"Updated entry {entry_id}", sync_status
+                ),
+                "google_health_sync": sync_status,
+            }
         else:  # pragma: no cover
             return {
                 "status": "error",
                 "message": f"Entry {entry_id} not found or you don't have permission",
             }
-    except Exception as e:
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception:
         logger.exception(f"Failed to edit meal entry {entry_id}")
-        return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
+        return {"status": "error", "message": "An unexpected error occurred"}
 
 
 async def delete_meal(
@@ -219,19 +279,37 @@ async def delete_meal(
         return {"status": "error", "message": "Missing user_id in tool_context"}
 
     try:
-        storage = get_storage()
-        deleted = await storage.delete_entry(entry_id, user_id)
+        service = _try_get_meal_service()
+        if service is None:
+            storage = get_storage()
+            deleted = await storage.delete_entry(entry_id, user_id)
+            sync_status = "not_enabled"
+        else:
+            _, sync_status = await service.mutate(
+                user_id,
+                private=_is_private_tool_context(tool_context),
+                entry_id=entry_id,
+            )
+            deleted = True
 
         if deleted:
-            return {"status": "success", "message": f"Deleted entry {entry_id}"}
+            return {
+                "status": "success",
+                "message": _meal_saved_message(
+                    f"Deleted entry {entry_id}", sync_status
+                ),
+                "google_health_sync": sync_status,
+            }
         else:  # pragma: no cover
             return {
                 "status": "error",
                 "message": f"Entry {entry_id} not found or you don't have permission",
             }
-    except Exception as e:
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception:
         logger.exception(f"Failed to delete meal entry {entry_id}")
-        return {"status": "error", "message": f"An unexpected error occurred: {str(e)}"}
+        return {"status": "error", "message": "An unexpected error occurred"}
 
 
 async def set_calorie_goal(
@@ -257,3 +335,33 @@ async def set_calorie_goal(
         "message": f"Daily calorie goal set to {daily_calories} kcal",
         "new_goal": daily_calories,
     }
+
+
+def _try_get_meal_service() -> Any | None:
+    """Use the atomic service when the application container is available.
+
+    The fallback keeps direct unit-level tool use compatible with the storage
+    singleton; production startup always initializes the application container.
+    """
+    try:
+        return get_meal_service()
+    except RuntimeError:
+        return None
+
+
+def _is_private_tool_context(tool_context: ToolContext) -> bool:
+    state = getattr(tool_context, "state", None)
+    if state is None:
+        return False
+    getter = getattr(state, "get", None)
+    return bool(getter("telegram_chat_type") == "private") if getter else False
+
+
+def _meal_saved_message(message: str, sync_status: str) -> str:
+    if sync_status == "pending":
+        return f"{message} Saved in Blacki; Google Health sync is pending."
+    if sync_status == "authorization_required":
+        return f"{message} Saved in Blacki; reconnect Google Health to sync it."
+    if sync_status == "failed":
+        return f"{message} Saved in Blacki; Google Health sync failed and will retry."
+    return f"{message} Saved in Blacki."

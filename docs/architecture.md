@@ -50,8 +50,15 @@ The HTTPS callback consumes the state, exchanges the code, resolves Google's
 server-side identity, and stores only an encrypted refresh token plus safe
 connection metadata. A bounded background job refreshes and reads recent data,
 normalizes it into daily SQLite records, and the Telegram commands and
-`get_health_summary` tool read those normalized records. Tokens, raw provider
-payloads, and provider identifiers never travel through Telegram messages.
+`get_health_summary` tool read those normalized records. When both nutrition
+scopes are granted, meal mutations from eligible private chats also enqueue
+durable, account-bound Google `nutrition-log` revisions. The export worker
+retries pending work independently of health imports, preserves operation
+ordering per meal, and exposes safe pending, synced, failed, and
+authorization-required counts. Tokens, raw provider payloads, meal
+descriptions, and provider identifiers never enter application logs or traces;
+the user's own meal text can still appear in the private Telegram conversation
+as the normal result of logging a meal.
 
 Long polling is outbound. It does not require a public webhook, domain, TLS
 certificate, or inbound application port.
@@ -93,6 +100,7 @@ Blacki uses different stores for different responsibilities:
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
 | Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
 | Google Health refresh tokens and normalized summaries | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
+| Google Health meal export revisions and retry state | SQLite (`tools.db`), payloads account-bound and sent over HTTPS | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
 
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
@@ -138,13 +146,22 @@ permissions; they are not encrypted. Shopping prompts, tool calls, and results
 remain in the local ADK session database and are sent to the configured model
 as part of normal agent execution.
 
-Google Health is a separate read-only boundary. It uses the current Google
-Health API, not the legacy Fitbit Web API. The connector requests only current
-read-only activity/fitness, measurements, and sleep scopes; it handles missing
-or partially imported categories as unavailable. Health commands reject group
-chats, and the summary tool requires private Telegram session state.
-`/disconnect_health` requires an explicit inline-button confirmation before
-local deletion.
+Google Health summaries are a separate read-only boundary. The connector uses
+the current Google Health API, not the legacy Fitbit Web API. It requests the
+current read-only activity/fitness, measurements, and sleep scopes plus
+`googlehealth.nutrition.readonly` and `googlehealth.nutrition.writeonly` for
+optional meal export. It handles missing or partially imported categories as
+unavailable. Health commands reject group chats, and the summary tool requires
+private Telegram session state. Meal export has no historical backfill and
+keeps local save status separate from remote sync status. `/disconnect_health`
+requires an explicit inline-button confirmation, cancels future meal sync,
+retains local calorie logs, and does not purge records already sent to Google;
+requests already submitted may still complete.
+
+The import and meal-export jobs share the existing scheduler process but remain
+independent: health imports use the configured interval and meal export runs
+every minute. Run only one active scheduler process per `tools.db`; the
+deployment does not claim cross-process dispatch leases.
 
 ### Sandbox credential threat model
 

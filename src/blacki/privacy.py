@@ -14,6 +14,11 @@ _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _ZEPTO_TOOL_PREFIX = "zepto_"
 _PRIVATE_TOOL_NAMES = frozenset(
     {
+        "log_meal",
+        "edit_meal",
+        "delete_meal",
+        "get_calorie_summary",
+        "set_calorie_goal",
         "get_health_summary",
         "send_text_to_speech",
         "list_user_files",

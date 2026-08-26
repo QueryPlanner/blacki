@@ -50,17 +50,22 @@ _telegram_bot = None
 _container: AppContainer | None = None
 _google_health_service = None
 _google_health_scheduler = None
+_google_health_export_worker = None
 
 
 async def _start_google_health() -> None:
-    """Initialize the optional Google Health connector and its scheduler."""
-    global _google_health_scheduler, _google_health_service
+    """Initialize the optional Google Health connector and its schedulers."""
+    global \
+        _google_health_scheduler, \
+        _google_health_service, \
+        _google_health_export_worker
 
     if _container is None:
         logger.info("Google Health connector not started (no container)")
         return
 
     from .health.config import GoogleHealthConfig, GoogleHealthConfigurationError
+    from .health.nutrition_worker import NutritionExportWorker
     from .health.scheduler import GoogleHealthScheduler
     from .health.service import GoogleHealthService
 
@@ -81,8 +86,21 @@ async def _start_google_health() -> None:
         logger.exception("Google Health scheduler failed to start")
         await service.close()
         return
+
+    export_worker = NutritionExportWorker(config, _container.google_health_storage)
+    try:
+        await export_worker.start()
+    except Exception:
+        logger.exception("Google Health nutrition export worker failed to start")
+        await scheduler.stop()
+        await export_worker.close()
+        await service.close()
+        return
+
     _google_health_service = service
     _google_health_scheduler = scheduler
+    _google_health_export_worker = export_worker
+    _container.nutrition_export_worker = export_worker
     logger.info("Google Health connector initialized")
 
 
@@ -176,9 +194,20 @@ async def _stop_reminder_scheduler() -> None:
 
 
 async def _stop_google_health() -> None:
-    """Stop the optional health scheduler and close its HTTP client."""
-    global _google_health_scheduler, _google_health_service
+    """Stop the optional health schedulers and close their HTTP clients."""
+    global \
+        _google_health_scheduler, \
+        _google_health_service, \
+        _google_health_export_worker
 
+    if _google_health_export_worker is not None:
+        if _container is not None:
+            _container.nutrition_export_worker = None
+        try:
+            await _google_health_export_worker.stop()
+            await _google_health_export_worker.close()
+        except Exception:
+            logger.exception("Error stopping Google Health nutrition export worker")
     if _google_health_scheduler is not None:
         try:
             await _google_health_scheduler.stop()
@@ -191,6 +220,7 @@ async def _stop_google_health() -> None:
             logger.exception("Error closing Google Health client")
     _google_health_scheduler = None
     _google_health_service = None
+    _google_health_export_worker = None
 
 
 AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
