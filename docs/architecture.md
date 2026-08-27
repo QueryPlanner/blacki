@@ -51,8 +51,9 @@ server-side identity, and stores only an encrypted refresh token plus safe
 connection metadata. A bounded background job refreshes and reads recent data,
 normalizes it into daily SQLite records, and the Telegram commands and
 `get_health_summary` tool read those normalized records. When both nutrition
-scopes are granted, meal mutations from eligible private chats also enqueue
-durable, account-bound Google `nutrition-log` revisions. The export worker
+scopes are granted, a durable coordinator queues existing meals once per Google
+account. New meal mutations from eligible private chats also enqueue durable,
+account-bound Google `nutrition-log` revisions. The export worker
 retries pending work independently of health imports, preserves operation
 ordering per meal, and exposes safe pending, synced, failed, and
 authorization-required counts. Tokens, raw provider payloads, meal
@@ -152,8 +153,9 @@ current read-only activity/fitness, measurements, and sleep scopes plus
 `googlehealth.nutrition.readonly` and `googlehealth.nutrition.writeonly` for
 optional meal export. It handles missing or partially imported categories as
 unavailable. Health commands reject group chats, and the summary tool requires
-private Telegram session state. Meal export has no historical backfill and
-keeps local save status separate from remote sync status. `/disconnect_health`
+private Telegram session state. Meal export performs one durable historical
+backfill per Google account and keeps local save status separate from remote
+sync status. `/disconnect_health`
 requires an explicit inline-button confirmation, cancels future meal sync,
 retains local calorie logs, and does not purge records already sent to Google;
 requests already submitted may still complete.

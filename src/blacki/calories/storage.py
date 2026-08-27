@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
+from blacki.health.config import (
+    health_user_id_for_telegram_user,
+    telegram_chat_id_for_health_user,
+)
 from blacki.storage.base import SqlStorage
 
 if TYPE_CHECKING:
@@ -107,6 +111,67 @@ class SqliteCalorieStorage(SqlStorage):
             ),
         )
         return rid
+
+    async def health_backfill_high_water(self, health_user_id: str) -> int:
+        """Return the current meal ID high-water mark for one private chat."""
+        if not _is_private_health_user_id(health_user_id):
+            return 0
+        row = await self._fetch_one(
+            """
+            SELECT MAX(id) AS high_water_meal_id
+            FROM calorie_logs
+            WHERE user_id = ? OR user_id LIKE ?
+            """,
+            (health_user_id, f"{health_user_id}-thread-%"),
+        )
+        return (
+            int(row["high_water_meal_id"])
+            if row is not None and row["high_water_meal_id"] is not None
+            else 0
+        )
+
+    async def health_backfill_batch(
+        self,
+        health_user_id: str,
+        *,
+        after_id: int,
+        through_id: int,
+        limit: int,
+    ) -> tuple[list[CalorieEntry], int | None]:
+        """Return valid private-chat meals and the raw cursor for a batch.
+
+        The SQL prefix is deliberately narrow. The full identity helper is
+        still applied to every candidate so malformed topics cannot enter the
+        export queue, and the raw candidate cursor lets the caller advance
+        past skipped rows without looping forever.
+        """
+        if not _is_private_health_user_id(health_user_id):
+            return [], None
+        rows = await self._fetch_all(
+            """
+            SELECT * FROM calorie_logs
+            WHERE (user_id = ? OR user_id LIKE ?)
+              AND id > ? AND id <= ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (
+                health_user_id,
+                f"{health_user_id}-thread-%",
+                after_id,
+                through_id,
+                limit,
+            ),
+        )
+        if not rows:
+            return [], None
+        cursor = max(int(row["id"]) for row in rows)
+        entries = [
+            self._row_to_entry(row)
+            for row in rows
+            if health_user_id_for_telegram_user(str(row["user_id"])) == health_user_id
+        ]
+        return entries, cursor
 
     async def get_daily_summary(self, user_id: str, date_str: str) -> DailySummary:
         """Get summary and up to 50 entries for a specific day."""
@@ -259,3 +324,9 @@ def get_storage() -> SqliteCalorieStorage:
             "Calorie storage not initialized. Call storage.initialize() first."
         )
     return storage
+
+
+def _is_private_health_user_id(health_user_id: str) -> bool:
+    """Reject group-chat identities before any historical meal query."""
+    chat_id = telegram_chat_id_for_health_user(health_user_id)
+    return chat_id is not None and chat_id > 0

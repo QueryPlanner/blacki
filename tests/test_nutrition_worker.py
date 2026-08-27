@@ -192,6 +192,77 @@ async def test_worker_marks_permanent_failure(
     assert revisions[0]["state"] == "failed"
 
 
+async def test_worker_does_not_mark_failed_revision_as_synced(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    config = _config()
+    await _connect(storage, config)
+    await storage.nutrition.enqueue(
+        meal_id=12,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=PAYLOAD,
+        operation="upsert",
+    )
+    revision = (await storage.nutrition.revisions(12))[0]
+    await storage.nutrition.revision_state(int(revision["sequence"]), "failed")
+    await storage.nutrition._conn.execute(
+        "UPDATE nutrition_exports SET status = 'pending' WHERE meal_id = 12"
+    )
+    worker, client = _worker(storage, config)
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(12)
+    assert row is not None
+    assert row["status"] == "pending"
+    client.refresh_access_token.assert_not_awaited()
+
+
+def test_desired_revision_state_returns_none_for_missing_revision() -> None:
+    from blacki.health.nutrition_worker import _desired_revision_state
+
+    assert _desired_revision_state([], "missing-resource") is None
+
+
+async def test_worker_retries_explicitly_requeued_failure(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    config = _config()
+    await _connect(storage, config)
+    await storage.nutrition.enqueue(
+        meal_id=13,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=PAYLOAD,
+        operation="upsert",
+    )
+    worker, client = _worker(storage, config)
+    client.refresh_access_token.return_value = _token()
+    client.create_nutrition_log.side_effect = [
+        GoogleHealthApiError("bad request", status_code=400, error_code="bad_request"),
+        GoogleHealthOperation(done=True, name="op/13", response={}),
+    ]
+
+    await worker._dispatch_due()
+    failed_revision = (await storage.nutrition.revisions(13))[0]
+    failed_resource = failed_revision["resource_name"]
+    assert await storage.nutrition.retry_failed(USER_ID, HEALTH_USER_ID) == 1
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(13)
+    assert row is not None
+    assert row["status"] == "synced"
+    revisions = await storage.nutrition.revisions(13)
+    assert len(revisions) == 1
+    assert revisions[0]["resource_name"] == failed_resource
+    assert revisions[0]["state"] == "synced"
+    assert client.create_nutrition_log.await_count == 2
+
+
 async def test_worker_pauses_on_auth_error(
     storage: SqliteGoogleHealthStorage,
 ) -> None:
@@ -500,6 +571,38 @@ async def test_worker_disconnected_marks_authorization_required(
     row = await storage.nutrition.meal(10)
     assert row is not None
     assert row["status"] == "authorization_required"
+    client.refresh_access_token.assert_not_awaited()
+
+
+async def test_worker_retires_stale_revision_after_account_switch(
+    storage: SqliteGoogleHealthStorage,
+) -> None:
+    config = _config()
+    await _connect(storage, config)
+    await storage.nutrition.enqueue(
+        meal_id=11,
+        owner_id=USER_ID,
+        telegram_user_id=USER_ID,
+        health_user_id=HEALTH_USER_ID,
+        payload=PAYLOAD,
+        operation="upsert",
+    )
+    await storage.conn.execute(
+        "UPDATE google_health_connections SET health_user_id = ? "
+        "WHERE telegram_user_id = ?",
+        ("replacement-health-id", USER_ID),
+    )
+    worker, client = _worker(storage, config)
+
+    await worker._dispatch_due()
+
+    row = await storage.nutrition.meal(11)
+    assert row is not None
+    assert row["status"] == "cancelled"
+    connection = await storage.get_connection(USER_ID)
+    assert connection is not None
+    assert connection.health_user_id == "replacement-health-id"
+    assert connection.status == "connected"
     client.refresh_access_token.assert_not_awaited()
 
 

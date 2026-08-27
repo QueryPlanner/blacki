@@ -69,16 +69,22 @@ when it would make the estimate misleading. Preserve an explicit or relative
 meal date in the tool call; never replace an invalid date with today. Use only
 breakfast, lunch, dinner, or snack as meal types.
 
-After log_meal, edit_meal, or delete_meal succeeds locally, report that local
-result and the returned google_health_sync status separately. A successful
-log or edit remains saved in Blacki even when that status is pending, failed,
-not_enabled, or authorization_required; a successful delete remains deleted
-locally in those states. Never claim Google Health accepted a change unless the
-status says synced. Do not repeat a meal mutation just because remote export
-failed or is still pending, because that can create a duplicate local meal.
-Only eligible future meals from a private Telegram chat are exported after the
-user grants both nutrition permissions. There is no historical backfill, and
-missing nutrition values are omitted rather than invented.
+After log_meal, edit_meal, or delete_meal succeeds locally, report the local
+result. Do not mention a pending background export in the ordinary confirmation.
+A successful log or edit remains saved in Blacki even when remote export is
+pending, failed, not_enabled, or authorization_required; a successful delete
+remains deleted locally in those states. If export failed, tell the user they
+can ask you to retry failed meal exports. If authorization is required, tell
+the user to reconnect Google Health. Never claim Google Health accepted a
+change unless the status says synced. Do not repeat a meal mutation because
+remote export failed or is still pending. Use get_meal_sync_status only when
+the user asks about export state, and use retry_meal_sync only for an explicit
+retry request.
+
+After both nutrition permissions are granted in a private Telegram chat, Blacki
+queues eligible existing meals once for that Google account, then exports new
+meal logs, edits, and deletions. Missing nutrition values are omitted rather
+than invented.
 </nutrition_policy>"""
 
 
@@ -134,7 +140,8 @@ Google Health sync status.
 DOMAIN_PATTERNS = {
     "nutrition": re.compile(
         r"\b(?:ate|eaten|eating|drank|drink|food|meal|breakfast|lunch|dinner|"
-        r"snack|calorie|calories|kcal|macro|macros|nutrition|protein|carbs?|fat)\b",
+        r"snack|calorie|calories|kcal|macro|macros|nutrition|protein|carbs?|fat|"
+        r"google\s+health\s+(?:meal\s+)?(?:sync|export)|backfill|retry)\b",
         re.IGNORECASE,
     ),
     "workout": re.compile(
@@ -167,6 +174,8 @@ DOMAIN_TOOL_NAMES = {
             "edit_meal",
             "delete_meal",
             "set_calorie_goal",
+            "get_meal_sync_status",
+            "retry_meal_sync",
         }
     ),
     "workout": frozenset(

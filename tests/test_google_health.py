@@ -1169,7 +1169,7 @@ async def test_delete_connection_rolls_back_on_failure(
     )
     original_cancel = health_storage.nutrition.cancel
 
-    async def _boom(user_id: str) -> None:
+    async def _boom(user_id: str, *, cancel_revisions: bool = False) -> None:
         raise RuntimeError("simulated failure")
 
     health_storage.nutrition.cancel = _boom  # type: ignore[method-assign]
@@ -1421,6 +1421,45 @@ async def test_health_storage_replaces_identity_and_window_atomically(
     assert await health_storage.get_daily_summaries(
         "telegram-chat-42", start_date="2026-08-20", end_date="2026-08-22"
     ) == [{"date": "2026-08-21", "steps": 300}]
+
+
+@pytest.mark.asyncio
+async def test_health_storage_replacement_after_disconnect_cancels_retained_work(
+    health_storage: SqliteGoogleHealthStorage,
+) -> None:
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="old-token",
+        health_user_id="old-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+    await health_storage.nutrition.enqueue(
+        meal_id=900,
+        owner_id="telegram-chat-42",
+        telegram_user_id="telegram-chat-42",
+        health_user_id="old-health-id",
+        payload={"nutritionLog": {"energy": {"kcal": 1}}},
+        operation="upsert",
+    )
+    await health_storage.delete_connection("telegram-chat-42")
+    await health_storage.conn.execute(
+        "UPDATE nutrition_exports SET status = 'authorization_required' "
+        "WHERE meal_id = 900"
+    )
+
+    await health_storage.upsert_connection(
+        telegram_user_id="telegram-chat-42",
+        encrypted_refresh_token="new-token",
+        health_user_id="new-health-id",
+        legacy_fitbit_user_id=None,
+        scopes=GOOGLE_HEALTH_SCOPES,
+    )
+
+    row = await health_storage.nutrition.meal(900)
+    assert row is not None
+    assert row["status"] == "cancelled"
+    assert (await health_storage.nutrition.revisions(900))[0]["state"] == "cancelled"
 
 
 @pytest.mark.asyncio

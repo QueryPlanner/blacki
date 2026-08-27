@@ -69,6 +69,18 @@ class TestSqliteCalorieStorage:
         assert entry_id == 1
 
     @pytest.mark.asyncio
+    async def test_health_backfill_rejects_nonprivate_and_empty_ranges(
+        self, storage
+    ) -> None:
+        assert await storage.health_backfill_high_water("telegram-chat--100") == 0
+        assert await storage.health_backfill_batch(
+            "telegram-chat--100", after_id=0, through_id=10, limit=50
+        ) == ([], None)
+        assert await storage.health_backfill_batch(
+            "telegram-chat-42", after_id=0, through_id=10, limit=50
+        ) == ([], None)
+
+    @pytest.mark.asyncio
     async def test_add_entry_with_macros(self, storage) -> None:
         """Should add an entry with macro nutrients."""
         entry = CalorieEntry(

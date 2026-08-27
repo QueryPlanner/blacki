@@ -18,6 +18,8 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "edit_meal",
         "delete_meal",
         "get_calorie_summary",
+        "get_meal_sync_status",
+        "retry_meal_sync",
         "set_calorie_goal",
         "get_health_summary",
         "send_text_to_speech",

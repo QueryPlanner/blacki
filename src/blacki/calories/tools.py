@@ -7,6 +7,11 @@ import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
 from pydantic import ValidationError
 
+from blacki.container import get_container
+from blacki.health.config import (
+    GOOGLE_HEALTH_NUTRITION_SCOPES,
+    health_user_id_for_telegram_user,
+)
 from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
@@ -337,6 +342,102 @@ async def set_calorie_goal(
     }
 
 
+async def get_meal_sync_status(tool_context: ToolContext) -> dict[str, Any]:
+    """Read the current Google Health meal-export status for this private chat."""
+    user_id = tool_context.user_id
+    if not user_id:  # pragma: no cover
+        return {"status": "error", "message": "Missing user_id in tool_context"}
+    if not _is_private_tool_context(tool_context):
+        return {
+            "status": "error",
+            "message": "Google Health meal export is available only in private chats",
+        }
+
+    health_user_id = health_user_id_for_telegram_user(user_id)
+    if health_user_id is None:
+        return {"status": "error", "message": "Invalid private Telegram identity"}
+
+    try:
+        health = get_container().google_health_storage
+        await health.initialize()
+        connection = await health.get_connection(health_user_id)
+        counts = await health.nutrition.counts(health_user_id)
+    except RuntimeError:
+        return {"status": "error", "message": "Health storage is not initialized"}
+    except Exception:
+        logger.exception("Failed to read Google Health meal-export status")
+        return {"status": "error", "message": "Could not read meal export status"}
+
+    return {
+        "status": "success",
+        "google_health_connection": (
+            connection.status if connection is not None else "not_connected"
+        ),
+        "nutrition_permissions": _has_nutrition_scopes(connection),
+        "google_health_sync": counts,
+    }
+
+
+async def retry_meal_sync(tool_context: ToolContext) -> dict[str, Any]:
+    """Retry failed Google Health meal exports for this private chat."""
+    user_id = tool_context.user_id
+    if not user_id:  # pragma: no cover
+        return {"status": "error", "message": "Missing user_id in tool_context"}
+    if not _is_private_tool_context(tool_context):
+        return {
+            "status": "error",
+            "message": "Google Health meal export is available only in private chats",
+        }
+
+    health_user_id = health_user_id_for_telegram_user(user_id)
+    if health_user_id is None:
+        return {"status": "error", "message": "Invalid private Telegram identity"}
+
+    try:
+        container = get_container()
+        health = container.google_health_storage
+        await health.initialize()
+        connection = await health.get_connection(health_user_id)
+        if connection is None:
+            return {
+                "status": "not_connected",
+                "requeued": 0,
+                "message": "Connect Google Health before retrying meal exports.",
+            }
+        if not _health_connection_can_export(connection):
+            return {
+                "status": "authorization_required",
+                "requeued": 0,
+                "message": (
+                    "Both Google Health nutrition permissions are required before "
+                    "failed meal exports can be retried."
+                ),
+            }
+
+        requeued = await health.nutrition.retry_failed(
+            health_user_id, connection.health_user_id
+        )
+        if requeued and container.nutrition_export_worker is not None:
+            container.nutrition_export_worker.wake()
+        counts = await health.nutrition.counts(health_user_id)
+        message = (
+            f"Queued {requeued} failed meal export(s) for retry."
+            if requeued
+            else "There are no failed meal exports to retry."
+        )
+        return {
+            "status": "success",
+            "requeued": requeued,
+            "message": message,
+            "google_health_sync": counts,
+        }
+    except RuntimeError:
+        return {"status": "error", "message": "Health storage is not initialized"}
+    except Exception:
+        logger.exception("Failed to retry Google Health meal exports")
+        return {"status": "error", "message": "Could not retry meal exports"}
+
+
 def _try_get_meal_service() -> Any | None:
     """Use the atomic service when the application container is available.
 
@@ -359,9 +460,30 @@ def _is_private_tool_context(tool_context: ToolContext) -> bool:
 
 def _meal_saved_message(message: str, sync_status: str) -> str:
     if sync_status == "pending":
-        return f"{message} Saved in Blacki; Google Health sync is pending."
+        return f"{message} Saved in Blacki."
     if sync_status == "authorization_required":
         return f"{message} Saved in Blacki; reconnect Google Health to sync it."
     if sync_status == "failed":
-        return f"{message} Saved in Blacki; Google Health sync failed and will retry."
+        return (
+            f"{message} Saved in Blacki; Google Health export failed. "
+            "Ask me to retry failed meal exports."
+        )
     return f"{message} Saved in Blacki."
+
+
+def _has_nutrition_scopes(connection: Any | None) -> bool:
+    """Return whether a connection grants both nutrition permissions."""
+    return bool(
+        connection is not None
+        and set(GOOGLE_HEALTH_NUTRITION_SCOPES) <= set(connection.scopes)
+    )
+
+
+def _health_connection_can_export(connection: Any | None) -> bool:
+    """Return whether a connected account can retry provider writes."""
+    return bool(
+        connection is not None
+        and connection.status == "connected"
+        and connection.encrypted_refresh_token is not None
+        and _has_nutrition_scopes(connection)
+    )

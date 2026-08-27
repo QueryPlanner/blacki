@@ -1164,10 +1164,11 @@ class TelegramBot:
                     "Google Health can provide read-only wellness summaries from "
                     "data that reaches Google Health from Fitbit-compatible sources. "
                     "If you grant both Google Health nutrition permissions, Blacki "
-                    "will automatically export future meal logs, edits, and "
-                    "deletions from this private chat. The nutrition read permission "
+                    "will queue the meals already saved in this private chat once "
+                    "for this Google account, then automatically export future meal "
+                    "logs, edits, and deletions. The nutrition read permission "
                     "also lets Blacki verify records it created; it does not import "
-                    "unrelated food logs. Older meals are not backfilled. "
+                    "unrelated food logs. "
                     "Read-only summaries remain available without nutrition "
                     "permissions. Existing connections must reconnect to add them. "
                     "Blacki does not receive Apple ID credentials or raw Apple Health "
@@ -1343,8 +1344,9 @@ class TelegramBot:
         text = (
             "Google Health is connected. Use /health_refresh for a fresh sync or "
             "/health_summary to read the latest stored records. If both nutrition "
-            "permissions were granted, future private meal logs, edits, and "
-            "deletions will sync automatically; older meals are not backfilled."
+            "permissions were granted, meals already saved in this private chat "
+            "will be queued once for this Google account, and future private meal "
+            "logs, edits, and deletions will sync automatically."
             if connected
             else (
                 "Google Health authorization was cancelled. No credentials were stored."

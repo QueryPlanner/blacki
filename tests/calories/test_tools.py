@@ -370,7 +370,8 @@ async def test_log_meal_uses_meal_service_when_available(
     assert result["status"] == "success"
     assert result["entry_id"] == 7
     assert result["google_health_sync"] == "pending"
-    assert "sync is pending" in result["message"]
+    assert result["message"].endswith("Saved in Blacki.")
+    assert "sync is pending" not in result["message"]
     mock_service.mutate.assert_called_once()
     assert mock_service.mutate.call_args.kwargs["private"] is True
 
@@ -531,9 +532,9 @@ def test_is_private_tool_context_false_when_state_has_no_getter() -> None:
     assert _is_private_tool_context(cast(ToolContext, ctx)) is False
 
 
-def test_meal_saved_message_pending() -> None:
+def test_meal_saved_message_pending_is_local_only() -> None:
     message = _meal_saved_message("Logged", "pending")
-    assert message == "Logged Saved in Blacki; Google Health sync is pending."
+    assert message == "Logged Saved in Blacki."
 
 
 def test_meal_saved_message_authorization_required() -> None:
@@ -544,7 +545,8 @@ def test_meal_saved_message_authorization_required() -> None:
 def test_meal_saved_message_failed() -> None:
     message = _meal_saved_message("Logged", "failed")
     assert message == (
-        "Logged Saved in Blacki; Google Health sync failed and will retry."
+        "Logged Saved in Blacki; Google Health export failed. "
+        "Ask me to retry failed meal exports."
     )
 
 

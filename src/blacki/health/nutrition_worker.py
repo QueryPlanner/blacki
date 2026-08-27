@@ -124,6 +124,8 @@ class NutritionExportWorker:
             await nutrition.revision_state(int(revision["sequence"]), "cancelled")
 
         if pending is None:
+            if _desired_revision_state(revisions, desired_revision) == "failed":
+                return
             await nutrition.result(
                 meal_id,
                 _final_status(desired_operation),
@@ -136,9 +138,19 @@ class NutritionExportWorker:
             connection is None
             or connection.status != "connected"
             or connection.encrypted_refresh_token is None
-            or connection.health_user_id != health_user_id
         ):
             await self.storage.mark_reauthorization_required(telegram_user_id)
+            return
+        if connection.health_user_id != health_user_id:
+            # A stale due-row snapshot can outlive a Google account switch.
+            # Do not mark the replacement account as unauthorized; retire only
+            # the old revision, guarded by the snapshot's desired resource.
+            await nutrition.result(
+                meal_id,
+                "cancelled",
+                error="account_replaced",
+                expected_revision=desired_revision,
+            )
             return
 
         if not set(GOOGLE_HEALTH_NUTRITION_SCOPES) <= set(connection.scopes):
@@ -193,6 +205,7 @@ class NutritionExportWorker:
             return
 
         if outcome == "resolved":
+            await nutrition.record_remote_result(int(pending["sequence"]))
             remaining = await nutrition.revisions(meal_id)
             still_pending, _ = _select_pending_revision(remaining, desired_revision)
             if still_pending is None:
@@ -418,6 +431,20 @@ def _select_pending_revision(
             continue
         return revision, stale
     return None, stale
+
+
+def _desired_revision_state(
+    revisions: list[dict[str, Any]], desired_revision: str | None
+) -> str | None:
+    """Return the latest state for the parent's current desired resource."""
+    matching = [
+        revision
+        for revision in revisions
+        if revision.get("resource_name") == desired_revision
+    ]
+    if not matching:
+        return None
+    return str(matching[-1]["state"])
 
 
 def _is_transient(exc: GoogleHealthApiError) -> bool:

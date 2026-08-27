@@ -339,7 +339,7 @@ async def test_mutate_edit_with_new_date_does_not_preserve_interval(
 async def test_mutate_edit_of_unenrolled_meal_stays_not_enabled(
     container: AppContainer,
 ) -> None:
-    """A meal logged before Google Health was connected must not backfill."""
+    """The backfill coordinator, not an edit, enrolls older meals."""
     service = MealService(container)
     entry_id, sync_status = await service.mutate(USER_ID, entry=_entry())
     assert sync_status == "not_enabled"
@@ -415,17 +415,45 @@ async def test_mutate_delete_never_dispatched_has_no_target(
     assert revisions[-1]["state"] == "queued"
 
 
-async def test_mutate_delete_of_cancelled_export_stays_not_enabled(
+async def test_mutate_delete_of_cancelled_export_reuses_active_connection(
     container: AppContainer,
 ) -> None:
     await _connect(container)
     service = MealService(container)
     entry_id, _ = await service.mutate(USER_ID, private=True, entry=_entry())
+    nutrition = container.google_health_storage.nutrition
+    revision = (await nutrition.revisions(entry_id))[0]
+    await nutrition.revision_state(int(revision["sequence"]), "synced")
 
-    await container.google_health_storage.nutrition.cancel(USER_ID)
+    await nutrition.cancel(USER_ID)
 
     _, sync_status = await service.mutate(USER_ID, private=True, entry_id=entry_id)
-    assert sync_status == "not_enabled"
+    assert sync_status == "pending"
+    revisions = await nutrition.revisions(entry_id)
+    assert revisions[-1]["operation"] == "delete"
+    assert revisions[-1]["resource_name"] == revision["resource_name"]
+
+
+async def test_mutate_edit_after_account_replacement_uses_new_account(
+    container: AppContainer,
+) -> None:
+    await _connect(container, health_user_id="old-health-account")
+    service = MealService(container)
+    entry_id, _ = await service.mutate(USER_ID, private=True, entry=_entry())
+
+    await _connect(container, health_user_id="new-health-account")
+    _, sync_status = await service.mutate(
+        USER_ID,
+        private=True,
+        entry_id=entry_id,
+        updates={"calories": 450},
+    )
+
+    assert sync_status == "pending"
+    revisions = await container.google_health_storage.nutrition.revisions(entry_id)
+    assert len(revisions) == 2
+    assert revisions[-1]["operation"] == "upsert"
+    assert str(revisions[-1]["resource_name"]).startswith("users/new-health-account/")
 
 
 # --- MealService.mutate: transaction integrity ------------------------------
@@ -589,6 +617,29 @@ async def test_latest_remote_resource_skips_past_a_pending_delete(
     target = await service._latest_remote_resource(nutrition, entry_id)
 
     assert target == upsert_revision["resource_name"]
+
+
+async def test_latest_remote_resource_filters_invalid_and_other_accounts(
+    container: AppContainer,
+) -> None:
+    class _NutritionWithoutHistory:
+        async def revisions(self, meal_id: int) -> list[dict[str, object]]:
+            return [
+                {"operation": "upsert", "resource_name": None, "state": "synced"},
+                {
+                    "operation": "upsert",
+                    "resource_name": "users/other/dataTypes/nutrition-log/dataPoints/x",
+                    "state": "synced",
+                },
+                {"operation": "delete", "resource_name": "users/current/x"},
+            ]
+
+    service = MealService(container)
+
+    assert (
+        await service._latest_remote_resource(_NutritionWithoutHistory(), 1, "current")
+        is None
+    )
 
 
 async def test_get_meal_service_binds_the_process_container(

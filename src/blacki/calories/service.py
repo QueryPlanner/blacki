@@ -250,8 +250,9 @@ class MealService:
             await health.get_connection(canonical) if canonical is not None else None
         )
         previous = await nutrition.meal(entry_id)
-        if previous is not None and str(previous["status"]) == "cancelled":
-            return "not_enabled"
+        previous_cancelled = (
+            previous is not None and str(previous["status"]) == "cancelled"
+        )
 
         eligible = _nutrition_authorized(connection)
         existing_account = (
@@ -267,12 +268,15 @@ class MealService:
             or connection_account is None
             or existing_account == connection_account
         )
+        can_use_account = account_matches or (
+            previous_cancelled and connection is not None
+        )
 
-        # Only a newly created private meal with both nutrition scopes enrolls.
-        # A connection added later must not backfill meals that predate consent.
+        # New private meals enroll immediately. Historical meals are enrolled by
+        # NutritionBackfillCoordinator after the user grants both scopes.
         should_enqueue = (
             private
-            and account_matches
+            and can_use_account
             and ((created and eligible) or (not created and previous is not None))
         )
         if not should_enqueue:
@@ -280,14 +284,19 @@ class MealService:
                 return "authorization_required"
             return "not_enabled"
 
-        health_user_id = existing_account or (
-            connection.health_user_id if connection is not None else ""
+        health_user_id = (
+            connection.health_user_id
+            if previous_cancelled and connection is not None
+            else existing_account
+            or (connection.health_user_id if connection is not None else "")
         )
         if not health_user_id:
             return "authorization_required"
 
         if entry is None:
-            target = await self._latest_remote_resource(nutrition, entry_id)
+            target = await self._latest_remote_resource(
+                nutrition, entry_id, health_user_id
+            )
             await nutrition.enqueue(
                 meal_id=entry_id,
                 owner_id=user_id,
@@ -313,7 +322,9 @@ class MealService:
                 previous is not None
                 and str(previous.get("desired_operation")) == "upsert"
             ):
-                target = await self._latest_remote_resource(nutrition, entry_id)
+                target = await self._latest_remote_resource(
+                    nutrition, entry_id, health_user_id
+                )
                 if target is not None:
                     await nutrition.enqueue(
                         meal_id=entry_id,
@@ -343,16 +354,30 @@ class MealService:
         return "authorization_required"
 
     async def _latest_remote_resource(
-        self, nutrition: NutritionStorage | Any, meal_id: int
+        self,
+        nutrition: NutritionStorage | Any,
+        meal_id: int,
+        health_user_id: str | None = None,
     ) -> str | None:
         revisions = await nutrition.revisions(meal_id)
         for revision in reversed(revisions):
             if revision.get("operation", "upsert") != "upsert":
                 continue
+            resource_name = revision.get("resource_name")
+            if resource_name is None:
+                continue
+            if health_user_id is not None and not str(resource_name).startswith(
+                f"users/{health_user_id}/dataTypes/nutrition-log/dataPoints/"
+            ):
+                continue
             state = str(revision.get("state", "queued"))
             if state in {"synced", "in_flight", "uncertain"}:
-                return str(revision["resource_name"])
-        return None
+                return str(resource_name)
+        latest_remote_resource = getattr(nutrition, "latest_remote_resource", None)
+        if latest_remote_resource is None:
+            return None
+        resource_name = await latest_remote_resource(meal_id, health_user_id)
+        return str(resource_name) if resource_name is not None else None
 
 
 async def container_execute(conn: Any, query: str, params: tuple[Any, ...]) -> None:
