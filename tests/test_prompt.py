@@ -136,11 +136,11 @@ def test_nutrition_policy_separates_local_save_and_google_sync() -> None:
         "Log my lunch", {"log_meal", "edit_meal", "delete_meal"}
     )
 
-    assert "google_health_sync status separately" in instruction
+    assert "Do not mention a pending background export" in instruction
     assert "saved in Blacki" in instruction
     assert "Never claim Google Health accepted" in instruction
     assert "Do not repeat a meal mutation" in instruction
-    assert "no historical backfill" in instruction
+    assert "queues eligible existing meals once" in instruction
 
 
 class TestDomainPolicyAssembly:

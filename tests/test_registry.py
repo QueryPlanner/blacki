@@ -538,7 +538,7 @@ class TestBuildCalorieTools:
 
         tools = _build_calorie_tools()
 
-        assert len(tools) == 5
+        assert len(tools) == 7
 
 
 class TestBuildWorkoutTools:

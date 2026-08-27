@@ -83,7 +83,7 @@ async def test_connect_health_sends_protected_authorization_link() -> None:
         .url.startswith("https://accounts.google.com/")
     )
     assert "future meal logs, edits, and deletions" in kwargs["text"]
-    assert "not backfilled" in kwargs["text"]
+    assert "meals already saved" in kwargs["text"]
     assert "verify records it created" in kwargs["text"]
     assert "Read-only summaries remain available" in kwargs["text"]
     assert "Apple ID" in kwargs["text"]

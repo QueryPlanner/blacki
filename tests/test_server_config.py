@@ -1,12 +1,14 @@
 # mypy: disable-error-code="no-untyped-def"
 """Tests for server configuration."""
 
+import asyncio
 import json
 import sys
 from collections.abc import Generator
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiosqlite
 import pytest
 from fastapi import FastAPI
 
@@ -601,11 +603,13 @@ async def test_google_health_callback_handles_cancel_and_safe_errors(
         service.complete_authorization = AsyncMock(
             return_value=OAuthCompletion("telegram-chat-42", connected=False)
         )
-        response = await server.google_health_callback(
-            state="state", code=None, error="access_denied"
-        )
+        with patch.object(server, "_schedule_google_health_backfill") as schedule:
+            response = await server.google_health_callback(
+                state="state", code=None, error="access_denied"
+            )
         assert response.status_code == 200
         assert b"cancelled" in response.body
+        schedule.assert_not_called()
 
         service.complete_authorization = AsyncMock(
             side_effect=GoogleHealthOAuthError("state secret")
@@ -640,8 +644,10 @@ async def test_google_health_callback_handles_cancel_and_safe_errors(
         bot = MagicMock()
         bot.notify_health_connection = AsyncMock(side_effect=RuntimeError("notify"))
         server._telegram_bot = bot
-        response = await server.google_health_callback(state="state", code="code")
+        with patch.object(server, "_schedule_google_health_backfill") as schedule:
+            response = await server.google_health_callback(state="state", code="code")
         assert response.status_code == 200
+        schedule.assert_called_once_with("telegram-chat-42")
     finally:
         server._google_health_service = None
         server._telegram_bot = None
@@ -716,6 +722,137 @@ async def test_google_health_start_and_stop_are_optional(
         await server._start_google_health()
     assert server._google_health_service is None
     server._container = None
+
+
+@pytest.mark.asyncio
+async def test_google_health_backfill_schedule_runs_global_and_user_tasks(
+    mock_dependencies: MagicMock,
+) -> None:
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.container import AppContainer
+
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    conn.row_factory = aiosqlite.Row
+    container = AppContainer(conn=conn)
+    await container.initialize_all_storages()
+    worker = MagicMock()
+    server._container = container
+    server._google_health_export_worker = worker
+    run_all = AsyncMock(return_value=[])
+    run_user = AsyncMock(return_value=None)
+    try:
+        with (
+            patch(
+                "blacki.health.nutrition_backfill.NutritionBackfillCoordinator.run_all_eligible",
+                new=run_all,
+            ),
+            patch(
+                "blacki.health.nutrition_backfill.NutritionBackfillCoordinator.run_user",
+                new=run_user,
+            ),
+        ):
+            server._schedule_google_health_backfill()
+            server._schedule_google_health_backfill("telegram-chat-42")
+            tasks = list(server._google_health_backfill_tasks)
+            await asyncio.gather(*tasks)
+
+        run_all.assert_awaited_once()
+        run_user.assert_awaited_once_with("telegram-chat-42")
+        server._google_health_export_worker = None
+        server._schedule_google_health_backfill()
+        assert not server._google_health_backfill_tasks
+    finally:
+        server._google_health_backfill_tasks.clear()
+        server._container = None
+        server._google_health_export_worker = None
+        await container.close()
+
+
+@pytest.mark.asyncio
+async def test_google_health_backfill_task_swallows_unexpected_errors(
+    mock_dependencies: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.container import AppContainer
+
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    conn.row_factory = aiosqlite.Row
+    container = AppContainer(conn=conn)
+    await container.initialize_all_storages()
+    server._container = container
+    server._google_health_export_worker = MagicMock()
+    try:
+        with (
+            patch(
+                "blacki.health.nutrition_backfill.NutritionBackfillCoordinator.run_all_eligible",
+                new=AsyncMock(side_effect=RuntimeError("backfill failure")),
+            ),
+            caplog.at_level("ERROR", logger="blacki.server"),
+        ):
+            server._schedule_google_health_backfill()
+            await asyncio.gather(*list(server._google_health_backfill_tasks))
+        assert "Google Health nutrition backfill task failed" in caplog.text
+    finally:
+        server._google_health_backfill_tasks.clear()
+        server._container = None
+        server._google_health_export_worker = None
+        await container.close()
+
+
+@pytest.mark.asyncio
+async def test_google_health_backfill_task_preserves_cancellation(
+    mock_dependencies: MagicMock,
+) -> None:
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.container import AppContainer
+
+    conn = await aiosqlite.connect(":memory:", isolation_level=None)
+    conn.row_factory = aiosqlite.Row
+    container = AppContainer(conn=conn)
+    await container.initialize_all_storages()
+    server._container = container
+    server._google_health_export_worker = MagicMock()
+    try:
+        with patch(
+            "blacki.health.nutrition_backfill.NutritionBackfillCoordinator.run_all_eligible",
+            new=AsyncMock(side_effect=asyncio.CancelledError),
+        ):
+            server._schedule_google_health_backfill()
+            task = next(iter(server._google_health_backfill_tasks))
+            await asyncio.gather(task, return_exceptions=True)
+        assert task.cancelled()
+    finally:
+        server._google_health_backfill_tasks.clear()
+        server._container = None
+        server._google_health_export_worker = None
+        await container.close()
+
+
+@pytest.mark.asyncio
+async def test_google_health_stop_cancels_backfill_tasks(
+    mock_dependencies: MagicMock,
+) -> None:
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    task = asyncio.create_task(asyncio.sleep(60))
+    server._google_health_backfill_tasks.add(task)
+    server._container = None
+    await server._stop_google_health()
+
+    assert task.cancelled()
 
 
 @pytest.mark.asyncio

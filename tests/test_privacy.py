@@ -63,6 +63,8 @@ def test_private_tool_identification_uses_zepto_prefix() -> None:
         "delete_meal",
         "get_calorie_summary",
         "set_calorie_goal",
+        "get_meal_sync_status",
+        "retry_meal_sync",
     ],
 )
 def test_calorie_tools_are_private(tool_name: str) -> None:

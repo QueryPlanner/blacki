@@ -168,6 +168,8 @@ class SqliteGoogleHealthStorage(SqlStorage):
                 identity_changed = (
                     existing is not None
                     and str(existing["health_user_id"]) != health_user_id
+                ) or await self._nutrition.has_other_account(
+                    telegram_user_id, health_user_id
                 )
                 if identity_changed:
                     await self._conn.execute(
@@ -175,7 +177,9 @@ class SqliteGoogleHealthStorage(SqlStorage):
                         "WHERE telegram_user_id = ?",
                         (telegram_user_id,),
                     )
-                    await self._nutrition.cancel(telegram_user_id)
+                    await self._nutrition.cancel(
+                        telegram_user_id, cancel_revisions=True
+                    )
 
                 await self._conn.execute(
                     """

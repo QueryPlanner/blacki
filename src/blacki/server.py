@@ -5,11 +5,13 @@ features using custom OpenTelemetry setup. Includes an optional ADK web interfac
 interactive agent testing.
 """
 
+import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -50,7 +52,46 @@ _telegram_bot = None
 _container: AppContainer | None = None
 _google_health_service = None
 _google_health_scheduler = None
-_google_health_export_worker = None
+_google_health_export_worker: Any = None
+_google_health_backfill_tasks: set[asyncio.Task[None]] = set()
+
+
+def _schedule_google_health_backfill(telegram_user_id: str | None = None) -> None:
+    """Queue historical meal enrollment without delaying request handling."""
+    if not isinstance(_container, AppContainer):
+        return
+    if _google_health_export_worker is None:
+        return
+
+    from .health.nutrition_backfill import NutritionBackfillCoordinator
+
+    coordinator = NutritionBackfillCoordinator(
+        _container.google_health_storage,
+        _container.calorie_storage,
+        wake=_google_health_export_worker.wake,
+    )
+
+    async def run() -> None:
+        try:
+            if telegram_user_id is None:
+                await coordinator.run_all_eligible()
+            else:
+                await coordinator.run_user(telegram_user_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Google Health nutrition backfill task failed")
+
+    task = asyncio.create_task(
+        run(),
+        name=(
+            "google_health_nutrition_backfill"
+            if telegram_user_id is None
+            else "google_health_nutrition_backfill_user"
+        ),
+    )
+    _google_health_backfill_tasks.add(task)
+    task.add_done_callback(_google_health_backfill_tasks.discard)
 
 
 async def _start_google_health() -> None:
@@ -101,6 +142,7 @@ async def _start_google_health() -> None:
     _google_health_scheduler = scheduler
     _google_health_export_worker = export_worker
     _container.nutrition_export_worker = export_worker
+    _schedule_google_health_backfill()
     logger.info("Google Health connector initialized")
 
 
@@ -199,6 +241,13 @@ async def _stop_google_health() -> None:
         _google_health_scheduler, \
         _google_health_service, \
         _google_health_export_worker
+
+    backfill_tasks = list(_google_health_backfill_tasks)
+    for task in backfill_tasks:
+        task.cancel()
+    if backfill_tasks:
+        await asyncio.gather(*backfill_tasks, return_exceptions=True)
+    _google_health_backfill_tasks.clear()
 
     if _google_health_export_worker is not None:
         if _container is not None:
@@ -353,6 +402,9 @@ async def google_health_callback(
             )
         except Exception:
             logger.exception("Failed to notify Telegram after Google Health OAuth")
+
+    if completion.connected:
+        _schedule_google_health_backfill(completion.telegram_user_id)
 
     title = (
         "Google Health connected"

@@ -88,8 +88,9 @@ retains the model's tool call and arguments.
 
 Blacki can read normalized health summaries after a user completes Google OAuth
 from a private Telegram chat. If the user grants both nutrition permissions,
-Blacki also exports future meal logs, edits, and deletions from that private
-chat. This is intentionally named **Connect Google Health**: Blacki does not
+Blacki also queues existing meals from that private chat once for the connected
+Google account, then exports future meal logs, edits, and deletions. This is
+intentionally named **Connect Google Health**: Blacki does not
 request Apple ID credentials, access HealthKit, scrape Fitbit, or receive
 arbitrary Apple Health records. The user must first configure an Apple
 Health-to-Google Health/Fitbit-compatible import path if their account and app
@@ -108,11 +109,11 @@ to the exact public HTTPS URL. In Telegram:
    ID; it does not import unrelated food logs.
 3. Return to Telegram and use `/health_refresh` for an on-demand sync or
    `/health_summary` for the latest stored records.
-4. Log meals normally. Eligible new meals show a `google_health_sync` status;
-   `pending` is retried in the background, `synced` confirms the remote write,
-   `authorization_required` asks you to reconnect, and `failed` remains visible
-   for follow-up. A local Blacki save is still successful when remote sync is
-   pending or fails, and the meal must not be logged again.
+4. Log meals normally. Existing eligible meals are queued once after the
+   connection is saved. New meals continue through the background export
+   worker. A local Blacki save remains successful when remote sync is pending
+   or fails, and the meal must not be logged again. Ask Blacki for meal sync
+   status when you want to check the queue, or ask it to retry failed exports.
 5. Use `/disconnect_health`, then confirm the button, to revoke the token
    best-effort, cancel pending meal sync, and remove Blacki's stored token and
    normalized health summaries. Local calorie logs remain. Blacki does not
@@ -124,10 +125,11 @@ window so late device imports can replace earlier daily records. Missing values
 are omitted rather than guessed. Stored data is limited to normalized daily
 activity, workout, sleep, heart-rate, weight, and body-fat summaries; raw
 Google payloads and provider IDs are not persisted in the summary table. Meal
-exports are persisted separately with retry state and opaque data point IDs;
-there is no historical backfill. The meal export worker runs every minute
-independently of health imports. Run only one active scheduler process per
-`tools.db` so a deployment does not dispatch duplicate work.
+exports are persisted separately with retry state and opaque data point IDs. A
+one-time per-account backfill queues existing local meals with a durable cursor;
+the meal export worker runs every minute independently of health imports. Run
+only one active scheduler process per `tools.db` so a deployment does not
+dispatch duplicate work.
 
 Google's v4 discovery document currently lists `nutrition-log` as a supported
 data type. Blacki writes only the local meal description, kcal, available
