@@ -3850,6 +3850,45 @@ class TestHandleFileUpload:
         assert "Caption" not in call["message_text"]
 
     @pytest.mark.asyncio
+    async def test_image_upload_guides_agent_to_view_tool(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        """Image documents identify the sandbox tool for visual inspection."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_chat_action = AsyncMock()
+        mock_api.get_file = AsyncMock(return_value={"file_path": "documents/photo"})
+        mock_api.download_file = AsyncMock(return_value=b"image content")
+        bot._api = mock_api
+
+        mock_sandbox = MagicMock()
+        mock_sandbox.files.write_file = AsyncMock()
+
+        with patch("blacki.sandbox.manager.get_sandbox_manager") as mock_get_manager:
+            manager = MagicMock()
+            manager.config.enabled = True
+            manager.get_or_create_sandbox = AsyncMock(
+                return_value={"sandbox": mock_sandbox, "error": None}
+            )
+            mock_get_manager.return_value = manager
+
+            await bot._handle_file_upload(
+                chat_id=123,
+                message_thread_id=None,
+                file_id="photo-doc",
+                file_name="photo.png",
+                mime_type="image/png",
+                caption=None,
+            )
+
+        message_text = runtime_recorder.run_user_turn_calls[0]["message_text"]
+        assert "call sandbox_view_image" in message_text
+        assert "/workspace/uploads/photo.png" in message_text
+
+    @pytest.mark.asyncio
     async def test_upload_no_file_path(
         self,
         telegram_config: TelegramConfig,

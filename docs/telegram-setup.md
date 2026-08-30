@@ -199,7 +199,13 @@ To verify image input, select a vision-capable model, send a Telegram photo,
 and optionally add a caption as the instruction. Without a caption, Blacki asks
 the model to describe the image. Native photo input is limited to 10 MB;
 documents, audio, video, and voice messages continue to use the sandbox upload
-path. A model that does not support images will return the normal photo
+path. When an image is sent as a Telegram file/document, Blacki exposes its
+`/workspace/uploads/...` path to the agent and the agent can call
+`sandbox_view_image` to attach it as a visual input. Call the tool once per
+image when several files are present; each image remains a separate model
+input rather than being combined into a collage. The tool accepts a path below
+`/workspace`, validates common PNG, JPEG, GIF, WebP, and BMP files, and is
+read-only. A model that does not support images will return the normal photo
 processing error without changing the selected model.
 
 ## Tool notifications

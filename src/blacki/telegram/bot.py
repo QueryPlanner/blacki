@@ -9,6 +9,7 @@ import re
 from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from google.genai import types
@@ -67,9 +68,17 @@ _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TELEGRAM_FILE_BYTES = 20 * 1024 * 1024
 _JPEG_MAGIC = b"\xff\xd8\xff"
+_IMAGE_FILE_EXTENSIONS = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
 _MAX_ALBUM_PHOTOS = 10
 _MAX_ALBUM_BYTES = 20 * 1024 * 1024
+
+
+def _looks_like_image_attachment(file_name: str, mime_type: str | None) -> bool:
+    """Return whether an upload should get visual-inspection guidance."""
+    return (mime_type or "").strip().lower().startswith("image/") or Path(
+        file_name
+    ).suffix.lower() in _IMAGE_FILE_EXTENSIONS
 
 
 def _format_google_health_sync_counts(value: object) -> str:
@@ -1572,6 +1581,11 @@ class TelegramBot:
                 f"User uploaded a file which has been saved to "
                 f"the sandbox at {sandbox_path}"
             )
+            if _looks_like_image_attachment(file_name, mime_type):
+                user_message += (
+                    "\nTo inspect this image visually, call sandbox_view_image "
+                    f"with path {sandbox_path}."
+                )
             if caption:
                 user_message += f"\nCaption provided by user: {caption}"
 

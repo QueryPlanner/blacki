@@ -496,6 +496,7 @@ async def test_prompt_plugin_bounds_and_escapes_untrusted_metadata(
         )
     instruction = request.append_instructions.call_args.args[0][0]
     assert "untrusted" in instruction
+    assert "sandbox_view_image" in instruction
     assert "&quot;" in instruction and "<instruction>" not in instruction
     service.list_files.assert_awaited_once_with("sender", "", 10)
 

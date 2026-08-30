@@ -272,6 +272,10 @@ def test_describe_tool_sandbox() -> None:
         )
         == "Sending file *report\\.pdf* from sandbox…"
     )
+    assert (
+        describe_tool("sandbox_view_image", {"path": "photo.png"}, private=False)
+        == "Viewing image *photo\\.png* from sandbox…"
+    )
 
 
 def test_describe_tool_weather() -> None:
@@ -456,6 +460,7 @@ ALL_KNOWN_TOOLS = [
     ("sandbox_read_file", {"path": "config.json"}),
     ("sandbox_list_files", {"path": "src/"}),
     ("sandbox_send_file_to_user", {"path": "results.csv"}),
+    ("sandbox_view_image", {"path": "photo.png"}),
     ("get_current_weather", {"location": "San Francisco, CA"}),
     ("get_weather_forecast", {"location": "New York, NY"}),
     ("get_health_summary", {"days": 7}),
