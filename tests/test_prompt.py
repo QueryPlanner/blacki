@@ -73,6 +73,15 @@ class TestStablePromptLayers:
 
         assert instruction.startswith("You are a helpful assistant.")
         assert "<natural_chat_style>" in instruction
+        assert "<chat_style_examples>" in instruction
+        assert "These examples show the range, not a checklist" in normalized
+        assert '"you actually DID that?"' in instruction
+        assert '"nice", "niiice", and "niceeee"' in instruction
+        assert '"okay", "okay.", "okay!", "okay?", "okay..."' in instruction
+        assert '"bhai tu kar kya raha hai 😭"' in instruction
+        assert '"very responsible 🫡"' in instruction
+        assert "🫥 social disappearance" in normalized
+        assert '"sjfksjfks" can signal speechless laughter' in normalized
         assert (
             "Match the user's language, formality, pace, and message length"
             in normalized
