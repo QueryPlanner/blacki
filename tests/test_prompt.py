@@ -271,7 +271,7 @@ class TestDomainPolicyPlugin:
     ) -> None:
         plugin = DomainPolicyPlugin()
         request = _request_with_tools(
-            "exa_search", "brave_search", "sandbox_execute_code"
+            "exa_search", "brave_search", "sandbox_execute_code", "sandbox_view_image"
         )
         opaque_tool = object()
         assert request.config.tools is not None
@@ -289,6 +289,7 @@ class TestDomainPolicyPlugin:
             "exa_search",
             "brave_search",
             "sandbox_execute_code",
+            "sandbox_view_image",
         }
         assert context.state["temp:blacki_search_primary"] == "exa_search"
         assert request.config.tools is not None

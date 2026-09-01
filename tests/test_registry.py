@@ -102,7 +102,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 14
+        assert len(tools) == 15
 
     def test_weather_tools_disabled(self) -> None:
         """Should not add weather tools when disabled."""
@@ -573,7 +573,8 @@ class TestBuildSandboxTools:
 
         tools = _build_sandbox_tools()
 
-        assert len(tools) == 6
+        assert len(tools) == 7
+        assert "sandbox_view_image" in {tool.__name__ for tool in tools}
 
 
 class TestBuildMemoryTools:

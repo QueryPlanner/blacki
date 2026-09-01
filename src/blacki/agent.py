@@ -284,9 +284,19 @@ def create_app(agent: LlmAgent | None = None) -> App:
         DeclarativeDbPlugin,
         StoredPreferencesPlugin,
     )
+    from blacki.sandbox import (
+        SandboxMultimodalToolResultsPlugin,
+        sandbox_enabled,
+    )
     from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
 
+    sandbox_tools_enabled = sandbox_enabled()
     plugins: list[BasePlugin] = [
+        *(
+            [SandboxMultimodalToolResultsPlugin(name="sandbox_multimodal_results")]
+            if sandbox_tools_enabled
+            else []
+        ),
         TelegramModelOverridePlugin(name="telegram_model_override"),
         GlobalInstructionPlugin(return_global_instruction),
         DomainPolicyPlugin(name="domain_policy"),

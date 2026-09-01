@@ -188,6 +188,10 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
         if can_interpolate and (path := _format_salient_arg(args.get("path"))):
             return f"Sending file *{path}* from sandbox…"
         return "Sending file from sandbox…"
+    if tool_name == "sandbox_view_image":
+        if can_interpolate and (path := _format_salient_arg(args.get("path"))):
+            return f"Viewing image *{path}* from sandbox…"
+        return "Viewing image from sandbox…"
 
     # 7. Weather
     if tool_name == "get_current_weather":

@@ -210,6 +210,7 @@ SEARCH_CONFLICTING_TOOL_NAMES = frozenset(
         "sandbox_list_files",
         "sandbox_send_file_to_user",
         "sandbox_execute_code",
+        "sandbox_view_image",
         "McpSkillToolset",
     }
 )

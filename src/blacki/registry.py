@@ -225,6 +225,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_read_file,
             sandbox_run_command,
             sandbox_send_file_to_user,
+            sandbox_view_image,
             sandbox_write_file,
         )
 
@@ -235,6 +236,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_list_files,
             sandbox_send_file_to_user,
             sandbox_execute_code,
+            sandbox_view_image,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)
