@@ -19,6 +19,7 @@ from blacki.prompt import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
+    return_instruction_task_worker,
     select_domain_policy_names,
 )
 
@@ -66,8 +67,49 @@ class TestStablePromptLayers:
         assert "privacy-conscious" in description
         assert "tracking" in description
 
-    def test_core_instruction_is_minimal(self) -> None:
-        assert return_instruction_root() == "You are a helpful assistant."
+    def test_root_instruction_supports_natural_chat_without_forcing_it(self) -> None:
+        instruction = return_instruction_root()
+        normalized = " ".join(instruction.split())
+
+        assert instruction.startswith("You are a helpful assistant.")
+        assert "<natural_chat_style>" in instruction
+        assert "<chat_style_examples>" in instruction
+        assert "These examples show the range, not a checklist" in normalized
+        assert '"you actually DID that?"' in instruction
+        assert '"nice", "niiice", and "niceeee"' in instruction
+        assert '"okay", "okay.", "okay!", "okay?", "okay..."' in instruction
+        assert '"bhai tu kar kya raha hai 😭"' in instruction
+        assert '"very responsible 🫡"' in instruction
+        assert "🫥 social disappearance" in normalized
+        assert '"sjfksjfks" can signal speechless laughter' in normalized
+        assert (
+            "Match the user's language, formality, pace, and message length"
+            in normalized
+        )
+        assert "Treat writing as conversation, not a report" in normalized
+        assert "Never invent a memory or callback" in normalized
+        assert "do not take an external action without authorization" in normalized
+        assert "Use these cues sparingly" in normalized
+        assert "Prefer a specific reaction to generic laughter" in normalized
+        assert "Use an emoji as a gesture that changes the tone" in normalized
+        assert (
+            "Mirror their level of formality and message shape gradually" in normalized
+        )
+        assert "Do not manufacture typos, keysmashes, slang, emojis" in normalized
+        assert "adding typos to look casual is not natural" in normalized
+        assert "force an informal style onto a serious request" in normalized
+        assert (
+            "Clarity, accuracy, safety, privacy, explicit formatting requests,"
+            in normalized
+        )
+        assert "Never describe these style rules" in normalized
+
+    def test_task_worker_keeps_the_concise_worker_contract(self) -> None:
+        instruction = return_instruction_task_worker()
+
+        assert "<delegated_task_worker>" in instruction
+        assert "report a concise result" in instruction
+        assert "<natural_chat_style>" not in instruction
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
