@@ -1,5 +1,6 @@
 """Tests for OpenSandbox manager module."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -251,6 +252,74 @@ class TestSandboxManager:
 
         assert result["sandbox"] is None
         assert "Unexpected error" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_clear_gmail_artifacts_deletes_only_matching_files(self) -> None:
+        manager = SandboxManager(SandboxConfig(enabled=True, domain="localhost:9090"))
+        state = {"__sandbox_id__": "sandbox-1"}
+        sandbox = MagicMock()
+        sandbox.files.search = AsyncMock(
+            return_value=[
+                SimpleNamespace(path="/workspace/uploads/gmail-result-1.json"),
+                SimpleNamespace(path="/workspace/uploads/gmail-2-invoice.pdf"),
+            ]
+        )
+        sandbox.files.delete_files = AsyncMock()
+        with patch.object(
+            manager,
+            "get_or_create_sandbox",
+            new_callable=AsyncMock,
+            return_value={"sandbox": sandbox, "error": None},
+        ):
+            await manager.clear_gmail_artifacts(state)
+
+        sandbox.files.search.assert_awaited_once()
+        sandbox.files.delete_files.assert_awaited_once_with(
+            [
+                "/workspace/uploads/gmail-result-1.json",
+                "/workspace/uploads/gmail-2-invoice.pdf",
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_clear_gmail_artifacts_handles_absent_sandbox_and_errors(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        manager = SandboxManager(SandboxConfig(enabled=True, domain="localhost:9090"))
+        await manager.clear_gmail_artifacts({})
+
+        with patch.object(
+            manager,
+            "get_or_create_sandbox",
+            new_callable=AsyncMock,
+            return_value={"sandbox": None, "error": "disabled"},
+        ):
+            await manager.clear_gmail_artifacts({"__sandbox_id__": "sandbox-1"})
+
+        sandbox = MagicMock()
+        sandbox.files.search = AsyncMock(side_effect=RuntimeError("file secret"))
+        with (
+            patch.object(
+                manager,
+                "get_or_create_sandbox",
+                new_callable=AsyncMock,
+                return_value={"sandbox": sandbox, "error": None},
+            ),
+            caplog.at_level("WARNING", logger="blacki.sandbox.manager"),
+        ):
+            await manager.clear_gmail_artifacts({"__sandbox_id__": "sandbox-1"})
+        assert "file secret" not in caplog.text
+
+        sandbox.files.search = AsyncMock(return_value=[])
+        with patch.object(
+            manager,
+            "get_or_create_sandbox",
+            new_callable=AsyncMock,
+            return_value={"sandbox": sandbox, "error": None},
+        ):
+            await manager.clear_gmail_artifacts({"__sandbox_id__": "sandbox-1"})
+        sandbox.files.delete_files.assert_not_called()
 
 
 class TestGetSandboxManager:

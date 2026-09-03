@@ -323,6 +323,28 @@ def test_describe_tool_skill_loading() -> None:
     assert describe_tool("load_skill", {}, private=False) == "Loading skill…"
 
 
+def test_describe_tool_gmail_api() -> None:
+    assert (
+        describe_tool("gmail_search_messages", {"query": "invoices"}, private=False)
+        == "Searching Gmail for *invoices*…"
+    )
+    assert (
+        describe_tool("gmail_search_messages", {"query": "invoices"}, private=True)
+        == "Searching Gmail…"
+    )
+    assert describe_tool("gmail_get_thread", {}, private=False) == "Reading email…"
+    assert describe_tool("gmail_create_draft", {}, private=False) == "Drafting email…"
+    assert describe_tool("gmail_list_drafts", {}, private=False) == "Checking drafts…"
+    assert (
+        describe_tool("gmail_modify_thread_labels", {}, private=False)
+        == "Updating Gmail labels…"
+    )
+    assert (
+        describe_tool("gmail_custom_action", {}, private=False)
+        == "Working with Gmail (custom action)…"
+    )
+
+
 def test_describe_tool_private_never_interpolates_args() -> None:
     """When private=True, no argument interpolation ever occurs."""
     args: dict[str, Any] = {

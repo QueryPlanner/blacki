@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from google.adk.tools.base_tool import BaseTool
@@ -12,6 +12,7 @@ from blacki.privacy import (
     PrivacyAwareLoggingPlugin,
     configure_private_tool_privacy,
     configure_zepto_privacy,
+    gmail_configured,
     is_private_tool,
     kokoro_tts_enabled,
     private_tool_privacy_enabled,
@@ -23,6 +24,43 @@ def _tool(name: str) -> MagicMock:
     tool = MagicMock(spec=BaseTool)
     tool.name = name
     return tool
+
+
+def test_gmail_privacy_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "GOOGLE_HEALTH_CLIENT_ID",
+        "GOOGLE_HEALTH_CLIENT_SECRET",
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert gmail_configured() is False
+
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("GOOGLE_HEALTH_CLIENT_ID", "client")
+    monkeypatch.setenv("GOOGLE_HEALTH_CLIENT_SECRET", "secret")
+    monkeypatch.setenv(
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode()
+    )
+    assert gmail_configured() is True
+    assert private_tool_privacy_enabled() is True
+
+    from blacki.gmail.errors import GmailConfigurationError
+
+    with patch(
+        "blacki.gmail.config.GmailConfig.from_environment",
+        side_effect=GmailConfigurationError("partial secret"),
+    ):
+        assert gmail_configured() is True
+
+
+def test_private_tool_identification_uses_zepto_and_gmail_prefix() -> None:
+    assert is_private_tool(_tool("zepto_search_products")) is True
+    assert is_private_tool(_tool("gmail_search_messages")) is True
+    assert is_private_tool(_tool("gmail_create_draft")) is True
+    assert is_private_tool(_tool("send_text_to_speech")) is True
+    assert is_private_tool(_tool("search_products")) is False
+    assert is_private_tool(_tool("get_health_summary")) is True
 
 
 def test_configure_zepto_privacy_is_explicit_and_forces_safe_values(

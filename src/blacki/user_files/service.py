@@ -47,7 +47,9 @@ class IngestResult:
 
 def sanitize_display_name(value: str) -> str:
     """Return a bounded filename safe for metadata and sandbox paths."""
-    name = _CONTROL_CHARS.sub("_", Path(value).name).strip().strip(".")
+    name = (
+        _CONTROL_CHARS.sub("_", Path(value.replace("\\", "/")).name).strip().strip(".")
+    )
     if not name:
         name = "attachment"
     return name[:MAX_DISPLAY_NAME_CHARS]

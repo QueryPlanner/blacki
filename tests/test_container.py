@@ -215,6 +215,18 @@ class TestAppContainer:
         assert container._declarative_db_storage is storage
 
     @pytest.mark.asyncio
+    async def test_gmail_storage_property_reuses_lazy_instance(
+        self, conn, lock
+    ) -> None:
+        """Should lazily instantiate and reuse Gmail storage."""
+        container = AppContainer(conn=conn, _lock=lock)
+
+        storage = container.gmail_storage
+
+        assert storage is container.gmail_storage
+        assert container._gmail_storage is storage
+
+    @pytest.mark.asyncio
     async def test_close_closes_connection_and_storages(self, conn, lock) -> None:
         """Should close connection and all storage instances."""
         container = AppContainer(conn=conn, _lock=lock)

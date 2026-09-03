@@ -399,6 +399,8 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     for var in env_vars_to_clean:
         monkeypatch.delenv(var, raising=False)
 
+    monkeypatch.delenv("GMAIL_REDIRECT_URI", raising=False)
+
 
 @pytest.fixture
 def mock_load_dotenv() -> Generator[MagicMock]:

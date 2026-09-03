@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
     from blacki.calories.storage import SqliteCalorieStorage
     from blacki.declarative_db.storage import SqliteDeclarativeDbStorage
+    from blacki.gmail.storage import SqliteGmailStorage
     from blacki.health.nutrition_worker import NutritionExportWorker
     from blacki.health.storage import SqliteGoogleHealthStorage
     from blacki.reminders.storage import SqliteReminderStorage
@@ -145,6 +146,9 @@ class AppContainer:
     _google_health_storage: SqliteGoogleHealthStorage | None = field(
         default=None, init=False, repr=False
     )
+    _gmail_storage: SqliteGmailStorage | None = field(
+        default=None, init=False, repr=False
+    )
     _user_file_storage: SqliteUserFileStorage | None = field(
         default=None, init=False, repr=False
     )
@@ -206,6 +210,10 @@ class AppContainer:
             await self._google_health_storage.close()
             self._google_health_storage = None
 
+        if self._gmail_storage is not None:
+            await self._gmail_storage.close()
+            self._gmail_storage = None
+
         if self._user_file_storage is not None:
             await self._user_file_storage.close()
             self._user_file_storage = None
@@ -226,6 +234,7 @@ class AppContainer:
         await self.preferences_storage.initialize()
         await self.declarative_db_storage.initialize()
         await self.google_health_storage.initialize()
+        await self.gmail_storage.initialize()
         await self.user_file_storage.initialize()
         await self.telegram_access_storage.initialize()
 
@@ -291,6 +300,15 @@ class AppContainer:
                 self.conn, self._lock
             )
         return self._google_health_storage
+
+    @property
+    def gmail_storage(self) -> SqliteGmailStorage:
+        """Get or create storage for Gmail OAuth state and connections."""
+        if self._gmail_storage is None:
+            from blacki.gmail.storage import SqliteGmailStorage
+
+            self._gmail_storage = SqliteGmailStorage(self.conn, self._lock)
+        return self._gmail_storage
 
     @property
     def user_file_storage(self) -> SqliteUserFileStorage:

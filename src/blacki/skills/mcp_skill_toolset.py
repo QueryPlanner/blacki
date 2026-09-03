@@ -22,7 +22,6 @@ from google.adk.skills.models import Frontmatter, Resources, Skill
 from google.adk.skills.prompt import format_skills_as_xml
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
-from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
@@ -274,11 +273,11 @@ class _LoadSkillResourceTool(BaseTool):
 
 
 class McpSkillToolset(BaseToolset):
-    """A toolset for managing and interacting with agent skills with optional MCP tools.
+    """A skill toolset with optional ADK toolsets activated on demand.
 
     This toolset follows the native ADK SkillToolset pattern while adding
-    optional MCP toolset integration. Each skill can have an associated
-    McpToolset that gets activated when the skill is loaded.
+    optional toolset integration. Each skill can have an associated ADK
+    BaseToolset that gets activated when the skill is loaded.
 
     Usage:
         notion_skill = load_skill_from_dir(Path("skills/notion"))
@@ -297,26 +296,28 @@ class McpSkillToolset(BaseToolset):
 
     Attributes:
         _skills: Dictionary mapping skill names to Skill objects.
-        _mcp_toolsets: Dictionary mapping skill names to optional McpToolset objects.
+        _mcp_toolsets: Dictionary mapping skill names to optional ADK toolsets.
     """
 
     def __init__(
         self,
         *,
-        skills: list[tuple[Skill, McpToolset | None]],
+        skills: list[tuple[Skill, BaseToolset | None]],
         tool_name_prefix: str | None = None,
     ) -> None:
-        """Initialize the toolset with skills and optional MCP toolsets.
+        """Initialize the toolset with skills and optional ADK toolsets.
 
         Args:
-            skills: List of (Skill, McpToolset | None) tuples. Each tuple
-                contains a Skill and an optional McpToolset. If McpToolset
-                is None, the skill has no MCP tools.
+            skills: List of (Skill, BaseToolset | None) tuples. Each tuple
+                contains a Skill and an optional ADK toolset. If the toolset
+                is None, the skill has no additional tools.
             tool_name_prefix: Optional prefix for tool names.
         """
         super().__init__(tool_name_prefix=tool_name_prefix)
+        # Skill activation can change the returned tools during one invocation.
+        self._use_invocation_cache = False
         self._skills: dict[str, Skill] = {}
-        self._mcp_toolsets: dict[str, McpToolset | None] = {}
+        self._mcp_toolsets: dict[str, BaseToolset | None] = {}
 
         for skill, mcp_toolset in skills:
             self._skills[skill.frontmatter.name] = skill

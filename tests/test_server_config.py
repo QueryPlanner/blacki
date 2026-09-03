@@ -654,6 +654,179 @@ async def test_google_health_callback_handles_cancel_and_safe_errors(
 
 
 @pytest.mark.asyncio
+async def test_gmail_callback_requires_started_connector(
+    mock_dependencies: MagicMock,
+) -> None:
+    """The callback does not create a second unscoped connector."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    server._gmail_oauth_service = None
+    response = await server.gmail_callback(state="state", code="code")
+    assert response.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_gmail_start_and_stop_are_optional_and_safe(
+    mock_dependencies: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Gmail startup and shutdown must tolerate optional configuration failures."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    from cryptography.fernet import Fernet
+
+    import blacki.server as server
+    from blacki.gmail import GmailConfig, GmailConfigurationError
+
+    server._gmail_oauth_service = None
+    server._container = None
+    await server._start_gmail()
+
+    server._container = MagicMock()
+    with patch(
+        "blacki.gmail.GmailConfig.from_environment",
+        return_value=None,
+    ):
+        await server._start_gmail()
+    with patch(
+        "blacki.gmail.GmailConfig.from_environment",
+        side_effect=GmailConfigurationError("configuration secret"),
+    ):
+        await server._start_gmail()
+    assert server.__dict__["_gmail_oauth_service"] is None
+
+    config = GmailConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        redirect_uri="https://example.test/integrations/gmail/callback",
+        token_encryption_key=Fernet.generate_key().decode(),
+    )
+    service = MagicMock()
+    service.close = AsyncMock()
+    with (
+        patch("blacki.gmail.GmailConfig.from_environment", return_value=config),
+        patch("blacki.gmail.GmailOAuthService", return_value=service) as constructor,
+    ):
+        await server._start_gmail()
+    constructor.assert_called_once_with(config, server._container.gmail_storage)
+    assert server._gmail_oauth_service is not None
+    await server._stop_gmail()
+    service.close.assert_awaited_once()
+    assert server._gmail_oauth_service is None
+
+    failing_service = MagicMock()
+    failing_service.close = AsyncMock(side_effect=RuntimeError("close secret"))
+    server._gmail_oauth_service = failing_service
+    with caplog.at_level("ERROR", logger="blacki.server"):
+        await server._stop_gmail()
+    assert server._gmail_oauth_service is None
+    assert "close secret" not in caplog.text
+    await server._stop_gmail()
+
+
+@pytest.mark.asyncio
+async def test_gmail_callback_validates_state_and_errors(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Callback failures return safe pages without provider details."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.gmail import GmailApiError, GmailCredentialError, GmailOAuthError
+
+    service = MagicMock()
+    service.complete_authorization = AsyncMock(side_effect=GmailOAuthError("expired"))
+    server._gmail_oauth_service = service
+    try:
+        response = await server.gmail_callback(state=None, code="code")
+        assert response.status_code == 400
+
+        response = await server.gmail_callback(state="bad-state", code="code")
+        assert response.status_code == 400
+        assert b"expired" not in response.body
+
+        service.complete_authorization = AsyncMock(
+            side_effect=GmailCredentialError("credential secret")
+        )
+        response = await server.gmail_callback(state="state", code="code")
+        assert response.status_code == 400
+        assert b"credential secret" not in response.body
+
+        service.complete_authorization = AsyncMock(
+            side_effect=GmailApiError("provider", status_code=503)
+        )
+        response = await server.gmail_callback(state="state", code="code")
+        assert response.status_code == 502
+
+        service.complete_authorization = AsyncMock(
+            side_effect=RuntimeError("unexpected disk error")
+        )
+        response = await server.gmail_callback(state="state", code="code")
+        assert response.status_code == 500
+
+        from blacki.gmail import GmailOAuthCompletion
+
+        service.complete_authorization = AsyncMock(
+            return_value=GmailOAuthCompletion("telegram-chat-42", connected=True)
+        )
+        server._telegram_bot = None
+        response = await server.gmail_callback(state="state", code="code")
+        assert response.status_code == 200
+    finally:
+        server._gmail_oauth_service = None
+
+
+@pytest.mark.asyncio
+async def test_gmail_callback_notifies_owning_telegram_user(
+    mock_dependencies: MagicMock,
+) -> None:
+    """Successful and cancelled callbacks notify only the bound user."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+    from blacki.gmail import GmailOAuthCompletion
+
+    service = MagicMock()
+    service.complete_authorization = AsyncMock(
+        return_value=GmailOAuthCompletion("telegram-chat-42", connected=True)
+    )
+    bot = MagicMock()
+    bot.notify_gmail_connected = AsyncMock()
+    server._gmail_oauth_service = service
+    server._telegram_bot = bot
+    try:
+        response = await server.gmail_callback(state="state", code="code")
+        assert response.status_code == 200
+        assert b"Gmail connected" in response.body
+        bot.notify_gmail_connected.assert_awaited_once_with(
+            "telegram-chat-42", connected=True
+        )
+
+        service.complete_authorization = AsyncMock(
+            return_value=GmailOAuthCompletion("telegram-chat-42", connected=False)
+        )
+        bot.notify_gmail_connected = AsyncMock(
+            side_effect=RuntimeError("telegram fail")
+        )
+        response = await server.gmail_callback(
+            state="state",
+            code=None,
+            error="access_denied",
+        )
+        assert response.status_code == 200
+        assert b"cancelled" in response.body
+    finally:
+        server._gmail_oauth_service = None
+        server._telegram_bot = None
+
+
+@pytest.mark.asyncio
 async def test_google_health_start_and_stop_are_optional(
     mock_dependencies: MagicMock,
 ) -> None:
