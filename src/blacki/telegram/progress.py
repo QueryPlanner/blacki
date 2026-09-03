@@ -231,11 +231,27 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
     if tool_name == "send_text_to_speech":
         return "Generating speech…"
 
-    # 11. Skills & MCP
+    # 11. Skills and connected services
     if tool_name == "load_skill":
         if can_interpolate and (name := _format_salient_arg(args.get("name"))):
             return f"Loading skill *{name}*…"
         return "Loading skill…"
+
+    if tool_name.startswith("gmail_"):
+        action = tool_name.removeprefix("gmail_")
+        if action == "search_messages":
+            if can_interpolate and (query := _format_salient_arg(args.get("query"))):
+                return f"Searching Gmail for *{query}*…"
+            return "Searching Gmail…"
+        if action in ("get_thread", "get_message"):
+            return "Reading email…"
+        if action == "create_draft":
+            return "Drafting email…"
+        if action in ("list_drafts", "get_draft"):
+            return "Checking drafts…"
+        if "label" in action:
+            return "Updating Gmail labels…"
+        return f"Working with Gmail ({_humanize_symbol(action)})…"
 
     # 12. Unknown tool fallback
     humanized = _humanize_symbol(tool_name)

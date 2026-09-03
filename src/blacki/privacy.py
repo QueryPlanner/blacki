@@ -12,6 +12,7 @@ from google.adk.tools.tool_context import ToolContext
 
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _ZEPTO_TOOL_PREFIX = "zepto_"
+_GMAIL_TOOL_PREFIX = "gmail_"
 _PRIVATE_TOOL_NAMES = frozenset(
     {
         "log_meal",
@@ -35,6 +36,18 @@ def zepto_mcp_enabled() -> bool:
     return os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower() in _ENABLED_VALUES
 
 
+def gmail_configured() -> bool:
+    """Return whether shared Gmail OAuth settings are present."""
+    from .gmail.config import GmailConfig
+    from .gmail.errors import GmailConfigurationError
+
+    try:
+        return GmailConfig.from_environment() is not None
+    except GmailConfigurationError:
+        # Keep redaction on while an operator repairs a partial configuration.
+        return True
+
+
 def kokoro_tts_enabled() -> bool:
     """Return whether the private Kokoro TTS integration is configured."""
     return bool(os.getenv("KOKORO_TTS_BASE_URL", "").strip())
@@ -56,6 +69,7 @@ def private_tool_privacy_enabled() -> bool:
     """Return whether any configured tool needs content-level redaction."""
     return (
         zepto_mcp_enabled()
+        or gmail_configured()
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
@@ -87,7 +101,10 @@ def configure_private_tool_privacy() -> bool:
 
 def is_private_tool(tool: BaseTool) -> bool:
     """Return whether a tool can expose private account or message data."""
-    return tool.name.startswith(_ZEPTO_TOOL_PREFIX) or tool.name in _PRIVATE_TOOL_NAMES
+    is_zepto = tool.name.startswith(_ZEPTO_TOOL_PREFIX)
+    is_gmail = tool.name.startswith(_GMAIL_TOOL_PREFIX)
+    is_named_private = tool.name in _PRIVATE_TOOL_NAMES
+    return is_zepto or is_gmail or is_named_private
 
 
 class PrivacyAwareLoggingPlugin(LoggingPlugin):

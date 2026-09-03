@@ -17,6 +17,7 @@ from blacki.adk_runtime import (
     MODEL_RETURNED_NO_CONTENT,
     AdkRuntime,
     EmptyModelResponseError,
+    PendingConfirmation,
     SessionLocator,
     StreamChunk,
     TurnResponse,
@@ -1154,6 +1155,48 @@ def test_confirmation_prompt_shows_exact_first_call_and_multiple_warning() -> No
     assert '"quantity": 1' in prompt
     assert "2 pending calls" in prompt
     assert "zepto_place_order" not in prompt
+
+
+def test_gmail_confirmation_shows_only_confirmed_send_metadata() -> None:
+    confirmation = PendingConfirmation(
+        interrupt_id="confirm-gmail",
+        tool_name="gmail_send_draft",
+        tool_args={
+            "draft_id": "draft-42",
+            "expected_to": "person@example.com",
+            "expected_cc": "copy@example.com",
+            "expected_bcc": "blind@example.com",
+            "expected_subject": "Quarterly update",
+            "expected_content_fingerprint": "a" * 64,
+            "body": "private body must not be shown",
+        },
+    )
+
+    prompt = _format_confirmation(confirmation, pending_count=1)
+
+    assert "draft-42" in prompt
+    assert "person@example.com" in prompt
+    assert "Quarterly update" in prompt
+    assert "private body must not be shown" not in prompt
+    assert "Zepto" not in prompt
+
+
+def test_gmail_confirmation_omits_empty_optional_fields() -> None:
+    confirmation = PendingConfirmation(
+        interrupt_id="confirm-gmail-empty",
+        tool_name="gmail_send_draft",
+        tool_args={
+            "draft_id": "draft-42",
+            "expected_to": "person@example.com",
+            "expected_cc": "",
+            "expected_bcc": "",
+            "expected_subject": "Subject",
+        },
+    )
+    prompt = _format_confirmation(confirmation, pending_count=1)
+    assert "content fingerprint" not in prompt
+    assert "cc `" not in prompt
+    assert "bcc `" not in prompt
 
 
 @pytest.mark.asyncio

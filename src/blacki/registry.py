@@ -7,9 +7,12 @@ tool building pattern with explicit dependency injection.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from blacki.gmail.config import GmailConfig
+from blacki.gmail.errors import GmailConfigurationError
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +49,7 @@ class ToolConfig:
     zepto_mcp_enabled: bool = False
     zepto_mcp_config_dir: Path = Path("data/credentials/zepto-mcp-remote")
     zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
+    gmail_config: GmailConfig | None = field(default=None, repr=False)
     r2_files_enabled: bool = False
 
 
@@ -253,13 +257,13 @@ def _build_skill_tools(
     config = config or ToolConfig()
     try:
         from google.adk.skills.models import Skill
-        from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+        from google.adk.tools.base_toolset import BaseToolset
 
         from blacki.skills import load_skill_from_dir
         from blacki.skills.mcp_skill_toolset import McpSkillToolset
 
         skills_to_load = ["explore_repo", "agent_browser"]
-        loaded_skills: list[tuple[Skill, McpToolset | None]] = []
+        loaded_skills: list[tuple[Skill, BaseToolset | None]] = []
         for skill_name in skills_to_load:
             skill = load_skill_from_dir(skills_dir / skill_name)
             if skill:
@@ -280,6 +284,18 @@ def _build_skill_tools(
                     loaded_skills.append((zepto_skill, zepto_toolset))
             except ZeptoCredentialError as exc:
                 logger.warning("Zepto MCP disabled: %s", exc)
+
+        if include_user_scoped_tools and config.gmail_config is not None:
+            from blacki.gmail import GmailCredentialError, create_gmail_toolset
+
+            try:
+                gmail_toolset = create_gmail_toolset(config=config.gmail_config)
+                gmail_skill = load_skill_from_dir(skills_dir / "gmail")
+                if gmail_skill:
+                    logger.info("Gmail API skill enabled for the root agent")
+                    loaded_skills.append((gmail_skill, gmail_toolset))
+            except (GmailCredentialError, GmailConfigurationError) as exc:
+                logger.warning("Gmail API disabled: %s", exc)
 
         if loaded_skills:
             return [McpSkillToolset(skills=loaded_skills)]
@@ -407,6 +423,11 @@ def build_tool_config_from_env() -> ToolConfig:
         for item in os.getenv("ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS", "").split(",")
         if item.strip()
     )
+    gmail_config = None
+    try:
+        gmail_config = GmailConfig.from_environment()
+    except GmailConfigurationError as exc:
+        logger.warning("Gmail API disabled: %s", exc)
 
     return ToolConfig(
         exa_api_key=os.getenv("EXA_API_KEY", "").strip() or None,
@@ -432,6 +453,7 @@ def build_tool_config_from_env() -> ToolConfig:
             ).strip()
         ),
         zepto_mcp_allowed_chat_ids=allowed_zepto_chat_ids,
+        gmail_config=gmail_config,
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
     )

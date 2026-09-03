@@ -1,5 +1,7 @@
 """Telegram bot client backed by the shared ADK runtime."""
 
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import hashlib
@@ -56,6 +58,7 @@ from .types import (
 )
 
 if TYPE_CHECKING:
+    from blacki.gmail.oauth import GmailOAuthService
     from blacki.user_files import IngestResult
 
 logger = logging.getLogger(__name__)
@@ -162,11 +165,13 @@ class TelegramBot:
         google_health_service: GoogleHealthService | None = None,
         access_storage: TelegramAccessStorage | None = None,
         voice_transcriber: VoiceTranscriber | None = None,
+        gmail_oauth_service: GmailOAuthService | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
         self.runtime = runtime
         self.google_health_service = google_health_service
+        self.gmail_oauth_service = gmail_oauth_service
         self.access_storage = access_storage
         self._voice_transcriber = (
             voice_transcriber or CloudflareWhisperTranscriber.from_environment()
@@ -257,6 +262,14 @@ class TelegramBot:
             BotCommand(
                 command="thinking",
                 description="Set reasoning effort for this chat",
+            ),
+            BotCommand(
+                command="connect_gmail",
+                description="Connect Gmail to search emails and prepare drafts",
+            ),
+            BotCommand(
+                command="disconnect_gmail",
+                description="Disconnect Gmail and remove credentials",
             ),
         ]
         if self.google_health_service is not None:
@@ -1037,7 +1050,7 @@ class TelegramBot:
         mime_type: str | None,
         telegram_file_unique_id: str | None,
         data: bytes,
-    ) -> tuple["IngestResult", str | None, str | None]:
+    ) -> tuple[IngestResult, str | None, str | None]:
         """Finish durable storage and sandbox materialization before cancellation."""
         task = asyncio.create_task(
             self._store_and_materialize_attachment(
@@ -1066,7 +1079,7 @@ class TelegramBot:
         mime_type: str | None,
         telegram_file_unique_id: str | None,
         data: bytes,
-    ) -> tuple["IngestResult", str | None, str | None]:
+    ) -> tuple[IngestResult, str | None, str | None]:
         """Persist an attachment when configured and create its sandbox copy."""
         from blacki.sandbox.manager import get_sandbox_manager
         from blacki.user_files import get_user_file_service, user_files_enabled
@@ -1159,6 +1172,10 @@ class TelegramBot:
             await self._refresh_health(message)
         elif command == "/disconnect_health":
             await self._request_health_disconnect(message)
+        elif command == "/connect_gmail":
+            await self._connect_gmail(message)
+        elif command == "/disconnect_gmail":
+            await self._disconnect_gmail(message)
 
     async def _connect_health(self, message: Message) -> None:
         """Send a short-lived Google authorization link to a private chat."""
@@ -1367,11 +1384,185 @@ class TelegramBot:
             protect_content=True,
         )
 
+    async def _gmail_command_ready(self, message: Message) -> bool:
+        """Require a configured Gmail service and private Telegram chat."""
+        if message.chat.type != ChatType.PRIVATE:
+            await self._send_gmail_text(
+                message,
+                "Gmail is available only in a private Telegram chat.",
+            )
+            return False
+        if self.gmail_oauth_service is None:
+            await self._send_gmail_text(
+                message,
+                "Gmail is not configured on this Blacki server yet.",
+            )
+            return False
+        return True
+
+    async def _send_gmail_text(self, message: Message, text: str) -> None:
+        """Send private Gmail status text with Telegram forwarding protection."""
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=text,
+            message_thread_id=message.message_thread_id,
+            protect_content=True,
+        )
+
+    async def _connect_gmail(self, message: Message) -> None:
+        """Send a short-lived Google authorization link for Gmail to a private chat."""
+        if not await self._gmail_command_ready(message):
+            return
+
+        from blacki.gmail import (
+            GmailAlreadyConnectedError,
+            GmailCredentialError,
+        )
+
+        service = cast(Any, self.gmail_oauth_service)
+        try:
+            auth_url = await service.begin_authorization(
+                f"telegram-chat-{message.chat.id}"
+            )
+        except GmailAlreadyConnectedError:
+            await self._send_gmail_text(
+                message,
+                "Gmail is already connected for this private chat. Use "
+                "/disconnect_gmail before connecting another account.",
+            )
+            return
+        except GmailCredentialError:
+            logger.exception("Failed to create Gmail authorization link")
+            await self._send_gmail_text(
+                message,
+                "Gmail is not available for this chat right now.",
+            )
+            return
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "Blacki uses Google's Gmail API to search messages, read threads, "
+                "manage drafts and labels, and send only after your explicit "
+                "confirmation. Retrieved email content passes through Blacki's "
+                "configured LLM and conversation storage. Tap below to authorize "
+                "the Gmail access requested by this connector:"
+            ),
+            message_thread_id=message.message_thread_id,
+            protect_content=True,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="🔗 Connect Gmail",
+                            url=auth_url,
+                            callback_data=None,
+                        )
+                    ]
+                ]
+            ),
+        )
+
+    async def _disconnect_gmail(self, message: Message) -> None:
+        """Ask for inline confirmation before disconnecting Gmail."""
+        if not await self._gmail_command_ready(message):
+            return
+
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=(
+                "Disconnect Gmail for this private chat? Blacki will request "
+                "remote revocation and remove this chat's stored credential."
+            ),
+            message_thread_id=message.message_thread_id,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Disconnect Gmail",
+                            callback_data="gmail:disconnect",
+                        ),
+                        InlineKeyboardButton(
+                            text="Cancel",
+                            callback_data="gmail:cancel",
+                        ),
+                    ]
+                ]
+            ),
+            protect_content=True,
+        )
+
+    async def _handle_gmail_callback(self, query: CallbackQuery) -> None:
+        """Handle Gmail disconnect confirmation from its owning private chat."""
+        if query.message is None:
+            await self.api.answer_callback_query(query.id, text="Confirmation expired")
+            return
+        chat = query.message.chat
+        if chat.type != ChatType.PRIVATE or query.from_user.id != chat.id:
+            await self.api.answer_callback_query(query.id, text="Not authorized")
+            return
+        if self.gmail_oauth_service is None:
+            await self.api.answer_callback_query(query.id, text="Not configured")
+            return
+        if query.data == "gmail:cancel":
+            await self.api.answer_callback_query(query.id, text="Cancelled")
+            return
+
+        await self.api.answer_callback_query(query.id, text="Disconnecting…")
+        try:
+            deleted = await self.gmail_oauth_service.disconnect(
+                f"telegram-chat-{chat.id}"
+            )
+            text = (
+                "Gmail was disconnected. Blacki requested remote revocation and "
+                "removed this chat's stored credential."
+                if deleted
+                else "Gmail was already disconnected."
+            )
+        except Exception:
+            logger.exception("Failed to disconnect Gmail")
+            text = "I couldn't finish disconnecting Gmail. Please try again."
+        await self._send_gmail_text(query.message, text)
+
+    async def notify_gmail_connected(
+        self,
+        telegram_user_id: str | int,
+        *,
+        connected: bool = True,
+    ) -> None:
+        """Notify the originating private chat after OAuth callback completion."""
+        from blacki.gmail import canonical_gmail_user_id, gmail_user_id_for_chat
+
+        user_id: str | None
+        if isinstance(telegram_user_id, int):
+            user_id = gmail_user_id_for_chat(telegram_user_id)
+        else:
+            user_id = canonical_gmail_user_id(telegram_user_id)
+        if user_id is None:
+            return
+        chat_id = int(user_id.removeprefix("telegram-chat-"))
+        text = (
+            "✅ Gmail is connected. Blacki can use the Gmail API to search "
+            "messages, read threads, create drafts, and manage labels. Gmail "
+            "content retrieved for a request passes through Blacki's configured "
+            "LLM and conversation storage. Sending always requires your explicit "
+            "confirmation. Use /disconnect_gmail to revoke access."
+            if connected
+            else "Gmail authorization was cancelled. No credentials were stored."
+        )
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=text,
+            protect_content=True,
+        )
+
     async def _handle_callback_query(self, query: CallbackQuery) -> None:
         """Handle incoming callback query."""
         data = query.data or ""
         if data.startswith("health:"):
             await self._handle_health_callback(query)
+            return
+        if data.startswith("gmail:"):
+            await self._handle_gmail_callback(query)
             return
         await self._settings_menu.handle_callback(query)
 
@@ -1401,6 +1592,11 @@ class TelegramBot:
                 "/health_refresh - Refresh health data\n"
                 "/disconnect_health - Disconnect and cancel meal sync"
             )
+        gmail_commands = (
+            "\n"
+            "/connect_gmail - Connect Gmail to search emails and prepare drafts\n"
+            "/disconnect_gmail - Disconnect Gmail and remove credentials"
+        )
         text = escape_markdown_plain(
             "👋 Hello! I'm blacki, your AI assistant.\n\n"
             "I run through the same ADK agent as the web interface, so our "
@@ -1410,6 +1606,7 @@ class TelegramBot:
             "/reset - Start a fresh conversation session\n"
             "/model - Choose the model and thinking settings\n"
             "/thinking - Choose supported reasoning effort"
+            f"{gmail_commands}"
             f"{health_commands}"
         )
         try:
@@ -1431,6 +1628,10 @@ class TelegramBot:
                 "• /health_refresh \\- Refresh health data\n"
                 "• /disconnect_health \\- Disconnect and cancel meal sync\n"
             )
+        gmail_commands = (
+            "• /connect_gmail \\- Connect Gmail to search emails and prepare drafts\n"
+            "• /disconnect_gmail \\- Disconnect Gmail and remove credentials\n"
+        )
         text = (
             "🤖 *blacki \\- AI Assistant*\n\n"
             "I'm powered by the same Google ADK runtime used by the HTTP app\\.\n\n"
@@ -1440,6 +1641,7 @@ class TelegramBot:
             "• /reset \\- Start a fresh conversation session\n"
             "• /model \\- Choose the model and thinking settings\n"
             "• /thinking \\- Choose supported reasoning effort\n"
+            f"{gmail_commands}"
             f"{health_commands}\n"
             "*Features:*\n"
             "• Conversation history is tied to this chat\n"
@@ -1919,10 +2121,16 @@ def create_telegram_bot(
     config: TelegramConfig,
     runtime: AdkRuntime,
     google_health_service: GoogleHealthService | None = None,
+    gmail_oauth_service: GmailOAuthService | None = None,
 ) -> TelegramBot | None:
     """Create a Telegram bot instance if configured."""
     if not config.is_configured():
         logger.info("Telegram bot not configured, skipping initialization")
         return None
 
-    return TelegramBot(config, runtime, google_health_service)
+    return TelegramBot(
+        config,
+        runtime,
+        google_health_service,
+        gmail_oauth_service=gmail_oauth_service,
+    )

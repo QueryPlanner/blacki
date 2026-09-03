@@ -550,5 +550,6 @@ def test_lazy_service_uses_application_container(config: R2FileConfig) -> None:
 def test_sanitize_display_name() -> None:
     assert sanitize_display_name("../../\x00") == "_"
     assert sanitize_display_name("...") == "attachment"
+    assert sanitize_display_name(r"..\secret.txt") == "secret.txt"
     assert len(sanitize_display_name("a" * 300)) == 180
     reset_user_file_service()

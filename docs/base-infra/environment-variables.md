@@ -143,6 +143,7 @@ health-metrics/measurements, and sleep scopes plus
 read-only scopes support summaries. Both nutrition scopes are
 required for automatic export of future private-chat meal logs, edits, and
 deletions. Existing connections must reconnect to request the added scopes;
+
 Blacki never backfills meals logged before consent. Do not paste the client
 secret or Fernet key into logs, chat, or source control. The callback URL must
 exactly match the Google Cloud OAuth client configuration. The Apple
@@ -163,6 +164,21 @@ scopes configured and the resulting consent is verified.
 [health-discovery]: https://health.googleapis.com/$discovery/rest?version=v4
 [health-nutrition]: https://developers.google.com/health/data-types/nutrition
 [health-datapoints]: https://developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints
+
+### Gmail API connector
+
+The connector is disabled unless `GMAIL_ENABLED=true`. It uses a separate OAuth
+client and token-encryption key from Google Health and is exposed only to the
+private Telegram root agent after the user connects an account.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GMAIL_ENABLED` | `false` | Explicitly enable the Gmail connector |
+| `GMAIL_CLIENT_ID` | unset | Dedicated server-side Gmail OAuth web-client ID |
+| `GMAIL_CLIENT_SECRET` | unset | Dedicated server-side Gmail OAuth web-client secret |
+| `GMAIL_REDIRECT_URI` | `http://127.0.0.1:8080/integrations/gmail/callback` | Gmail OAuth callback; use HTTPS in production |
+| `GMAIL_TOKEN_ENCRYPTION_KEY` | unset | Dedicated Fernet key for Gmail refresh tokens |
+| `GMAIL_MAX_ATTACHMENT_BYTES` | `26214400` | Maximum Gmail attachment download size |
 
 ## Search and browser tools
 

@@ -3,11 +3,23 @@
 from pathlib import Path
 from unittest.mock import create_autospec, patch
 
+import pydantic  # noqa: F401
 import pytest
+from cryptography.fernet import Fernet
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
+from blacki.gmail.config import GmailConfig
 from blacki.registry import ToolConfig, build_tool_config_from_env, build_tools
 from blacki.skills.mcp_skill_toolset import McpSkillToolset
+
+
+def _gmail_config() -> GmailConfig:
+    return GmailConfig(
+        client_id="client-id",
+        client_secret="client-secret",
+        redirect_uri="https://example.test/integrations/gmail/callback",
+        token_encryption_key=Fernet.generate_key().decode(),
+    )
 
 
 class TestToolConfig:
@@ -27,6 +39,7 @@ class TestToolConfig:
         assert config.kokoro_tts_voice == "af_heart"
         assert config.zepto_mcp_enabled is False
         assert config.zepto_mcp_allowed_chat_ids == frozenset()
+        assert config.gmail_config is None
 
     def test_custom_values(self) -> None:
         """Should accept custom values."""
@@ -43,6 +56,7 @@ class TestToolConfig:
             zepto_mcp_enabled=True,
             zepto_mcp_config_dir=Path("/tmp/zepto"),
             zepto_mcp_allowed_chat_ids=frozenset({"123"}),
+            gmail_config=_gmail_config(),
         )
 
         assert config.exa_api_key == "exa-key"
@@ -56,6 +70,7 @@ class TestToolConfig:
         assert config.zepto_mcp_enabled is True
         assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
         assert config.zepto_mcp_allowed_chat_ids == frozenset({"123"})
+        assert config.gmail_config is not None
 
 
 class TestBuildTools:
@@ -159,6 +174,40 @@ class TestBuildTools:
         assert "zepto" in root_skills._skills
         assert "zepto" not in worker_skills._skills
         assert "zepto" not in default_skills._skills
+        create.assert_called_once()
+
+    def test_gmail_skill_is_root_only(self) -> None:
+        """Gmail should join the root skill toolset but never the task worker."""
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            gmail_config=_gmail_config(),
+        )
+        gmail_toolset = patch(
+            "blacki.gmail.create_gmail_toolset",
+            autospec=True,
+        )
+        with gmail_toolset as create:
+            create.return_value = create_autospec(
+                McpToolset, spec_set=True, instance=True
+            )
+            root_tools = build_tools(config, include_user_scoped_tools=True)
+            worker_tools = build_tools(config, include_user_scoped_tools=False)
+            default_tools = build_tools(config)
+
+        root_skills = next(
+            tool for tool in root_tools if isinstance(tool, McpSkillToolset)
+        )
+        worker_skills = next(
+            tool for tool in worker_tools if isinstance(tool, McpSkillToolset)
+        )
+        default_skills = next(
+            tool for tool in default_tools if isinstance(tool, McpSkillToolset)
+        )
+        assert "gmail" in root_skills._skills
+        assert "gmail" not in worker_skills._skills
+        assert "gmail" not in default_skills._skills
         create.assert_called_once()
 
     def test_kokoro_tts_tool_is_telegram_root_only(self) -> None:
@@ -273,6 +322,28 @@ class TestBuildTools:
         assert "zepto" not in skills._skills
         assert "Zepto MCP disabled" in caplog.text
 
+    def test_invalid_gmail_credentials_disable_only_gmail(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Broken or missing Gmail credentials must disable only the Gmail skill."""
+        from blacki.gmail import GmailCredentialError
+
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            gmail_config=_gmail_config(),
+        )
+        with patch(
+            "blacki.gmail.create_gmail_toolset",
+            side_effect=GmailCredentialError("authenticate first"),
+        ):
+            tools = build_tools(config, include_user_scoped_tools=True)
+
+        skills = next(tool for tool in tools if isinstance(tool, McpSkillToolset))
+        assert "gmail" not in skills._skills
+        assert "Gmail API disabled" in caplog.text
+
     def test_missing_zepto_skill_file_does_not_register_toolset(self) -> None:
         """A missing packaged skill should not expose an orphan MCP toolset."""
         config = ToolConfig(
@@ -285,6 +356,29 @@ class TestBuildTools:
             patch("blacki.skills.load_skill_from_dir", return_value=None),
             patch(
                 "blacki.zepto.create_zepto_toolset",
+                return_value=create_autospec(
+                    McpToolset,
+                    spec_set=True,
+                    instance=True,
+                ),
+            ) as create,
+        ):
+            tools = build_tools(config, include_user_scoped_tools=True)
+
+        assert not any(isinstance(tool, McpSkillToolset) for tool in tools)
+        create.assert_called_once()
+
+    def test_missing_gmail_skill_file_does_not_register_toolset(self) -> None:
+        """A missing packaged skill should not expose an orphan MCP toolset."""
+        config = ToolConfig(
+            skills_dir=Path("src/blacki/skills"),
+            weather_enabled=False,
+            gmail_config=_gmail_config(),
+        )
+        with (
+            patch("blacki.skills.load_skill_from_dir", return_value=None),
+            patch(
+                "blacki.gmail.create_gmail_toolset",
                 return_value=create_autospec(
                     McpToolset,
                     spec_set=True,
@@ -436,6 +530,48 @@ class TestBuildToolConfigFromEnv:
         assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
         assert config.zepto_mcp_allowed_chat_ids == frozenset({"123", "456"})
 
+    def test_invalid_gmail_settings_from_env_disable_only_gmail(self) -> None:
+        """Invalid shared Gmail settings should disable only Gmail."""
+        with patch.dict(
+            "os.environ",
+            {
+                "GMAIL_ENABLED": "true",
+                "GMAIL_CLIENT_ID": " env-client-id ",
+                "GMAIL_CLIENT_SECRET": " env-client-secret ",
+                "GMAIL_TOKEN_ENCRYPTION_KEY": "invalid",
+            },
+            clear=False,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.gmail_config is None
+
+    def test_gmail_defaults_from_env(self) -> None:
+        """Gmail should remain unavailable without shared OAuth settings."""
+        with patch.dict("os.environ", {}, clear=True):
+            config = build_tool_config_from_env()
+
+        assert config.gmail_config is None
+
+    def test_gmail_settings_from_env(self) -> None:
+        """Gmail should read only its dedicated OAuth settings."""
+        from cryptography.fernet import Fernet
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GMAIL_ENABLED": "true",
+                "GMAIL_CLIENT_ID": "gmail-client-id",
+                "GMAIL_CLIENT_SECRET": "gmail-client-secret",
+                "GMAIL_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+            },
+            clear=True,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.gmail_config is not None
+        assert config.gmail_config.client_id == "gmail-client-id"
+
     def test_kokoro_tts_settings_from_env(self) -> None:
         """Should strip the optional Kokoro base URL and voice settings."""
         with patch.dict(
@@ -467,6 +603,23 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
         assert config.google_health_enabled is True
+
+    def test_google_health_settings_do_not_enable_gmail(self) -> None:
+        """Google Health settings must not implicitly enable Gmail."""
+        from cryptography.fernet import Fernet
+
+        with patch.dict(
+            "os.environ",
+            {
+                "GOOGLE_HEALTH_CLIENT_ID": "id",
+                "GOOGLE_HEALTH_CLIENT_SECRET": "secret",
+                "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY": Fernet.generate_key().decode(),
+            },
+            clear=True,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.gmail_config is None
 
     def test_empty_kokoro_voice_uses_default(self) -> None:
         """An empty voice setting should retain the verified default voice."""

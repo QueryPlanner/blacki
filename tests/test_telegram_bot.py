@@ -1580,9 +1580,14 @@ class TestTelegramBotLifecycle:
 
         mock_api.set_my_commands.assert_called_once()
         commands = mock_api.set_my_commands.call_args.args[0]
-        assert len(commands) == 5
+        assert len(commands) == 7
         assert commands[0].command == "start"
-        assert {command.command for command in commands} >= {"model", "thinking"}
+        assert {command.command for command in commands} >= {
+            "model",
+            "thinking",
+            "connect_gmail",
+            "disconnect_gmail",
+        }
 
     @pytest.mark.asyncio
     async def test_register_commands_handles_error(

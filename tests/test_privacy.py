@@ -12,6 +12,7 @@ from blacki.privacy import (
     PrivacyAwareLoggingPlugin,
     configure_private_tool_privacy,
     configure_zepto_privacy,
+    gmail_configured,
     is_private_tool,
     kokoro_tts_enabled,
     private_tool_privacy_enabled,
@@ -23,6 +24,38 @@ def _tool(name: str) -> MagicMock:
     tool = MagicMock(spec=BaseTool)
     tool.name = name
     return tool
+
+
+def test_gmail_privacy_controls(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "GMAIL_ENABLED",
+        "GMAIL_CLIENT_ID",
+        "GMAIL_CLIENT_SECRET",
+        "GMAIL_TOKEN_ENCRYPTION_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    assert gmail_configured() is False
+
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("GMAIL_ENABLED", "true")
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "client")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("GMAIL_TOKEN_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    assert gmail_configured() is True
+    assert private_tool_privacy_enabled() is True
+
+    monkeypatch.delenv("GMAIL_TOKEN_ENCRYPTION_KEY")
+    assert gmail_configured() is True
+
+
+def test_private_tool_identification_uses_zepto_and_gmail_prefix() -> None:
+    assert is_private_tool(_tool("zepto_search_products")) is True
+    assert is_private_tool(_tool("gmail_search_messages")) is True
+    assert is_private_tool(_tool("gmail_create_draft")) is True
+    assert is_private_tool(_tool("send_text_to_speech")) is True
+    assert is_private_tool(_tool("search_products")) is False
+    assert is_private_tool(_tool("get_health_summary")) is True
 
 
 def test_configure_zepto_privacy_is_explicit_and_forces_safe_values(
@@ -77,9 +110,10 @@ def test_kokoro_tts_enables_content_redaction(
     monkeypatch.setenv("ZEPTO_MCP_ENABLED", "false")
     monkeypatch.delenv("KOKORO_TTS_BASE_URL", raising=False)
     for name in (
-        "GOOGLE_HEALTH_CLIENT_ID",
-        "GOOGLE_HEALTH_CLIENT_SECRET",
-        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+        "GMAIL_ENABLED",
+        "GMAIL_CLIENT_ID",
+        "GMAIL_CLIENT_SECRET",
+        "GMAIL_TOKEN_ENCRYPTION_KEY",
     ):
         monkeypatch.delenv(name, raising=False)
     assert kokoro_tts_enabled() is False

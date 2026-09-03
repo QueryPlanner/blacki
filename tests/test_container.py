@@ -240,6 +240,8 @@ class TestAppContainer:
         _ = container.workout_storage
         _ = container.preferences_storage
         _ = container.declarative_db_storage
+        gmail = container.gmail_storage
+        assert container.gmail_storage is gmail
         user_files = container.user_file_storage
         user_files.close = AsyncMock()
 
@@ -250,6 +252,7 @@ class TestAppContainer:
         assert container._workout_storage is None
         assert container._preferences_storage is None
         assert container._declarative_db_storage is None
+        assert container._gmail_storage is None
         assert container._user_file_storage is None
         user_files.close.assert_awaited_once()
 

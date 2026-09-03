@@ -45,13 +45,17 @@ class TokenEncryptionError(ValueError):
 class TokenCipher:
     """Encrypt and decrypt refresh tokens with a Fernet key from a secret store."""
 
-    def __init__(self, key: str) -> None:
+    def __init__(
+        self,
+        key: str,
+        *,
+        key_name: str = "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ) -> None:
+        self._key_name = key_name
         try:
             self._fernet = Fernet(key.encode("ascii"))
         except (ValueError, TypeError, UnicodeEncodeError) as exc:
-            raise TokenEncryptionError(
-                "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY is invalid"
-            ) from exc
+            raise TokenEncryptionError(f"{key_name} is invalid") from exc
 
     def encrypt(self, value: str) -> str:
         """Return an encrypted representation of a refresh token."""
@@ -64,7 +68,9 @@ class TokenCipher:
         try:
             return self._fernet.decrypt(value.encode("ascii")).decode("utf-8")
         except (InvalidToken, UnicodeDecodeError, UnicodeEncodeError) as exc:
-            raise TokenEncryptionError("Stored Google Health token is invalid") from exc
+            raise TokenEncryptionError(
+                f"Stored token for {self._key_name} is invalid"
+            ) from exc
 
 
 @dataclass(frozen=True, slots=True)
