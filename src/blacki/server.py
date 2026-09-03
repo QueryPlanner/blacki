@@ -53,6 +53,7 @@ _container: AppContainer | None = None
 _google_health_service = None
 _google_health_scheduler = None
 _google_health_export_worker: Any = None
+_gmail_oauth_service: Any = None
 _google_health_backfill_tasks: set[asyncio.Task[None]] = set()
 
 
@@ -178,6 +179,7 @@ async def _start_telegram_bot() -> None:
             telegram_config,
             adk_runtime,
             google_health_service=_google_health_service,
+            gmail_oauth_service=_gmail_oauth_service,
         )
         logger.info("Telegram bot instance created")
 
@@ -192,6 +194,47 @@ async def _start_telegram_bot() -> None:
     except Exception:
         logger.exception("Failed to start Telegram bot")
         raise
+
+
+async def _start_gmail() -> None:
+    """Initialize the optional Gmail OAuth service on shared storage."""
+    global _gmail_oauth_service
+
+    if _container is None:
+        logger.info("Gmail connector not started (no container)")
+        return
+
+    from .gmail import GmailConfig, GmailConfigurationError, GmailOAuthService
+
+    try:
+        config = GmailConfig.from_environment()
+    except GmailConfigurationError as exc:
+        logger.error(
+            "Gmail configuration is invalid; connector disabled (%s)",
+            type(exc).__name__,
+        )
+        return
+    if config is None:
+        logger.info("Gmail connector not configured")
+        return
+
+    _gmail_oauth_service = GmailOAuthService(config, _container.gmail_storage)
+    logger.info("Gmail API connector initialized")
+
+
+async def _stop_gmail() -> None:
+    """Close the optional Gmail OAuth service."""
+    global _gmail_oauth_service
+
+    if _gmail_oauth_service is not None:
+        try:
+            await _gmail_oauth_service.close()
+        except Exception as exc:
+            logger.error(
+                "Error closing Gmail connector (%s)",
+                type(exc).__name__,
+            )
+    _gmail_oauth_service = None
 
 
 async def _start_reminder_scheduler() -> None:
@@ -292,6 +335,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     try:
         await _container.initialize_all_storages()
         await _start_google_health()
+        await _start_gmail()
 
         logger.info("Validating configuration...")
         try:
@@ -309,6 +353,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         await _stop_google_health()
+        await _stop_gmail()
         await _stop_reminder_scheduler()
         await _stop_telegram_bot()
 
@@ -410,6 +455,75 @@ async def google_health_callback(
         "Google Health connected"
         if completion.connected
         else "Google Health authorization cancelled"
+    )
+    return HTMLResponse(f"<h1>{title}</h1><p>You can return to Telegram.</p>")
+
+
+@app.get(
+    "/integrations/gmail/callback",
+    response_class=HTMLResponse,
+)
+async def gmail_callback(
+    state: str | None = None,
+    code: str | None = None,
+    error: str | None = None,
+) -> HTMLResponse:
+    """Complete user-bound Gmail OAuth without returning provider data."""
+    if _gmail_oauth_service is None:
+        return HTMLResponse(
+            "<h1>Gmail is not configured</h1>",
+            status_code=503,
+        )
+    if not state:
+        return HTMLResponse(
+            "<h1>Gmail authorization failed</h1><p>Missing OAuth state.</p>",
+            status_code=400,
+        )
+
+    from .gmail import GmailApiError, GmailCredentialError, GmailOAuthError
+
+    try:
+        completion = await _gmail_oauth_service.complete_authorization(
+            state=state,
+            code=code,
+            error=error,
+        )
+    except GmailOAuthError:
+        logger.warning("Gmail OAuth callback validation failed")
+        return HTMLResponse(
+            "<h1>Gmail authorization failed</h1>",
+            status_code=400,
+        )
+    except GmailCredentialError:
+        logger.warning("Gmail OAuth callback credential validation failed")
+        return HTMLResponse(
+            "<h1>Gmail authorization failed</h1>",
+            status_code=400,
+        )
+    except GmailApiError:
+        logger.exception("Gmail provider rejected OAuth completion")
+        return HTMLResponse(
+            "<h1>Gmail authorization could not be completed</h1>",
+            status_code=502,
+        )
+    except Exception:
+        logger.exception("Unexpected Gmail OAuth callback failure")
+        return HTMLResponse(
+            "<h1>Gmail authorization could not be completed</h1>",
+            status_code=500,
+        )
+
+    if _telegram_bot is not None:
+        try:
+            await _telegram_bot.notify_gmail_connected(
+                completion.telegram_user_id,
+                connected=completion.connected,
+            )
+        except Exception:
+            logger.exception("Failed to notify Telegram after Gmail OAuth")
+
+    title = (
+        "Gmail connected" if completion.connected else "Gmail authorization cancelled"
     )
     return HTMLResponse(f"<h1>{title}</h1><p>You can return to Telegram.</p>")
 

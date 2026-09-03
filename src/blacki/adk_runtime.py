@@ -164,23 +164,54 @@ def _pending_confirmations(session: Session) -> list[PendingConfirmation]:
 def _format_confirmation(
     confirmation: PendingConfirmation, *, pending_count: int
 ) -> str:
-    args = json.dumps(
-        confirmation.tool_args,
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=False,
-    )
+    if confirmation.tool_name == "gmail_send_draft":
+        args = confirmation.tool_args
+        details = [
+            f"draft `{_confirmation_value(args.get('draft_id'))}`",
+            f"to `{_confirmation_value(args.get('expected_to'))}`",
+        ]
+        for key, label in (
+            ("expected_cc", "cc"),
+            ("expected_bcc", "bcc"),
+        ):
+            value = _confirmation_value(args.get(key))
+            if value:
+                details.append(f"{label} `{value}`")
+        details.append(f"subject `{_confirmation_value(args.get('expected_subject'))}`")
+        confirmation_text = (
+            "Confirm sending Gmail "
+            + ", ".join(details)
+            + "? Reply exactly `yes` or `no`."
+        )
+    else:
+        serialized_args = json.dumps(
+            confirmation.tool_args,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        confirmation_text = (
+            f"Confirm Zepto tool `{confirmation.tool_name}` with these arguments?\n\n"
+            f"```json\n{serialized_args}\n```\n\nReply exactly `yes` or `no`."
+        )
     suffix = ""
     if pending_count > 1:
         suffix = (
             f"\n\nThere are {pending_count} pending calls. This reply applies "
             "only to the first; each call must be confirmed separately."
         )
-    return (
-        f"Confirm Zepto tool `{confirmation.tool_name}` with these arguments?\n\n"
-        f"```json\n{args}\n```\n\nReply exactly `yes` or `no`."
-        f"{suffix}"
-    )
+    return f"{confirmation_text}{suffix}"
+
+
+def _confirmation_value(value: object, *, max_length: int = 160) -> str:
+    """Render bounded confirmation metadata without body or markup injection."""
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    text = text.replace("`", "'")
+    if len(text) > max_length:
+        text = text[: max_length - 1] + "…"
+    return text
 
 
 def _confirmation_response(

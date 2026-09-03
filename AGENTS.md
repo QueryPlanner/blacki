@@ -1,8 +1,11 @@
-# Google ADK on Bare Metal
+# Blacki Architecture and Development Guide
 
 ## Philosophy
 
-**Blacki** is a personal assistant agent designed to run on cheap self-hosted infrastructure. The guiding principle: **keep the agent lightweight, delegate heavy lifting to managed services.**
+**Blacki** (also called BlackKey) is a Telegram-first personal assistant built on
+Google ADK and designed to run on inexpensive self-hosted infrastructure. The
+guiding principle is to keep the agent lightweight and delegate expensive work
+to managed services.
 
 ### Self-Hosted Agent, Managed Tools
 
@@ -34,9 +37,73 @@ By delegating to managed services, the agent stays fast, cheap, and reliable. Th
 3. **Graceful degradation**: Tools should fail gracefully if API keys are missing
 4. **Stateless where possible**: Let managed services handle state
 
+## Architecture
+
+Blacki has a small host-side control plane and several separately authorized
+capability boundaries:
+
+- `src/blacki/server.py` starts the FastAPI and ADK runtime, health endpoints,
+  storage, and optional Telegram polling.
+- `src/blacki/agent.py` builds the root agent, model configuration, plugins, and
+  the public/delegated agent variants.
+- `src/blacki/registry.py` is the tool factory. It decides which tools are
+  exposed for the public runner, the Telegram root agent, and delegated workers.
+- `src/blacki/prompt.py` contains global behavior rules. Feature-specific
+  operating and safety instructions belong in a loaded skill when possible.
+- `src/blacki/telegram/` maps private Telegram chats and topics to ADK sessions.
+  Telegram long polling is outbound and does not require a public webhook.
+- SQLite stores application data, session metadata, OAuth state, and catalogs.
+  Secrets and refresh tokens stay on the Blacki host and are never copied into
+  a sandbox.
+
+The root agent may receive private, user-scoped integrations such as Google
+Health, Gmail, Zepto, TTS, and durable user files. Public ADK requests and
+delegated workers receive only the tools explicitly allowed for their boundary.
+Shared session-sandbox access does not grant access to another user's accounts.
+
+### File lifecycle and storage boundaries
+
+The sandbox and Cloudflare R2 solve different problems:
+
+- The OpenSandbox instance is session-scoped, created lazily, and temporary.
+  Its default lifetime is currently 30 minutes. It is the working area for
+  inspection, parsing, code execution, and intermediate results.
+- Cloudflare R2 is optional durable storage for supported Telegram attachments.
+  When `R2_FILES_ENABLED=true` and the private bucket is configured, Blacki
+  writes the attachment to R2 and records owner-scoped metadata in SQLite.
+- A supported Telegram upload may therefore have both an R2 object and a
+  sandbox working copy. The copies are independent. If R2 fails, processing
+  may continue with a temporary sandbox copy and a warning. If the sandbox is
+  unavailable after R2 succeeds, the durable object can be restored later.
+- `list_user_files` lists the owner's R2 catalog, `restore_user_file` copies an
+  R2 object into the current sandbox, and `delete_user_file` removes an exact
+  owner-scoped durable object after confirmation.
+- Gmail attachment downloads currently write only to the current session
+  sandbox. They do not automatically go to R2, do not enter the durable file
+  catalog, and are not sent through Telegram automatically. The Gmail result
+  files used to keep large email bodies out of model context follow the same
+  temporary sandbox boundary.
+
+Treat every sandbox file as untrusted input. Do not execute, extract, or open
+downloaded attachments automatically. R2 credentials and other provider
+credentials must remain outside the sandbox. Any future feature that moves a
+file from a sandbox to R2 must explicitly define ownership, retention, naming,
+deduplication, failure cleanup, and user-facing consent.
+
+### Gmail boundary
+
+Gmail is a direct Gmail REST API connector under `src/blacki/gmail/`, not a
+general-purpose shared service. OAuth credentials are stored per private
+Telegram user, Gmail tools are registered only for the private root-agent
+flow, and delegated workers remain unable to call Gmail. The Gmail skill in
+`src/blacki/skills/gmail/SKILL.md` supplies the agent-facing usage and safety
+rules; loading the skill is not itself an authorization grant.
+
 ## Project Overview
 
-**Google ADK on Bare Metal** is a production-ready template designed for building and deploying AI agents using the Google Agent Development Kit (ADK) on self-hosted infrastructure. It removes cloud provider lock-in by providing a clean, performant, and observable foundation that runs on bare metal, VPS, or private clouds.
+Blacki is a production-ready personal assistant built with the Google Agent
+Development Kit (ADK) on self-hosted infrastructure. It provides a clean,
+observable foundation that can run on bare metal, a VPS, or a private cloud.
 
 ### Key Technologies
 *   **Language:** Python 3.13+
@@ -79,6 +146,35 @@ By delegating to managed services, the agent stays fast, cheap, and reliable. Th
 | **Type Check** | `uv run mypy .` | Runs static type checking. |
 
 ## Development Conventions
+
+### Required cross-feature impact review
+
+Before implementing or materially changing a feature, inspect the existing
+features and data paths that it may touch. The implementation agent must
+actively consider at least:
+
+- user identity and authorization boundaries;
+- Telegram, ADK session, and delegated-worker behavior;
+- sandbox lifetime and whether a file is temporary or durable;
+- Cloudflare R2 storage, catalog, retention, restore, and deletion behavior;
+- OAuth scopes, token ownership, external APIs, and privacy implications;
+- model context size, logs, traces, and whether content can leak across users;
+- confirmation requirements for state-changing operations; and
+- failure and partial-success behavior when one storage or provider is down.
+
+Do not assume that a new file-producing feature should use the same lifecycle
+as Telegram uploads. If the request does not specify whether a new artifact is
+sandbox-only, copied to R2, sent to Telegram, or retained elsewhere, complete
+the read-only investigation first and ask the user one focused question before
+choosing a persistence or delivery policy. Explain the current behavior and
+the available options so the user can decide. If the user has already decided,
+state that assumption in the implementation summary and verify every affected
+boundary.
+
+For every new integration, identify which existing agents and toolsets should
+see it, whether it should be skill-gated, and how it interacts with existing
+storage and privacy controls. Do not broaden a feature's data retention or
+external delivery merely because another feature already does so.
 
 ### Code Structure
 *   **`src/blacki/`**: Contains the core agent logic.

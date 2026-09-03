@@ -563,6 +563,53 @@ class TestMcpSkillToolset:
         assert "mcp_tool_1" in tool_names
 
     @pytest.mark.asyncio
+    async def test_get_tools_with_prefix_refreshes_after_activation(
+        self, mock_tool_context: ToolContext
+    ) -> None:
+        """Test activation refreshes tools within the same invocation."""
+        gmail_skill = Skill(
+            frontmatter=Frontmatter(
+                name="gmail",
+                description="Search Gmail",
+            ),
+            instructions="Gmail instructions",
+            resources=Resources(),
+        )
+        gmail_tool = MagicMock(spec=BaseTool)
+        gmail_tool.name = "gmail_search_messages"
+        mock_gmail_toolset = create_autospec(McpToolset, spec_set=True, instance=True)
+        mock_gmail_toolset.get_tools_with_prefix = AsyncMock(return_value=[gmail_tool])
+        mock_gmail_toolset.close = AsyncMock()
+        toolset = McpSkillToolset(
+            skills=[(gmail_skill, mock_gmail_toolset)],
+        )
+
+        readonly_context = MagicMock()
+        readonly_context.invocation_id = "invocation-1"
+        readonly_context.state = mock_tool_context.state
+
+        initial_tools = await toolset.get_tools_with_prefix(readonly_context)
+        assert [tool.name for tool in initial_tools] == [
+            "load_skill",
+            "load_skill_resource",
+        ]
+
+        load_skill_tool = next(
+            tool for tool in initial_tools if tool.name == "load_skill"
+        )
+        await load_skill_tool.run_async(
+            args={"name": "gmail"},
+            tool_context=mock_tool_context,
+        )
+
+        activated_tools = await toolset.get_tools_with_prefix(readonly_context)
+
+        assert "gmail_search_messages" in [tool.name for tool in activated_tools]
+        mock_gmail_toolset.get_tools_with_prefix.assert_awaited_once_with(
+            readonly_context
+        )
+
+    @pytest.mark.asyncio
     async def test_get_tools_handles_mcp_failure(
         self, sample_skill: Skill, mock_mcp_toolset: McpToolset
     ) -> None:

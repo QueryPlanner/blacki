@@ -165,7 +165,7 @@ TASK_WORKER_BEHAVIOR = f"""\
 <delegated_task_worker>
 Complete only the task delegated by the root agent. You have the same non-private
 tools as the root agent, including access to the same session sandbox when sandbox
-tools are enabled. User-scoped account tools such as Zepto remain root-only.
+tools are enabled. User-scoped account tools such as Zepto and Gmail remain root-only.
 
 Do not create or delegate to another worker. Do not broaden the task, repeat a
 state-changing tool call, or retry a non-idempotent operation without evidence that

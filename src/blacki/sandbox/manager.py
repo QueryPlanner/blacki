@@ -11,6 +11,7 @@ from opensandbox.exceptions import (
     SandboxException,
     SandboxReadyTimeoutException,
 )
+from opensandbox.models.filesystem import SearchEntry
 
 from .config import SANDBOX_STATE_KEY, SandboxConfig, load_sandbox_config
 
@@ -128,4 +129,26 @@ class SandboxManager:
             logger.error(
                 "Error closing connection config transport (%s)",
                 type(e).__name__,
+            )
+
+    async def clear_gmail_artifacts(self, state: Any) -> None:
+        """Delete only temporary Gmail result files from one session sandbox."""
+        sandbox_id = state.get(SANDBOX_STATE_KEY)
+        if not sandbox_id:
+            return
+        result = await self.get_or_create_sandbox(state)
+        sandbox = result.get("sandbox")
+        if sandbox is None:
+            return
+        try:
+            entries = await sandbox.files.search(
+                SearchEntry(path="/workspace/uploads", pattern="gmail-*")
+            )
+            paths = [entry.path for entry in entries]
+            if paths:
+                await sandbox.files.delete_files(paths)
+        except Exception as exc:
+            logger.warning(
+                "Could not clear temporary Gmail sandbox artifacts (%s)",
+                type(exc).__name__,
             )
