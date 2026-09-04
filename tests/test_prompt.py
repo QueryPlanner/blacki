@@ -89,6 +89,9 @@ class TestStablePromptLayers:
             in normalized
         )
         assert "Treat writing as conversation, not a report" in normalized
+        assert "The user reads replies in Telegram's mobile chat UI" in normalized
+        assert "Avoid Markdown tables and table-like code blocks" in normalized
+        assert "use a readable text list with one item per line instead" in normalized
         assert "Never invent a memory or callback" in normalized
         assert "do not take an external action without authorization" in normalized
         assert "Use these cues sparingly" in normalized
@@ -112,6 +115,7 @@ class TestStablePromptLayers:
         assert "<delegated_task_worker>" in instruction
         assert "report a concise result" in instruction
         assert "<natural_chat_style>" not in instruction
+        assert "Telegram's mobile chat UI" not in instruction
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
