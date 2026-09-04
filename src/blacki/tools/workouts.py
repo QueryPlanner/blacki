@@ -6,8 +6,7 @@ from google.adk.tools import ToolContext
 from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
-
-from .storage import (
+from blacki.workouts.storage import (
     COMPLETION_STATUSES,
     SESSION_TYPES,
     SetDetail,

@@ -10,7 +10,7 @@ import pytest
 from conftest import MockToolContext
 from google.adk.tools import ToolContext
 
-from blacki.memory.tools import (
+from blacki.tools.memory import (
     INACCESSIBLE_MEMORY_ERROR,
     delete_memory,
     get_all_memories,
@@ -89,7 +89,7 @@ async def test_every_memory_operation_is_scoped_to_tool_context() -> None:
     alice = _context("alice")
     bob = _context("bob")
 
-    with patch("blacki.memory.tools.get_memory_client", return_value=client):
+    with patch("blacki.tools.memory.get_memory_client", return_value=client):
         alice_save = await save_memory("Alice secret", alice)
         bob_save = await save_memory("Bob note", bob)
         alice_id = alice_save["result"]["id"]
@@ -160,7 +160,7 @@ async def test_memory_tools_reject_missing_authenticated_user(
 ) -> None:
     """Every operation fails before touching Mem0 when ADK identity is absent."""
     client = FakeMemoryClient()
-    with patch("blacki.memory.tools.get_memory_client", return_value=client):
+    with patch("blacki.tools.memory.get_memory_client", return_value=client):
         result = await tool(*args, _context(None))
 
     assert result["status"] == "error"
@@ -185,7 +185,7 @@ async def test_id_operations_fail_closed_for_malformed_or_foreign_records(
     """Malformed Mem0 records never bypass exact ownership checks."""
     client = FakeMemoryClient()
     with (
-        patch("blacki.memory.tools.get_memory_client", return_value=client),
+        patch("blacki.tools.memory.get_memory_client", return_value=client),
         patch.object(client, "get", return_value=malformed),
     ):
         get_result = await get_memory("memory-id", _context("alice"))

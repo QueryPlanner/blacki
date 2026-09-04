@@ -12,7 +12,7 @@ from opensandbox.exceptions import SandboxException
 from opensandbox.models.execd import RunCommandOpts
 from opensandbox.models.filesystem import SearchEntry
 
-from .manager import get_sandbox_manager
+from blacki.sandbox.manager import get_sandbox_manager
 
 logger = logging.getLogger(__name__)
 
@@ -297,10 +297,3 @@ async def sandbox_list_files(
         error_msg = f"Unexpected error: {e}"
         logger.exception(error_msg)
         return {"status": "error", "error": error_msg, "files": []}
-
-
-def sandbox_enabled() -> bool:
-    """Check if sandbox tools are enabled."""
-    from .config import load_sandbox_config
-
-    return load_sandbox_config().enabled

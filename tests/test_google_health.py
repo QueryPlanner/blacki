@@ -64,7 +64,7 @@ from blacki.health.storage import (
     SqliteGoogleHealthStorage,
     _parse_timestamp,
 )
-from blacki.health.tools import get_health_summary
+from blacki.tools.health import get_health_summary
 
 
 def _config() -> GoogleHealthConfig:

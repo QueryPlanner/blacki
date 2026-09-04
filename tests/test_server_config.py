@@ -133,8 +133,11 @@ async def test_server_lifespan_closes_search_clients(
             return_value=["test warning"],
         ),
         patch.object(server.logger, "warning", new=log_warning),
-        patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
-        patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch(
+            "blacki.tools.brave_search.close_shared_brave_search_client",
+            new=close_brave,
+        ),
+        patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
     ):
         async with server.lifespan(server.app):
@@ -181,8 +184,11 @@ async def test_lifespan_cleans_up_after_validation_failure(
             "validate_configuration",
             side_effect=server.ConfigurationError("invalid"),
         ),
-        patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
-        patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch(
+            "blacki.tools.brave_search.close_shared_brave_search_client",
+            new=close_brave,
+        ),
+        patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
         pytest.raises(server.ConfigurationError, match="invalid"),
     ):
@@ -225,8 +231,11 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
         patch.object(server, "_stop_telegram_bot", new=AsyncMock()),
         patch.object(server, "_stop_reminder_scheduler", new=AsyncMock()),
         patch.object(server.validation, "validate_configuration", return_value=[]),
-        patch("blacki.tools.close_shared_brave_search_client", new=close_brave),
-        patch("blacki.search.close_shared_exa_search_client", new=close_exa),
+        patch(
+            "blacki.tools.brave_search.close_shared_brave_search_client",
+            new=close_brave,
+        ),
+        patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
         patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
     ):
         async with server.lifespan(server.app):

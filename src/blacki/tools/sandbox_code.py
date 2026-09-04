@@ -10,7 +10,7 @@ from code_interpreter import CodeInterpreter, SupportedLanguage
 from google.adk.tools import ToolContext
 from opensandbox.exceptions import SandboxException
 
-from .manager import get_sandbox_manager
+from blacki.sandbox.manager import get_sandbox_manager
 
 logger = logging.getLogger(__name__)
 

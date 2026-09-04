@@ -13,9 +13,9 @@ import pytest
 from conftest import MockState, MockToolContext
 from google.adk.tools import ToolContext
 
-import blacki.tts.tools as tts_module
+import blacki.tools.speech as tts_module
 from blacki.telegram.api import TelegramApiClient
-from blacki.tts.tools import (
+from blacki.tools.speech import (
     KOKORO_AUDIO_MIME_TYPE,
     MAX_TTS_AUDIO_BYTES,
     MAX_TTS_TEXT_CHARS,

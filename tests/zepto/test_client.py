@@ -19,6 +19,13 @@ from google.adk.tools.tool_context import ToolContext
 from mcp import StdioServerParameters
 from mcp.types import ListToolsResult, Tool
 
+from blacki.tools.zepto import (
+    AuthorizedZeptoToolset,
+    _is_allowed_private_telegram_user,
+    _is_supported_zepto_tool,
+    _requires_zepto_order_confirmation,
+    create_zepto_toolset,
+)
 from blacki.zepto.client import (
     _ALLOWED_FILENAMES,
     _SERVER_HASH,
@@ -27,21 +34,16 @@ from blacki.zepto.client import (
     MCP_REMOTE_PACKAGE_VERSION,
     REQUIRED_SCOPE,
     ZEPTO_MCP_URL,
-    AuthorizedZeptoToolset,
     McpRemoteCredentialStore,
     ZeptoCredentialError,
     _absolute,
     _bridge_environment,
-    _is_allowed_private_telegram_user,
-    _is_supported_zepto_tool,
     _locked_checkout_bridge,
     _read_private_object,
-    _requires_zepto_order_confirmation,
     _resolve_bridge_command,
     _validate_owner_and_mode,
     _verified_bridge_binary,
     create_bridge_server_parameters,
-    create_zepto_toolset,
 )
 
 ZEPTO_TOOL_NAMES = frozenset(
@@ -661,7 +663,7 @@ def test_create_toolset_requires_private_allowlist_and_ready_store(
 
     server = StdioServerParameters(command="/usr/local/bin/mcp-remote")
     with patch(
-        "blacki.zepto.client.create_bridge_server_parameters",
+        "blacki.tools.zepto.create_bridge_server_parameters",
         return_value=server,
     ) as create_bridge:
         toolset = create_zepto_toolset(
@@ -693,7 +695,7 @@ def test_create_toolset_forbids_npx_fallback_in_docker(tmp_path: Path) -> None:
     with (
         patch("blacki.zepto.client.Path.exists", docker_exists),
         patch(
-            "blacki.zepto.client.create_bridge_server_parameters",
+            "blacki.tools.zepto.create_bridge_server_parameters",
             return_value=server,
         ) as create_bridge,
     ):

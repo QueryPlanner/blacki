@@ -364,11 +364,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             await close_container()
             _container = None
 
-        from .tools import close_shared_brave_search_client
+        from .tools.brave_search import close_shared_brave_search_client
 
         await close_shared_brave_search_client()
 
-        from .search import close_shared_exa_search_client
+        from .tools.search import close_shared_exa_search_client
 
         await close_shared_exa_search_client()
 

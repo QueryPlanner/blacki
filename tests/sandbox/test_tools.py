@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from opensandbox.exceptions import SandboxException
 
-from blacki.sandbox.tools import (
+from blacki.sandbox.config import sandbox_enabled
+from blacki.tools.sandbox import (
     _format_command_output,
     _is_image_file,
-    sandbox_enabled,
     sandbox_list_files,
     sandbox_read_file,
     sandbox_run_command,
@@ -120,7 +120,7 @@ class TestSandboxRunCommand:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": None, "error": "Sandbox tools are disabled"}
@@ -145,7 +145,7 @@ class TestSandboxRunCommand:
         mock_execution.error = None
         mock_sandbox.commands.run = AsyncMock(return_value=mock_execution)
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -172,7 +172,7 @@ class TestSandboxRunCommand:
         mock_execution.error.value = "127"
         mock_sandbox.commands.run = AsyncMock(return_value=mock_execution)
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -195,7 +195,7 @@ class TestSandboxRunCommand:
             side_effect=SandboxException("Command failed")
         )
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -216,7 +216,7 @@ class TestSandboxRunCommand:
         mock_sandbox = MagicMock()
         mock_sandbox.commands.run = AsyncMock(side_effect=RuntimeError("Unexpected"))
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -241,7 +241,7 @@ class TestSandboxWriteFile:
         mock_sandbox = MagicMock()
         mock_sandbox.files.write_file = AsyncMock()
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -260,7 +260,7 @@ class TestSandboxWriteFile:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": None, "error": "Sandbox tools are disabled"}
@@ -282,7 +282,7 @@ class TestSandboxWriteFile:
             side_effect=SandboxException("Write failed")
         )
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -305,7 +305,7 @@ class TestSandboxWriteFile:
             side_effect=RuntimeError("Unexpected")
         )
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -330,7 +330,7 @@ class TestSandboxReadFile:
         mock_sandbox = MagicMock()
         mock_sandbox.files.read_file = AsyncMock(return_value="File content")
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -349,7 +349,7 @@ class TestSandboxReadFile:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": None, "error": "Sandbox tools are disabled"}
@@ -371,7 +371,7 @@ class TestSandboxReadFile:
             side_effect=SandboxException("Read failed")
         )
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -392,7 +392,7 @@ class TestSandboxReadFile:
         mock_sandbox = MagicMock()
         mock_sandbox.files.read_file = AsyncMock(side_effect=RuntimeError("Unexpected"))
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -422,7 +422,7 @@ class TestSandboxListFiles:
         mock_sandbox = MagicMock()
         mock_sandbox.files.search = AsyncMock(return_value=[mock_entry])
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -441,7 +441,7 @@ class TestSandboxListFiles:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": None, "error": "Sandbox tools are disabled"}
@@ -463,7 +463,7 @@ class TestSandboxListFiles:
             side_effect=SandboxException("Search failed")
         )
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -484,7 +484,7 @@ class TestSandboxListFiles:
         mock_sandbox = MagicMock()
         mock_sandbox.files.search = AsyncMock(side_effect=RuntimeError("Unexpected"))
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -528,7 +528,7 @@ class TestSandboxSendFileToUser:
         tool_context = MagicMock()
         tool_context.state = {}
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": None, "error": "Sandbox disabled"}
@@ -547,7 +547,7 @@ class TestSandboxSendFileToUser:
 
         mock_sandbox = MagicMock()
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -567,7 +567,7 @@ class TestSandboxSendFileToUser:
 
         mock_sandbox = MagicMock()
 
-        with patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager:
+        with patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager:
             manager = MagicMock()
             manager.get_or_create_sandbox = AsyncMock(
                 return_value={"sandbox": mock_sandbox, "error": None}
@@ -590,7 +590,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=b"file contents")
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
@@ -625,7 +625,7 @@ class TestSandboxSendFileToUser:
         )
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
         ):
             manager = MagicMock()
@@ -651,7 +651,7 @@ class TestSandboxSendFileToUser:
         )
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
         ):
             manager = MagicMock()
@@ -678,7 +678,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=b"file contents")
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
@@ -713,7 +713,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=png_bytes)
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
@@ -753,7 +753,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=jpeg_bytes)
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
@@ -793,7 +793,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=pdf_bytes)
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):
@@ -833,7 +833,7 @@ class TestSandboxSendFileToUser:
         mock_sandbox.files.read_bytes = AsyncMock(return_value=text_bytes)
 
         with (
-            patch("blacki.sandbox.tools.get_sandbox_manager") as mock_get_manager,
+            patch("blacki.tools.sandbox.get_sandbox_manager") as mock_get_manager,
             patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "test-token"}),
             patch("blacki.telegram.api.TelegramApiClient") as mock_api_client_cls,
         ):

@@ -9,8 +9,8 @@ from cryptography.fernet import Fernet
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 
 from blacki.gmail.config import GmailConfig
-from blacki.registry import ToolConfig, build_tool_config_from_env, build_tools
-from blacki.skills.mcp_skill_toolset import McpSkillToolset
+from blacki.tools.registry import ToolConfig, build_tool_config_from_env, build_tools
+from blacki.tools.skills import McpSkillToolset
 
 
 def _gmail_config() -> GmailConfig:
@@ -119,6 +119,27 @@ class TestBuildTools:
 
         assert len(tools) == 15
 
+    def test_sandbox_tool_order_keeps_effective_list_files_registration(self) -> None:
+        """Keep the observed single list-files registration explicit.
+
+        A suspected duplicate registration remains a separate bug candidate;
+        this move must not silently change the effective tool list.
+        """
+        config = ToolConfig(sandbox_enabled=True, weather_enabled=False)
+
+        tools = build_tools(config)
+
+        assert [tool.__name__ for tool in tools[:7]] == [
+            "sandbox_run_command",
+            "sandbox_write_file",
+            "sandbox_read_file",
+            "sandbox_list_files",
+            "sandbox_send_file_to_user",
+            "sandbox_execute_code",
+            "sandbox_view_image",
+        ]
+        assert [tool.__name__ for tool in tools].count("sandbox_list_files") == 1
+
     def test_weather_tools_disabled(self) -> None:
         """Should not add weather tools when disabled."""
         config = ToolConfig(weather_enabled=False)
@@ -151,7 +172,7 @@ class TestBuildTools:
             zepto_mcp_allowed_chat_ids=frozenset({"123"}),
         )
         zepto_toolset = patch(
-            "blacki.zepto.create_zepto_toolset",
+            "blacki.tools.zepto.create_zepto_toolset",
             autospec=True,
         )
         with zepto_toolset as create:
@@ -185,7 +206,7 @@ class TestBuildTools:
             gmail_config=_gmail_config(),
         )
         gmail_toolset = patch(
-            "blacki.gmail.create_gmail_toolset",
+            "blacki.tools.gmail.create_gmail_toolset",
             autospec=True,
         )
         with gmail_toolset as create:
@@ -257,7 +278,7 @@ class TestBuildTools:
     ) -> None:
         """An optional file-tool import failure should fail closed."""
         with patch(
-            "blacki.user_files.create_user_file_tools",
+            "blacki.tools.user_files.create_user_file_tools",
             side_effect=ValueError("invalid R2 settings"),
         ):
             tools = build_tools(
@@ -313,7 +334,7 @@ class TestBuildTools:
             zepto_mcp_allowed_chat_ids=frozenset({"123"}),
         )
         with patch(
-            "blacki.zepto.create_zepto_toolset",
+            "blacki.tools.zepto.create_zepto_toolset",
             side_effect=ZeptoCredentialError("authenticate first"),
         ):
             tools = build_tools(config, include_user_scoped_tools=True)
@@ -335,7 +356,7 @@ class TestBuildTools:
             gmail_config=_gmail_config(),
         )
         with patch(
-            "blacki.gmail.create_gmail_toolset",
+            "blacki.tools.gmail.create_gmail_toolset",
             side_effect=GmailCredentialError("authenticate first"),
         ):
             tools = build_tools(config, include_user_scoped_tools=True)
@@ -353,9 +374,9 @@ class TestBuildTools:
             zepto_mcp_allowed_chat_ids=frozenset({"123"}),
         )
         with (
-            patch("blacki.skills.load_skill_from_dir", return_value=None),
+            patch("blacki.tools.skills.load_skill_from_dir", return_value=None),
             patch(
-                "blacki.zepto.create_zepto_toolset",
+                "blacki.tools.zepto.create_zepto_toolset",
                 return_value=create_autospec(
                     McpToolset,
                     spec_set=True,
@@ -376,9 +397,9 @@ class TestBuildTools:
             gmail_config=_gmail_config(),
         )
         with (
-            patch("blacki.skills.load_skill_from_dir", return_value=None),
+            patch("blacki.tools.skills.load_skill_from_dir", return_value=None),
             patch(
-                "blacki.gmail.create_gmail_toolset",
+                "blacki.tools.gmail.create_gmail_toolset",
                 return_value=create_autospec(
                     McpToolset,
                     spec_set=True,
@@ -393,10 +414,7 @@ class TestBuildTools:
 
     def test_build_brave_search_tools_import_error(self) -> None:
         """Should handle ImportError gracefully."""
-        with (
-            patch.dict("sys.modules", {"blacki.tools": None}),
-            patch("blacki.tools.brave_search", side_effect=ImportError("test")),
-        ):
+        with patch.dict("sys.modules", {"blacki.tools.brave_search": None}):
             config = ToolConfig(brave_search_api_key="test-key")
             tools = build_tools(config)
 
@@ -404,9 +422,9 @@ class TestBuildTools:
 
     def test_build_exa_search_tools_import_error(self) -> None:
         """Should omit Exa Search if its module cannot be imported."""
-        from blacki.registry import _build_exa_search_tools
+        from blacki.tools.registry import _build_exa_search_tools
 
-        with patch.dict("sys.modules", {"blacki.search": None}):
+        with patch.dict("sys.modules", {"blacki.tools.search": None}):
             tools = _build_exa_search_tools()
 
         assert tools == []
@@ -619,7 +637,7 @@ class TestBuildBraveSearchTools:
 
     def test_returns_tool_when_available(self) -> None:
         """Should return brave_search tool when available."""
-        from blacki.registry import _build_brave_search_tools
+        from blacki.tools.registry import _build_brave_search_tools
 
         tools = _build_brave_search_tools()
 
@@ -627,15 +645,10 @@ class TestBuildBraveSearchTools:
 
     def test_returns_empty_on_import_error(self) -> None:
         """Should return empty list on ImportError."""
-        from blacki import registry
+        from blacki.tools.registry import _build_brave_search_tools
 
-        with (
-            patch.object(
-                registry, "_build_brave_search_tools", side_effect=ImportError("test")
-            ),
-            patch("blacki.tools.brave_search", side_effect=ImportError("test")),
-        ):
-            pass
+        with patch.dict("sys.modules", {"blacki.tools.brave_search": None}):
+            assert _build_brave_search_tools() == []
 
 
 class TestBuildExaSearchTools:
@@ -643,7 +656,7 @@ class TestBuildExaSearchTools:
 
     def test_returns_tool_when_available(self) -> None:
         """Should return the Exa Search tool when available."""
-        from blacki.registry import _build_exa_search_tools
+        from blacki.tools.registry import _build_exa_search_tools
 
         tools = _build_exa_search_tools()
 
@@ -656,7 +669,7 @@ class TestBuildReminderTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should return reminder tools when available."""
-        from blacki.registry import _build_reminder_tools
+        from blacki.tools.registry import _build_reminder_tools
 
         tools = _build_reminder_tools()
 
@@ -668,7 +681,7 @@ class TestBuildCalorieTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should return calorie tools when available."""
-        from blacki.registry import _build_calorie_tools
+        from blacki.tools.registry import _build_calorie_tools
 
         tools = _build_calorie_tools()
 
@@ -680,7 +693,7 @@ class TestBuildWorkoutTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should expose only canonical training tools by default."""
-        from blacki.registry import _build_workout_tools
+        from blacki.tools.registry import _build_workout_tools
 
         tools = _build_workout_tools()
 
@@ -690,7 +703,7 @@ class TestBuildWorkoutTools:
 
     def test_returns_legacy_tools_only_when_enabled(self) -> None:
         """Should expose weekly split fallbacks only behind the feature flag."""
-        from blacki.registry import _build_workout_tools
+        from blacki.tools.registry import _build_workout_tools
 
         tools = _build_workout_tools(include_legacy=True)
 
@@ -703,7 +716,7 @@ class TestBuildSandboxTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should return sandbox tools when available."""
-        from blacki.registry import _build_sandbox_tools
+        from blacki.tools.registry import _build_sandbox_tools
 
         tools = _build_sandbox_tools()
 
@@ -716,7 +729,7 @@ class TestBuildMemoryTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should return memory tools when available."""
-        from blacki.registry import _build_memory_tools
+        from blacki.tools.registry import _build_memory_tools
 
         tools = _build_memory_tools()
 
@@ -728,7 +741,7 @@ class TestBuildSkillTools:
 
     def test_returns_empty_for_nonexistent_dir(self) -> None:
         """Should return empty list for non-existent skills directory."""
-        from blacki.registry import _build_skill_tools
+        from blacki.tools.registry import _build_skill_tools
 
         tools = _build_skill_tools(Path("/nonexistent/skills"))
 
@@ -736,7 +749,7 @@ class TestBuildSkillTools:
 
     def test_does_not_register_credentialed_gemini_cli_skill(self) -> None:
         """General sandboxes must not advertise a credential-dependent skill."""
-        from blacki.registry import _build_skill_tools
+        from blacki.tools.registry import _build_skill_tools
 
         tools = _build_skill_tools(Path("src/blacki/skills"))
 
@@ -749,7 +762,7 @@ class TestBuildDeclarativeDbTools:
 
     def test_returns_tools_when_available(self) -> None:
         """Should return declarative database tools when available."""
-        from blacki.registry import _build_declarative_db_tools
+        from blacki.tools.registry import _build_declarative_db_tools
 
         tools = _build_declarative_db_tools()
 

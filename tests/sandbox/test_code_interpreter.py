@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from opensandbox.exceptions import SandboxException
 
-from blacki.sandbox.code_interpreter import sandbox_execute_code
+from blacki.tools.sandbox_code import sandbox_execute_code
 
 
 @pytest.fixture
 def mock_sandbox_manager() -> Generator[MagicMock, None, None]:
     """Mock sandbox manager."""
-    with patch("blacki.sandbox.code_interpreter.get_sandbox_manager") as mock:
+    with patch("blacki.tools.sandbox_code.get_sandbox_manager") as mock:
         manager = MagicMock()
         mock.return_value = manager
         yield manager
@@ -45,7 +45,7 @@ async def test_sandbox_execute_code_success(mock_sandbox_manager: MagicMock) -> 
     mock_interpreter.codes.run = AsyncMock(return_value=mock_execution)
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create", new_callable=AsyncMock
+        "blacki.tools.sandbox_code.CodeInterpreter.create", new_callable=AsyncMock
     ) as mock_create:
         mock_create.return_value = mock_interpreter
 
@@ -85,7 +85,7 @@ async def test_sandbox_execute_code_with_stderr(
     mock_interpreter.codes.run = AsyncMock(return_value=mock_execution)
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create", new_callable=AsyncMock
+        "blacki.tools.sandbox_code.CodeInterpreter.create", new_callable=AsyncMock
     ) as mock_create:
         mock_create.return_value = mock_interpreter
 
@@ -115,7 +115,7 @@ async def test_sandbox_execute_code_timeout(
     mock_interpreter.codes.run = AsyncMock(side_effect=TimeoutError())
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create",
+        "blacki.tools.sandbox_code.CodeInterpreter.create",
         new_callable=AsyncMock,
     ) as mock_create:
         mock_create.return_value = mock_interpreter
@@ -156,7 +156,7 @@ async def test_sandbox_execute_code_with_execution_error(
     mock_interpreter.codes.run = AsyncMock(return_value=mock_execution)
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create", new_callable=AsyncMock
+        "blacki.tools.sandbox_code.CodeInterpreter.create", new_callable=AsyncMock
     ) as mock_create:
         mock_create.return_value = mock_interpreter
 
@@ -204,7 +204,7 @@ async def test_sandbox_execute_code_sandbox_exception(
     )
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create", new_callable=AsyncMock
+        "blacki.tools.sandbox_code.CodeInterpreter.create", new_callable=AsyncMock
     ) as mock_create:
         mock_create.side_effect = SandboxException("API error")
 
@@ -231,7 +231,7 @@ async def test_sandbox_execute_code_unexpected_exception(
     )
 
     with patch(
-        "blacki.sandbox.code_interpreter.CodeInterpreter.create", new_callable=AsyncMock
+        "blacki.tools.sandbox_code.CodeInterpreter.create", new_callable=AsyncMock
     ) as mock_create:
         mock_create.side_effect = RuntimeError("Unexpected error")
 

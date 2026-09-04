@@ -8,7 +8,7 @@ import pytest
 from conftest import MockState, MockToolContext
 
 from blacki.reminders.storage import Reminder
-from blacki.reminders.tools import (
+from blacki.tools.reminders import (
     _build_reminder_schedule,
     _format_reminder,
     _parse_reminder_datetime,
@@ -39,13 +39,13 @@ class TestScheduleReminder:
         from zoneinfo import ZoneInfo
 
         with (
-            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler),
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=ZoneInfo("UTC"),
             ),
             patch(
-                "blacki.reminders.tools.now_utc",
+                "blacki.tools.reminders.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
             ),
         ):
@@ -79,7 +79,7 @@ class TestScheduleReminder:
         self, mock_scheduler: MagicMock
     ) -> None:
         """Should return error if message is too long."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await schedule_reminder(
                 tool_context=self._tool_context(),
                 message="x" * 501,
@@ -93,9 +93,9 @@ class TestScheduleReminder:
     async def test_schedule_reminder_in_past(self, mock_scheduler: MagicMock) -> None:
         """Should return error if reminder time is in the past."""
         with (
-            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler),
             patch(
-                "blacki.reminders.tools.now_utc",
+                "blacki.tools.reminders.now_utc",
                 return_value=datetime(2026, 4, 18, 15, 0, 0, tzinfo=UTC),
             ),
         ):
@@ -113,7 +113,7 @@ class TestScheduleReminder:
         self, mock_scheduler: MagicMock
     ) -> None:
         """Should return error if datetime cannot be parsed."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await schedule_reminder(
                 tool_context=self._tool_context(),
                 message="Test reminder",
@@ -129,9 +129,9 @@ class TestScheduleReminder:
     ) -> None:
         """Should return error if recurrence is invalid."""
         with (
-            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler),
             patch(
-                "blacki.reminders.tools._parse_recurring_schedule",
+                "blacki.tools.reminders._parse_recurring_schedule",
                 side_effect=ValueError("Invalid cron"),
             ),
         ):
@@ -152,13 +152,13 @@ class TestScheduleReminder:
         mock_scheduler.schedule_reminder.side_effect = Exception("DB error")
 
         with (
-            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler),
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=ZoneInfo("UTC"),
             ),
             patch(
-                "blacki.reminders.tools.now_utc",
+                "blacki.tools.reminders.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
             ),
         ):
@@ -177,21 +177,21 @@ class TestScheduleReminder:
         mock_next_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
 
         with (
-            patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler),
+            patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler),
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=MagicMock(key="UTC"),
             ),
             patch(
-                "blacki.reminders.tools.validate_cron_expression",
+                "blacki.tools.reminders.validate_cron_expression",
                 return_value="*/15 * * * *",
             ),
             patch(
-                "blacki.reminders.tools.get_next_trigger_time",
+                "blacki.tools.reminders.get_next_trigger_time",
                 return_value=mock_next_time,
             ),
             patch(
-                "blacki.reminders.tools.now_utc",
+                "blacki.tools.reminders.now_utc",
                 return_value=datetime(2026, 4, 18, 10, 0, 0, tzinfo=UTC),
             ),
         ):
@@ -223,7 +223,7 @@ class TestListReminders:
     @pytest.mark.asyncio
     async def test_list_reminders_empty(self, mock_scheduler: MagicMock) -> None:
         """Should return empty list when no reminders."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await list_reminders(
                 tool_context=self._tool_context(),
             )
@@ -244,7 +244,7 @@ class TestListReminders:
         )
         mock_scheduler.get_user_reminders = AsyncMock(return_value=[reminder])
 
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await list_reminders(
                 tool_context=self._tool_context(),
             )
@@ -269,7 +269,7 @@ class TestListReminders:
         """Should handle exception during list."""
         mock_scheduler.get_user_reminders.side_effect = Exception("DB error")
 
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await list_reminders(
                 tool_context=self._tool_context(),
             )
@@ -296,7 +296,7 @@ class TestCancelReminder:
     @pytest.mark.asyncio
     async def test_cancel_reminder_success(self, mock_scheduler: MagicMock) -> None:
         """Should cancel a reminder successfully."""
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await cancel_reminder(
                 tool_context=self._tool_context(),
                 reminder_id=42,
@@ -310,7 +310,7 @@ class TestCancelReminder:
         """Should return error if reminder not found."""
         mock_scheduler.delete_reminder = AsyncMock(return_value=False)
 
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await cancel_reminder(
                 tool_context=self._tool_context(),
                 reminder_id=42,
@@ -338,7 +338,7 @@ class TestCancelReminder:
         """Should handle exception during cancel."""
         mock_scheduler.delete_reminder.side_effect = Exception("DB error")
 
-        with patch("blacki.reminders.tools.get_scheduler", return_value=mock_scheduler):
+        with patch("blacki.tools.reminders.get_scheduler", return_value=mock_scheduler):
             result = await cancel_reminder(
                 tool_context=self._tool_context(),
                 reminder_id=42,
@@ -357,11 +357,11 @@ class TestParseReminderDatetime:
 
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=ZoneInfo("UTC"),
             ),
             patch(
-                "blacki.reminders.tools.naive_local_now",
+                "blacki.tools.reminders.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
             ),
         ):
@@ -379,11 +379,11 @@ class TestParseReminderDatetime:
 
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=ZoneInfo("UTC"),
             ),
             patch(
-                "blacki.reminders.tools.naive_local_now",
+                "blacki.tools.reminders.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
             ),
         ):
@@ -397,11 +397,11 @@ class TestParseReminderDatetime:
 
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=ZoneInfo("UTC"),
             ),
             patch(
-                "blacki.reminders.tools.naive_local_now",
+                "blacki.tools.reminders.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
             ),
             pytest.raises(ValueError, match="Could not parse"),
@@ -417,14 +417,14 @@ class TestParseReminderDatetime:
 
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=mock_tz,
             ),
             patch(
-                "blacki.reminders.tools.naive_local_now",
+                "blacki.tools.reminders.naive_local_now",
                 return_value=datetime(2026, 4, 18, 10, 0, 0),
             ),
-            patch("blacki.reminders.tools.dateparser.parse", return_value=mock_dt),
+            patch("blacki.tools.reminders.dateparser.parse", return_value=mock_dt),
         ):
             result = _parse_reminder_datetime("2026-04-18 12:00")
 
@@ -437,7 +437,7 @@ class TestBuildReminderSchedule:
     def test_build_one_time_schedule(self) -> None:
         """Should build schedule for one-time reminder."""
         with patch(
-            "blacki.reminders.tools._parse_reminder_datetime",
+            "blacki.tools.reminders._parse_reminder_datetime",
             return_value=datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC),
         ):
             result = _build_reminder_schedule(
@@ -455,15 +455,15 @@ class TestBuildReminderSchedule:
 
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=MagicMock(key="UTC"),
             ),
             patch(
-                "blacki.reminders.tools.validate_cron_expression",
+                "blacki.tools.reminders.validate_cron_expression",
                 return_value="*/15 * * * *",
             ),
             patch(
-                "blacki.reminders.tools.get_next_trigger_time",
+                "blacki.tools.reminders.get_next_trigger_time",
                 return_value=mock_next_time,
             ),
         ):
@@ -495,11 +495,11 @@ class TestBuildReminderSchedule:
         """Should raise ValueError for invalid cron expression."""
         with (
             patch(
-                "blacki.reminders.tools.get_app_timezone",
+                "blacki.tools.reminders.get_app_timezone",
                 return_value=MagicMock(key="UTC"),
             ),
             patch(
-                "blacki.reminders.tools.validate_cron_expression",
+                "blacki.tools.reminders.validate_cron_expression",
                 side_effect=ValueError("Invalid cron"),
             ),
             pytest.raises(ValueError, match="Could not understand"),
@@ -524,7 +524,7 @@ class TestFormatReminder:
         )
 
         with patch(
-            "blacki.reminders.tools.format_stored_instant_for_display",
+            "blacki.tools.reminders.format_stored_instant_for_display",
             return_value="2026-04-18 12:00:00 UTC",
         ):
             result = _format_reminder(reminder)
@@ -547,7 +547,7 @@ class TestFormatReminder:
         )
 
         with patch(
-            "blacki.reminders.tools.format_stored_instant_for_display",
+            "blacki.tools.reminders.format_stored_instant_for_display",
             return_value="2026-04-18 12:00:00 UTC",
         ):
             result = _format_reminder(reminder)

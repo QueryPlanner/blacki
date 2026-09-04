@@ -12,7 +12,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
 from google.adk.tools.tool_context import ToolContext
 
-from blacki.skills.mcp_skill_toolset import (
+from blacki.tools.skills import (
     SKILL_STATE_PREFIX,
     McpSkillToolset,
     _LoadSkillResourceTool,

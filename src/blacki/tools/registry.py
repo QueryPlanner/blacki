@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from blacki.config.paths import application_data_directory, skills_directory
 from blacki.gmail.config import GmailConfig
 from blacki.gmail.errors import GmailConfigurationError
 
@@ -120,7 +121,7 @@ def build_tools(
 def _build_exa_search_tools() -> list[Any]:
     """Build Exa Search tools."""
     try:
-        from blacki.search import exa_search
+        from blacki.tools.search import exa_search
 
         return [exa_search]
     except ImportError as e:
@@ -131,7 +132,7 @@ def _build_exa_search_tools() -> list[Any]:
 def _build_brave_search_tools() -> list[Any]:
     """Build Brave Search tools."""
     try:
-        from blacki.tools import brave_search
+        from blacki.tools.brave_search import brave_search
 
         return [brave_search]
     except ImportError as e:
@@ -142,7 +143,11 @@ def _build_brave_search_tools() -> list[Any]:
 def _build_reminder_tools() -> list[Any]:
     """Build reminder tools."""
     try:
-        from blacki.reminders import cancel_reminder, list_reminders, schedule_reminder
+        from blacki.tools.reminders import (
+            cancel_reminder,
+            list_reminders,
+            schedule_reminder,
+        )
 
         return [schedule_reminder, list_reminders, cancel_reminder]
     except ImportError as e:  # pragma: no cover
@@ -153,7 +158,7 @@ def _build_reminder_tools() -> list[Any]:
 def _build_calorie_tools() -> list[Any]:
     """Build calorie tracking tools."""
     try:
-        from blacki.calories import (
+        from blacki.tools.calories import (
             delete_meal,
             edit_meal,
             get_calorie_summary,
@@ -180,7 +185,7 @@ def _build_calorie_tools() -> list[Any]:
 def _build_workout_tools(include_legacy: bool = False) -> list[Any]:
     """Build canonical training tools and optional legacy split fallbacks."""
     try:
-        from blacki.workouts import (
+        from blacki.tools.workouts import (
             advance_training_cycle,
             delete_workout,
             get_last_workout,
@@ -223,15 +228,15 @@ def _build_workout_tools(include_legacy: bool = False) -> list[Any]:
 def _build_sandbox_tools() -> list[Any]:
     """Build sandbox tools."""
     try:
-        from blacki.sandbox import (
-            sandbox_execute_code,
+        from blacki.tools.sandbox import (
             sandbox_list_files,
             sandbox_read_file,
             sandbox_run_command,
             sandbox_send_file_to_user,
-            sandbox_view_image,
             sandbox_write_file,
         )
+        from blacki.tools.sandbox_code import sandbox_execute_code
+        from blacki.tools.sandbox_images import sandbox_view_image
 
         return [
             sandbox_run_command,
@@ -259,8 +264,7 @@ def _build_skill_tools(
         from google.adk.skills.models import Skill
         from google.adk.tools.base_toolset import BaseToolset
 
-        from blacki.skills import load_skill_from_dir
-        from blacki.skills.mcp_skill_toolset import McpSkillToolset
+        from blacki.tools.skills import McpSkillToolset, load_skill_from_dir
 
         skills_to_load = ["explore_repo", "agent_browser"]
         loaded_skills: list[tuple[Skill, BaseToolset | None]] = []
@@ -271,7 +275,8 @@ def _build_skill_tools(
                 loaded_skills.append((skill, None))
 
         if include_user_scoped_tools and config.zepto_mcp_enabled:
-            from blacki.zepto import ZeptoCredentialError, create_zepto_toolset
+            from blacki.tools.zepto import create_zepto_toolset
+            from blacki.zepto import ZeptoCredentialError
 
             try:
                 zepto_toolset = create_zepto_toolset(
@@ -286,7 +291,8 @@ def _build_skill_tools(
                 logger.warning("Zepto MCP disabled: %s", exc)
 
         if include_user_scoped_tools and config.gmail_config is not None:
-            from blacki.gmail import GmailCredentialError, create_gmail_toolset
+            from blacki.gmail import GmailCredentialError
+            from blacki.tools.gmail import create_gmail_toolset
 
             try:
                 gmail_toolset = create_gmail_toolset(config=config.gmail_config)
@@ -307,7 +313,7 @@ def _build_skill_tools(
 def _build_weather_tools() -> list[Any]:
     """Build weather tools."""
     try:
-        from blacki.weather import get_current_weather, get_weather_forecast
+        from blacki.tools.weather import get_current_weather, get_weather_forecast
 
         return [get_current_weather, get_weather_forecast]
     except ImportError as e:  # pragma: no cover
@@ -318,7 +324,7 @@ def _build_weather_tools() -> list[Any]:
 def _build_memory_tools() -> list[Any]:
     """Build memory tools."""
     try:
-        from blacki.memory import (
+        from blacki.tools.memory import (
             delete_memory,
             get_all_memories,
             get_memory,
@@ -343,7 +349,7 @@ def _build_memory_tools() -> list[Any]:
 def _build_tts_tools(*, base_url: str, voice: str) -> list[Any]:
     """Build the private Telegram speech-delivery tool."""
     try:
-        from blacki.tts import KokoroTtsConfig, create_send_text_to_speech_tool
+        from blacki.tools.speech import KokoroTtsConfig, create_send_text_to_speech_tool
 
         config = KokoroTtsConfig(base_url=base_url, voice=voice)
         logger.info("Kokoro TTS tool enabled for the Telegram root agent")
@@ -356,7 +362,7 @@ def _build_tts_tools(*, base_url: str, voice: str) -> list[Any]:
 def _build_user_file_tools() -> list[Any]:
     """Build private Telegram sender-scoped durable file tools."""
     try:
-        from blacki.user_files import create_user_file_tools
+        from blacki.tools.user_files import create_user_file_tools
 
         logger.info("Durable R2 file tools enabled for the Telegram root agent")
         return create_user_file_tools()
@@ -368,7 +374,7 @@ def _build_user_file_tools() -> list[Any]:
 def _build_health_tools() -> list[Any]:
     """Build the private, read-only Google Health tool."""
     try:
-        from blacki.health.tools import get_health_summary
+        from blacki.tools.health import get_health_summary
 
         logger.info("Google Health summary tool enabled for the Telegram root agent")
         return [get_health_summary]
@@ -380,7 +386,7 @@ def _build_health_tools() -> list[Any]:
 def _build_declarative_db_tools() -> list[Any]:
     """Build declarative database tools."""
     try:
-        from blacki.declarative_db.tools import (
+        from blacki.tools.declarative_db import (
             create_custom_table,
             create_query_template,
             delete_custom_instruction_override,
@@ -412,10 +418,8 @@ def build_tool_config_from_env() -> ToolConfig:
     """
     import os
 
-    skills_dir = Path(__file__).parent / "skills"
-    # Match server.py AGENT_DIR calculation (points to src/, not project root)
-    agent_dir = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
-    default_sqlite_path = str(Path(agent_dir) / ".adk" / "tools.db")
+    skills_dir = skills_directory()
+    default_sqlite_path = str(application_data_directory() / "tools.db")
 
     sqlite_path = os.getenv("SQLITE_PATH", "").strip() or default_sqlite_path
     allowed_zepto_chat_ids = frozenset(
