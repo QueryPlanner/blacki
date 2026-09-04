@@ -16,11 +16,14 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from blacki.adk_runtime import AdkRuntime, SessionLocator
 from blacki.agent import (
     TASK_WORKER_NAME,
     _task_worker_enabled,
     create_agent,
+    create_app,
 )
+from blacki.callbacks import recover_telegram_tool_error
 from blacki.registry import ToolConfig
 from blacki.sandbox.config import SANDBOX_STATE_KEY
 
@@ -102,12 +105,16 @@ def test_root_user_scoped_tools_require_explicit_transport_opt_in(
         patch("blacki.agent.build_tool_config_from_env", return_value=config),
         patch("blacki.agent.build_tools", return_value=[]) as build_tools,
     ):
-        create_agent(include_user_scoped_tools=include_user_scoped_tools)
+        agent = create_agent(include_user_scoped_tools=include_user_scoped_tools)
 
     build_tools.assert_called_once_with(
         config,
         include_user_scoped_tools=include_user_scoped_tools,
     )
+    expected_callback = (
+        recover_telegram_tool_error if include_user_scoped_tools else None
+    )
+    assert agent.on_tool_error_callback is expected_callback
 
 
 def test_default_task_worker_has_equivalent_isolated_toolsets(
@@ -232,6 +239,93 @@ def _function_call_response(
             ],
         )
     )
+
+
+class ToolFailureLlm(BaseLlm):
+    """Deterministic model that continues after a failed Telegram tool."""
+
+    calls: int = 0
+    saw_recoverable_tool_error: bool = False
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        """Call one failing tool, then produce a final response."""
+        del stream
+        self.calls += 1
+        if self.calls <= 2:
+            yield _function_call_response(
+                call_id=f"tool-failure-{self.calls}",
+                name="failing_tool",
+                args={},
+            )
+            return
+
+        self.saw_recoverable_tool_error = any(
+            part.function_response is not None
+            and isinstance(part.function_response.response, dict)
+            and part.function_response.response.get("status") == "error"
+            for content in llm_request.contents
+            for part in content.parts or []
+        )
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Recovered after tool failure.")],
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_telegram_tool_failure_does_not_fail_the_root_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception from a Telegram tool returns control to the model."""
+
+    tool_invocations = 0
+
+    def failing_tool(tool_context: ToolContext) -> dict[str, str]:
+        nonlocal tool_invocations
+        del tool_context
+        tool_invocations += 1
+        raise RuntimeError("sandbox endpoint unavailable")
+
+    model = ToolFailureLlm(model="tool-failure-test")
+    monkeypatch.delenv("TASK_WORKER_ENABLED", raising=False)
+    with (
+        patch(
+            "blacki.agent.build_tool_config_from_env",
+            return_value=ToolConfig(weather_enabled=False),
+        ),
+        patch("blacki.agent.build_tools", return_value=[failing_tool]),
+        patch("blacki.agent._build_model", return_value=model),
+        patch("blacki.agent.telegram_live_tool_progress_enabled", return_value=False),
+    ):
+        agent = create_agent(include_user_scoped_tools=True)
+
+    assert agent.on_tool_error_callback is recover_telegram_tool_error
+    assert len(agent.sub_agents) == 1
+    worker = agent.sub_agents[0]
+    assert isinstance(worker, LlmAgent)
+    assert worker.on_tool_error_callback is recover_telegram_tool_error
+
+    runtime = AdkRuntime(
+        InMemorySessionService(),
+        agent_app=create_app(agent),
+    )
+    response = await runtime.run_user_turn_with_thoughts(
+        locator=SessionLocator(
+            user_id="telegram-user",
+            session_id_prefix="telegram-tool-failure",
+        ),
+        message_text="Use the failing tool.",
+        state={"telegram_chat_id": "123"},
+    )
+
+    assert model.calls == 3
+    assert tool_invocations == 1
+    assert model.saw_recoverable_tool_error is True
+    assert response.content == "Recovered after tool failure."
 
 
 @pytest.mark.asyncio

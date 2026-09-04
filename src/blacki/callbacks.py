@@ -29,6 +29,83 @@ from .telegram.types import ParseMode
 
 logger = logging.getLogger(__name__)
 
+_TELEGRAM_TOOL_FAILURE_STATE_KEY = "temp:blacki_failed_tool"
+
+
+def _is_telegram_session(state: Any) -> bool:
+    return bool(str(state.get("telegram_chat_id") or "").strip())
+
+
+def block_telegram_tool_retry(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+) -> dict[str, Any] | None:
+    """Prevent a failed Telegram tool from running again in this turn."""
+    del args
+    if not _is_telegram_session(tool_context.state):
+        return None
+
+    failed_tool = tool_context.state.get(_TELEGRAM_TOOL_FAILURE_STATE_KEY)
+    if not (
+        isinstance(failed_tool, dict)
+        and failed_tool.get("invocation_id") == tool_context.invocation_id
+        and failed_tool.get("tool_name") == tool.name
+    ):
+        return None
+
+    logger.warning("Blocked repeated Telegram tool failure: tool=%s", tool.name)
+    return {
+        "status": "error",
+        "error": (
+            f"The {tool.name} tool already failed in this turn. "
+            "Do not call it again. Continue without it when possible "
+            "and explain the limitation to the user."
+        ),
+    }
+
+
+def recover_telegram_tool_error(
+    tool: BaseTool,
+    args: dict[str, Any],
+    tool_context: ToolContext,
+    error: Exception,
+) -> dict[str, Any] | None:
+    """Return a structured error so a Telegram turn can continue."""
+    del args
+    if not _is_telegram_session(tool_context.state):
+        return None
+
+    tool_context.state[_TELEGRAM_TOOL_FAILURE_STATE_KEY] = {
+        "invocation_id": tool_context.invocation_id,
+        "tool_name": tool.name,
+    }
+    logger.warning(
+        "Handled Telegram tool failure: tool=%s error_type=%s",
+        tool.name,
+        type(error).__name__,
+    )
+    return {
+        "status": "error",
+        "error": (
+            f"The {tool.name} tool is unavailable right now. "
+            "Do not retry it in this turn. Continue without it when possible "
+            "and explain the limitation to the user."
+        ),
+    }
+
+
+def clear_telegram_tool_failure(callback_context: CallbackContext) -> None:
+    """Clear the failed-tool marker after a Telegram agent finishes."""
+    if (
+        _is_telegram_session(callback_context.state)
+        and callback_context.state.get(_TELEGRAM_TOOL_FAILURE_STATE_KEY) is not None
+    ):
+        callback_context.state[_TELEGRAM_TOOL_FAILURE_STATE_KEY] = None
+
+    return None
+
+
 # Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
 
 _INTERMEDIATE_NOTIFY_LAST: dict[str, float] = {}
