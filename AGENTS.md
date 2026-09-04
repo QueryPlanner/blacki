@@ -48,8 +48,9 @@ capability boundaries:
   the public/delegated agent variants.
 - `src/blacki/registry.py` is the tool factory. It decides which tools are
   exposed for the public runner, the Telegram root agent, and delegated workers.
-- `src/blacki/prompt.py` contains global behavior rules. Feature-specific
-  operating and safety instructions belong in a loaded skill when possible.
+- `src/blacki/prompts/` contains instruction text and ADK policy plugins.
+  Feature-specific operating and safety instructions belong in a loaded skill
+  when possible.
 - `src/blacki/telegram/` maps private Telegram chats and topics to ADK sessions.
   Telegram long polling is outbound and does not require a public webhook.
 - SQLite stores application data, session metadata, OAuth state, and catalogs.
@@ -178,10 +179,13 @@ external delivery merely because another feature already does so.
 
 ### Code Structure
 *   **`src/blacki/`**: Contains the core agent logic.
-    *   `agent.py`: Defines the `root_agent` and ADK application configuration.
+    *   `agent.py`: Thin ADK composition and discovery entry point.
     *   `server.py`: FastAPI server entry point with OTel instrumentation.
-    *   `prompt.py`: Manages agent prompts and instructions.
-    *   `tools.py`: Helper tools for the agent.
+    *   `tools/`: Tool adapters and the tool-list factory.
+    *   `models/`: Model construction, inference profiles, and capabilities.
+    *   `runtime/adk.py`: Telegram-facing ADK runner and session orchestration.
+    *   `prompts/`: Agent instruction text and policy plugins.
+    *   `observability/`: Logging, tracing, lifecycle, and usage accounting.
 
 *   **`tests/`**: Unit and integration tests.
 

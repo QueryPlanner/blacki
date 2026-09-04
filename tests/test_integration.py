@@ -17,8 +17,8 @@ from blacki import app
 from blacki.agent import (
     AUTO_COMPACTION_EVENT_RETENTION_SIZE,
     AUTO_COMPACTION_TOKEN_THRESHOLD,
-    _build_model,
 )
+from blacki.models.factory import build_model
 from blacki.observability.costs import CostAwareLiteLLMClient
 
 
@@ -161,7 +161,7 @@ class TestAgentIntegration:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
         monkeypatch.setenv("ROOT_AGENT_MODEL", "google/gemini-2.5-flash")
 
-        model = _build_model()
+        model = build_model()
 
         assert not isinstance(model, str)
         assert isinstance(model.llm_client, CostAwareLiteLLMClient)

@@ -13,7 +13,13 @@ from google.adk.sessions import InMemorySessionService, Session
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
-from blacki.adk_runtime import (
+from blacki.models.inference import (
+    InferenceProfile,
+    ReasoningConfig,
+    ReasoningEffort,
+    get_active_inference_profile,
+)
+from blacki.runtime.adk import (
     MODEL_RETURNED_NO_CONTENT,
     AdkRuntime,
     EmptyModelResponseError,
@@ -31,12 +37,6 @@ from blacki.adk_runtime import (
     build_session_service_uri,
     create_adk_runtime,
     create_session_service,
-)
-from blacki.inference import (
-    InferenceProfile,
-    ReasoningConfig,
-    ReasoningEffort,
-    get_active_inference_profile,
 )
 from blacki.utils.config import ServerEnv
 
@@ -162,7 +162,7 @@ def test_create_session_service_sqlite_event_listener(tmp_path: Path) -> None:
         cursor.close.assert_called_once()
 
 
-@patch("blacki.adk_runtime.DatabaseSessionService")
+@patch("blacki.runtime.adk.DatabaseSessionService")
 def test_create_session_service_with_postgres_uri(mock_db_service: AsyncMock) -> None:
     """Test that PostgreSQL session services skip SQLite PRAGMAs."""
     session_service = create_session_service(

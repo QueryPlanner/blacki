@@ -12,15 +12,15 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 from google.genai import types
 
-from blacki.adk_runtime import (
+from blacki.models.inference import InferenceProfile
+from blacki.reminders.storage import Reminder
+from blacki.runtime.adk import (
     AdkRuntime,
     EmptyModelResponseError,
     SessionLocator,
     StreamChunk,
     TurnResponse,
 )
-from blacki.inference import InferenceProfile
-from blacki.reminders.storage import Reminder
 from blacki.telegram import TelegramConfig
 from blacki.telegram.album_buffer import _BufferedAlbum
 from blacki.telegram.api import TelegramApiClient, TelegramApiError
@@ -1625,7 +1625,7 @@ class TestAdkDuplicationRegression:
     @pytest.mark.asyncio
     async def test_partial_then_non_partial_no_duplicate(self) -> None:
         """Test that partial followed by non-partial doesn't duplicate."""
-        from blacki.adk_runtime import StreamChunk
+        from blacki.runtime.adk import StreamChunk
 
         mock_api = create_autospec(TelegramApiClient, spec_set=True)
         mock_api.send_message = AsyncMock(

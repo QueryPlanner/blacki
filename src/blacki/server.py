@@ -18,7 +18,6 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
-from .adk_runtime import create_adk_runtime
 from .config.paths import agent_root
 from .container import AppContainer, close_container, init_container
 from .dashboard.routes import create_dashboard_router
@@ -28,6 +27,7 @@ from .observability.setup import (
     setup_tracing,
     shutdown_tracing,
 )
+from .runtime.adk import create_adk_runtime
 from .security.tool_privacy import configure_private_tool_privacy
 from .utils import ConfigurationError, ServerEnv, initialize_environment, validation
 

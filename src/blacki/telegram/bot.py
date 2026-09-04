@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from google.genai import types
 
-from blacki.adk_runtime import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.health.config import telegram_chat_id_for_health_user
 from blacki.health.service import (
     GoogleHealthOAuthError,
@@ -24,12 +23,13 @@ from blacki.health.service import (
     SyncResult,
     format_health_summary,
 )
-from blacki.inference import (
+from blacki.models.inference import (
     InferenceProfile,
     inference_profile_from_environment,
     load_inference_profile,
 )
 from blacki.reminders.storage import Reminder
+from blacki.runtime.adk import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.utils.preferences import get_preferences_storage
 
 from . import TelegramConfig

@@ -24,6 +24,34 @@ per-user and per-session spend without parsing prompts or responses.
 LiteLLM/OpenRouter model from the environment, registers tools, and assembles
 the ADK application plugins.
 
+## Application composition
+
+The application dependency direction is:
+
+```text
+server -> agent -> tools
+              -> prompts and plugins
+              -> models
+              -> observability
+server -> runtime.adk -> ADK sessions and runners
+```
+
+`agent.py` is the ADK composition and discovery entry point. It selects tool
+lists from `tools/registry.py`, selects models through `models/factory.py`, and
+assembles the prompt and observability plugins. `models/inference.py` owns
+request-scoped model settings. `models/capabilities.py` keeps OpenRouter
+metadata at the provider boundary.
+
+`runtime/adk.py` owns the shared ADK runner, session versioning, confirmation
+handling, and Telegram-facing turn orchestration. `prompts/instructions.py`
+contains root and worker instruction text. `prompts/policies.py` contains
+domain routing and response-policy plugins. These packages remain separate so
+model and prompt code do not import the application composition entry point.
+
+Keep `blacki.agent`, `blacki.server:main`, and `python -m blacki.server` as the
+stable discovery and execution interfaces. New internal imports should point to
+the owning package rather than recreating root-level modules.
+
 ## Request paths
 
 ### Telegram
