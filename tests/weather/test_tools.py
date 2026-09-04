@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 import httpx
 import pytest
 
-from blacki.weather.tools import (
+from blacki.tools.weather import (
     GEOCODING_API_URL,
     WEATHER_API_URL,
     _geocode_location,
@@ -43,7 +43,7 @@ def test_get_weather_description() -> None:
 @pytest.mark.asyncio
 async def test_get_shared_client() -> None:
     """Test the shared httpx client initialization and reuse."""
-    import blacki.weather.tools as wt
+    import blacki.tools.weather as wt
 
     # Reset client
     wt._weather_client = None
@@ -193,7 +193,7 @@ async def test_geocode_location_http_status_error_404(mock_httpx_client: Any) ->
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_current_weather_success(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:
@@ -251,7 +251,7 @@ async def test_get_current_weather_success(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_current_weather_empty_location(
     mock_get_shared: Any, tool_context: Any
 ) -> None:
@@ -262,7 +262,7 @@ async def test_get_current_weather_empty_location(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_current_weather_geo_fail(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:
@@ -279,7 +279,7 @@ async def test_get_current_weather_geo_fail(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_current_weather_api_error(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:
@@ -314,7 +314,7 @@ async def test_get_current_weather_api_error(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_weather_forecast_success(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:
@@ -366,7 +366,7 @@ async def test_get_weather_forecast_success(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_weather_forecast_empty_location(
     mock_get_shared: Any, tool_context: Any
 ) -> None:
@@ -377,7 +377,7 @@ async def test_get_weather_forecast_empty_location(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_weather_forecast_geo_fail(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:
@@ -393,7 +393,7 @@ async def test_get_weather_forecast_geo_fail(
 
 
 @pytest.mark.asyncio
-@patch("blacki.weather.tools._get_shared_client")
+@patch("blacki.tools.weather._get_shared_client")
 async def test_get_weather_forecast_api_error(
     mock_get_shared: Any, mock_httpx_client: Any, tool_context: Any
 ) -> None:

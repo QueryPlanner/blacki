@@ -8,7 +8,7 @@ from google.adk.tools import ToolContext
 from pydantic import ValidationError
 
 from blacki.calories.storage import DailySummary
-from blacki.calories.tools import (
+from blacki.tools.calories import (
     _is_private_tool_context,
     _meal_saved_message,
     delete_meal,
@@ -28,8 +28,8 @@ def mock_tool_context():
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_log_meal_success(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -91,8 +91,8 @@ async def test_invalid_dates_do_not_mutate_or_default_to_today(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_get_calorie_summary_single_day(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -114,8 +114,8 @@ async def test_get_calorie_summary_single_day(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_get_calorie_summary_multi_day(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -138,7 +138,7 @@ async def test_get_calorie_summary_multi_day(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_edit_meal(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -151,7 +151,7 @@ async def test_edit_meal(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_delete_meal(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -164,7 +164,7 @@ async def test_delete_meal(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_set_calorie_goal(mock_get_pref, mock_tool_context) -> None:
     mock_pref = AsyncMock()
     mock_get_pref.return_value = mock_pref
@@ -186,8 +186,8 @@ async def test_set_calorie_goal_validation(mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_log_meal_with_past_date(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -215,8 +215,8 @@ async def test_log_meal_with_past_date(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_log_meal_with_specific_date(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -244,7 +244,7 @@ async def test_log_meal_with_specific_date(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_edit_meal_with_date(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -259,7 +259,7 @@ async def test_edit_meal_with_date(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_edit_meal_with_specific_date(
     mock_get_storage, mock_tool_context
 ) -> None:
@@ -276,7 +276,7 @@ async def test_edit_meal_with_specific_date(
 
 # Tests for exception handling
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_log_meal_exception(mock_get_storage, mock_tool_context) -> None:
     """Test log_meal handles unexpected exceptions."""
     mock_storage = AsyncMock()
@@ -292,7 +292,7 @@ async def test_log_meal_exception(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_edit_meal_exception(mock_get_storage, mock_tool_context) -> None:
     """Test edit_meal handles unexpected exceptions."""
     mock_storage = AsyncMock()
@@ -306,7 +306,7 @@ async def test_edit_meal_exception(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_delete_meal_exception(mock_get_storage, mock_tool_context) -> None:
     """Test delete_meal handles unexpected exceptions."""
     mock_storage = AsyncMock()
@@ -320,9 +320,9 @@ async def test_delete_meal_exception(mock_get_storage, mock_tool_context) -> Non
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
-@patch("blacki.calories.tools.CalorieEntry")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
+@patch("blacki.tools.calories.CalorieEntry")
 async def test_log_meal_pydantic_validation_error(
     mock_entry_class, mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -343,9 +343,9 @@ async def test_log_meal_pydantic_validation_error(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
-@patch("blacki.calories.tools._try_get_meal_service")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
+@patch("blacki.tools.calories._try_get_meal_service")
 async def test_log_meal_uses_meal_service_when_available(
     mock_try_get_service, mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -377,8 +377,8 @@ async def test_log_meal_uses_meal_service_when_available(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_log_meal_summary_read_failure_still_succeeds(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -401,8 +401,8 @@ async def test_log_meal_summary_read_failure_still_succeeds(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
-@patch("blacki.calories.tools.get_preferences_storage")
+@patch("blacki.tools.calories.get_storage")
+@patch("blacki.tools.calories.get_preferences_storage")
 async def test_log_meal_goal_read_failure_still_succeeds(
     mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -446,7 +446,7 @@ async def test_edit_meal_rejects_invalid_macros(mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_edit_meal_value_error_from_storage(
     mock_get_storage, mock_tool_context
 ) -> None:
@@ -461,7 +461,7 @@ async def test_edit_meal_value_error_from_storage(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools._try_get_meal_service")
+@patch("blacki.tools.calories._try_get_meal_service")
 async def test_edit_meal_uses_meal_service_when_available(
     mock_try_get_service, mock_tool_context
 ) -> None:
@@ -482,7 +482,7 @@ async def test_edit_meal_uses_meal_service_when_available(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools.get_storage")
+@patch("blacki.tools.calories.get_storage")
 async def test_delete_meal_value_error_from_storage(
     mock_get_storage, mock_tool_context
 ) -> None:
@@ -497,7 +497,7 @@ async def test_delete_meal_value_error_from_storage(
 
 
 @pytest.mark.asyncio
-@patch("blacki.calories.tools._try_get_meal_service")
+@patch("blacki.tools.calories._try_get_meal_service")
 async def test_delete_meal_uses_meal_service_when_available(
     mock_try_get_service, mock_tool_context
 ) -> None:

@@ -9,7 +9,7 @@ import pytest
 from conftest import MockState, MockToolContext
 from google.adk.tools import ToolContext
 
-from blacki.tools import (
+from blacki.tools.brave_search import (
     _get_shared_brave_search_client,
     brave_search,
     brave_search_api_key_available,
@@ -50,7 +50,7 @@ class TestResetBraveSearchClientCache:
     @pytest.mark.asyncio
     async def test_resets_client_to_none(self) -> None:
         """Should reset the shared client to None."""
-        from blacki import tools
+        import blacki.tools.brave_search as tools
 
         tools._brave_search_client = httpx.AsyncClient()
         assert tools._brave_search_client is not None
@@ -62,7 +62,7 @@ class TestResetBraveSearchClientCache:
     @pytest.mark.asyncio
     async def test_handles_none_client(self) -> None:
         """Should handle already None client gracefully."""
-        from blacki import tools
+        import blacki.tools.brave_search as tools
 
         tools._brave_search_client = None
 
@@ -73,7 +73,7 @@ class TestResetBraveSearchClientCache:
     @pytest.mark.asyncio
     async def test_handles_close_exception(self) -> None:
         """Should handle exception during close gracefully."""
-        from blacki import tools
+        import blacki.tools.brave_search as tools
 
         mock_client = AsyncMock()
         mock_client.aclose = AsyncMock(side_effect=RuntimeError("close failed"))
@@ -153,7 +153,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context)
@@ -192,7 +192,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context, count=5)
@@ -215,7 +215,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context)
@@ -238,7 +238,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context)
@@ -259,7 +259,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context)
@@ -286,7 +286,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("test query", tool_context)
@@ -310,7 +310,7 @@ class TestBraveSearch:
         mock_client.get = AsyncMock(return_value=mock_response)
 
         with patch(
-            "blacki.tools._get_shared_brave_search_client",
+            "blacki.tools.brave_search._get_shared_brave_search_client",
             return_value=mock_client,
         ):
             result = await brave_search("obscure query", tool_context)

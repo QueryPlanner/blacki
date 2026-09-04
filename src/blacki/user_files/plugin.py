@@ -8,9 +8,8 @@ from typing import TYPE_CHECKING
 
 from google.adk.plugins.base_plugin import BasePlugin
 
-from .config import user_files_enabled
+from .config import SENDER_STATE_KEY, user_files_enabled
 from .service import get_user_file_service
-from .tools import SENDER_STATE_KEY
 
 if TYPE_CHECKING:
     from google.adk.agents.callback_context import CallbackContext

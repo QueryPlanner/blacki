@@ -19,18 +19,18 @@ from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
 
 from blacki.container import get_container
-from blacki.sandbox.manager import get_sandbox_manager
-from blacki.user_files.service import sanitize_display_name
-
-from .client import GmailService
-from .config import GmailConfig, canonical_gmail_user_id
-from .errors import (
+from blacki.gmail.client import GmailService
+from blacki.gmail.config import GmailConfig, canonical_gmail_user_id
+from blacki.gmail.errors import (
     GmailApiError,
     GmailConfigurationError,
     GmailCredentialError,
     GmailError,
 )
-from .storage import SqliteGmailStorage
+from blacki.gmail.storage import SqliteGmailStorage
+from blacki.sandbox.manager import get_sandbox_manager
+from blacki.user_files.config import SENDER_STATE_KEY
+from blacki.user_files.service import sanitize_display_name
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ async def _service_for_context(
     chat_id = state.get("telegram_chat_id")
     if chat_id is not None and user_id != f"telegram-chat-{chat_id}":
         raise GmailCredentialError("Gmail user context does not match the chat")
-    sender_user_id = state.get("temp:telegram_sender_user_id")
+    sender_user_id = state.get(SENDER_STATE_KEY)
     if sender_user_id is not None and str(sender_user_id) != str(chat_id):
         raise GmailCredentialError("Gmail sender context does not match the chat")
     active = _ACTIVE_SERVICE.get()

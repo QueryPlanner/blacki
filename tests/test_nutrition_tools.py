@@ -12,9 +12,9 @@ import pytest
 from cryptography.fernet import Fernet
 from google.adk.tools import ToolContext
 
-from blacki.calories.tools import get_meal_sync_status, retry_meal_sync
 from blacki.container import AppContainer, reset_container_for_tests, set_container
 from blacki.health.config import GOOGLE_HEALTH_NUTRITION_SCOPES, GoogleHealthConfig
+from blacki.tools.calories import get_meal_sync_status, retry_meal_sync
 
 USER_ID = "telegram-chat-42"
 HEALTH_USER_ID = "google-account-42"

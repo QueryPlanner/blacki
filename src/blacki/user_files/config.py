@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
+SENDER_STATE_KEY = "temp:telegram_sender_user_id"
 
 
 def user_files_enabled() -> bool:

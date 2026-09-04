@@ -7,6 +7,8 @@ import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
 from pydantic import ValidationError
 
+from blacki.calories.service import VALID_MEAL_TYPES, get_meal_service, validate_meal
+from blacki.calories.storage import CalorieEntry, get_storage
 from blacki.container import get_container
 from blacki.health.config import (
     GOOGLE_HEALTH_NUTRITION_SCOPES,
@@ -15,9 +17,6 @@ from blacki.health.config import (
 from blacki.utils.dates import parse_date
 from blacki.utils.preferences import get_preferences_storage
 from blacki.utils.timezone import get_app_timezone, now_utc
-
-from .service import VALID_MEAL_TYPES, get_meal_service, validate_meal
-from .storage import CalorieEntry, get_storage
 
 logger = logging.getLogger(__name__)
 

@@ -7,18 +7,18 @@ from typing import Any
 import dateparser  # type: ignore[import-untyped]
 from google.adk.tools import ToolContext
 
+from blacki.reminders.recurrence import (
+    get_next_trigger_time,
+    validate_cron_expression,
+)
+from blacki.reminders.scheduler import get_scheduler
+from blacki.reminders.storage import Reminder
 from blacki.utils.timezone import (
     format_stored_instant_for_display,
     get_app_timezone,
     naive_local_now,
     now_utc,
     utc_iso_seconds,
-)
-
-from . import Reminder, get_scheduler
-from .recurrence import (
-    get_next_trigger_time,
-    validate_cron_expression,
 )
 
 logger = logging.getLogger(__name__)
@@ -325,7 +325,7 @@ def _build_reminder_schedule(
 def _parse_recurring_schedule(recurrence: str) -> Any:
     """Validate a cron-style recurring schedule for reminder storage."""
 
-    from .recurrence import RecurringSchedule
+    from blacki.reminders.recurrence import RecurringSchedule
 
     timezone_name = get_app_timezone().key or "UTC"
     normalized_recurrence = " ".join(recurrence.strip().split())

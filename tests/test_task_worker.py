@@ -24,8 +24,8 @@ from blacki.agent import (
     create_app,
 )
 from blacki.callbacks import recover_telegram_tool_error
-from blacki.registry import ToolConfig
 from blacki.sandbox.config import SANDBOX_STATE_KEY
+from blacki.tools.registry import ToolConfig
 
 
 def _tool_capability(tool: object) -> str:
@@ -143,6 +143,34 @@ def test_default_task_worker_has_equivalent_isolated_toolsets(
     root_capabilities.pop(TASK_WORKER_NAME)
     worker_capabilities.pop("finish_task")
 
+    expected_capabilities = [
+        "sandbox_run_command",
+        "sandbox_write_file",
+        "sandbox_read_file",
+        "sandbox_list_files",
+        "sandbox_send_file_to_user",
+        "sandbox_execute_code",
+        "sandbox_view_image",
+        "blacki.tools.skills.McpSkillToolset",
+        "save_memory",
+        "search_memory",
+        "get_all_memories",
+        "get_memory",
+        "update_memory",
+        "delete_memory",
+        "preload_memory",
+    ]
+    assert [
+        _tool_capability(tool)
+        for tool in agent.tools
+        if _tool_capability(tool) != TASK_WORKER_NAME
+    ] == expected_capabilities
+    assert [
+        _tool_capability(tool)
+        for tool in worker.tools
+        if _tool_capability(tool) != "finish_task"
+    ] == expected_capabilities
+
     assert root_capabilities == worker_capabilities
 
     root_toolsets = [tool for tool in agent.tools if isinstance(tool, BaseToolset)]
@@ -157,6 +185,40 @@ def test_default_task_worker_has_equivalent_isolated_toolsets(
         tool for tool in worker.tools if _tool_capability(tool) == "preload_memory"
     )
     assert root_preload is not worker_preload
+
+
+@pytest.mark.parametrize("include_user_scoped_tools", [False, True])
+def test_agent_exposure_contract_for_public_and_private_root(
+    monkeypatch: pytest.MonkeyPatch,
+    include_user_scoped_tools: bool,
+) -> None:
+    """Keep private root capabilities out of the public ADK agent."""
+    monkeypatch.setenv("TASK_WORKER_ENABLED", "false")
+    config = ToolConfig(
+        weather_enabled=False,
+        kokoro_tts_base_url="http://kokoro.internal:8880",
+        google_health_enabled=True,
+    )
+
+    with patch("blacki.agent.build_tool_config_from_env", return_value=config):
+        agent = create_agent(include_user_scoped_tools=include_user_scoped_tools)
+
+    actual_capabilities = [_tool_capability(tool) for tool in agent.tools]
+    expected_capabilities = [
+        "send_text_to_speech",
+        "get_health_summary",
+        "save_memory",
+        "search_memory",
+        "get_all_memories",
+        "get_memory",
+        "update_memory",
+        "delete_memory",
+        "preload_memory",
+    ]
+    if not include_user_scoped_tools:
+        expected_capabilities = expected_capabilities[2:]
+
+    assert actual_capabilities == expected_capabilities
 
 
 class DelegationLlm(BaseLlm):

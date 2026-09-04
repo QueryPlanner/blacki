@@ -44,7 +44,7 @@ from .prompt import (
     return_instruction_root,
     return_instruction_task_worker,
 )
-from .registry import build_tool_config_from_env, build_tools
+from .tools.registry import build_tool_config_from_env, build_tools
 
 if TYPE_CHECKING:
     from google.adk.agents.callback_context import CallbackContext
@@ -297,10 +297,8 @@ def create_app(agent: LlmAgent | None = None) -> App:
         DeclarativeDbPlugin,
         StoredPreferencesPlugin,
     )
-    from blacki.sandbox import (
-        SandboxMultimodalToolResultsPlugin,
-        sandbox_enabled,
-    )
+    from blacki.sandbox.config import sandbox_enabled
+    from blacki.sandbox.images import SandboxMultimodalToolResultsPlugin
     from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
 
     sandbox_tools_enabled = sandbox_enabled()

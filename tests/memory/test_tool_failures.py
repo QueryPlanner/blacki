@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from google.adk.tools import ToolContext
 
-from blacki.memory import tools
+import blacki.tools.memory as tools
 
 
 @pytest.fixture

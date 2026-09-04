@@ -12,10 +12,11 @@ import pytest
 from conftest import MockState, MockToolContext
 from google.adk.tools import FunctionTool, ToolContext
 
-from blacki.search import exa_search, exa_search_api_key_available
-from blacki.search.exa import (
+from blacki.tools.search import (
     EXA_SEARCH_API_URL,
     _get_shared_exa_search_client,
+    exa_search,
+    exa_search_api_key_available,
     reset_exa_search_client_cache,
 )
 
@@ -66,7 +67,7 @@ class TestSharedExaSearchClient:
 
     @pytest.mark.asyncio
     async def test_reset_handles_missing_client(self) -> None:
-        from blacki.search import exa
+        import blacki.tools.search as exa
 
         exa._exa_search_client = None
 
@@ -78,7 +79,7 @@ class TestSharedExaSearchClient:
     async def test_reset_handles_close_error(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        from blacki.search import exa
+        import blacki.tools.search as exa
 
         client = create_autospec(httpx.AsyncClient, instance=True, spec_set=True)
         client.aclose.side_effect = RuntimeError("close failed")
@@ -162,7 +163,7 @@ class TestExaSearch:
         client = _client(response)
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("  current AI news  ", 3, _tool_context())
@@ -220,7 +221,7 @@ class TestExaSearch:
         client = _client(_response(200, {"results": []}))
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             await exa_search("query", requested, _tool_context())
@@ -249,7 +250,7 @@ class TestExaSearch:
         client = _client(_response(status_code, {"error": "provider detail"}))
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("query", 5, _tool_context())
@@ -270,7 +271,7 @@ class TestExaSearch:
 
         with (
             patch(
-                "blacki.search.exa._get_shared_exa_search_client",
+                "blacki.tools.search._get_shared_exa_search_client",
                 new=AsyncMock(return_value=client),
             ),
             caplog.at_level(logging.ERROR),
@@ -290,7 +291,7 @@ class TestExaSearch:
         client.post.side_effect = httpx.TimeoutException("timed out")
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("query", 5, _tool_context())
@@ -311,7 +312,7 @@ class TestExaSearch:
         client = _client(response)
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("query", 5, _tool_context())
@@ -331,7 +332,7 @@ class TestExaSearch:
         client = _client(_response(200, payload))
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("query", 5, _tool_context())
@@ -347,7 +348,7 @@ class TestExaSearch:
         client = _client(_response(200, {"searchType": 7, "results": []}))
 
         with patch(
-            "blacki.search.exa._get_shared_exa_search_client",
+            "blacki.tools.search._get_shared_exa_search_client",
             new=AsyncMock(return_value=client),
         ):
             result = await exa_search("query", 5, _tool_context())

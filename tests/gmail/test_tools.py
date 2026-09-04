@@ -24,7 +24,8 @@ from blacki.gmail.errors import (
     GmailInputError,
 )
 from blacki.gmail.storage import SqliteGmailStorage
-from blacki.gmail.tools import (
+from blacki.storage.sqlite import create_connection
+from blacki.tools.gmail import (
     _ACTIVE_SERVICE,
     GmailToolset,
     _gmail_body_present,
@@ -48,7 +49,6 @@ from blacki.gmail.tools import (
     gmail_search_messages,
     gmail_send_draft,
 )
-from blacki.storage.sqlite import create_connection
 
 
 def _config() -> GmailConfig:
@@ -252,7 +252,7 @@ async def test_gmail_tool_converts_unexpected_errors_without_logging_content(
     connection, storage, service = await _ready(tmp_path)
     service.search_messages.side_effect = RuntimeError("private email body")
     toolset = GmailToolset(config=_config(), storage=storage, service=service)
-    caplog.set_level(logging.ERROR, logger="blacki.gmail.tools")
+    caplog.set_level(logging.ERROR, logger="blacki.tools.gmail")
     try:
         search = next(
             tool
@@ -298,7 +298,7 @@ async def test_large_gmail_results_use_the_session_sandbox(tmp_path: Path) -> No
         return_value={"sandbox": sandbox, "error": None}
     )
 
-    with patch("blacki.gmail.tools.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.gmail.get_sandbox_manager", return_value=manager):
         compact = await _materialize_large_gmail_result(
             result,
             identity="message:message-1",
@@ -328,7 +328,7 @@ async def test_large_gmail_results_are_truncated_without_a_sandbox(
     manager = MagicMock()
     manager.get_or_create_sandbox = AsyncMock(return_value=sandbox_result)
 
-    with patch("blacki.gmail.tools.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.gmail.get_sandbox_manager", return_value=manager):
         compact = await _materialize_large_gmail_result(
             result,
             identity="thread:thread-1",
@@ -358,7 +358,7 @@ async def test_large_gmail_results_fall_back_when_serialization_or_write_fails()
     assert _truncate_gmail_result(result)["body_truncated"] is True
 
     context = _ToolContext("telegram-chat-42")
-    with patch("blacki.gmail.tools.get_sandbox_manager") as get_manager:
+    with patch("blacki.tools.gmail.get_sandbox_manager") as get_manager:
         compact = await _materialize_large_gmail_result(
             result,
             identity="message:bad",
@@ -384,7 +384,7 @@ async def test_large_gmail_results_fall_back_when_serialization_or_write_fails()
     manager.get_or_create_sandbox = AsyncMock(
         return_value={"sandbox": sandbox, "error": None}
     )
-    with patch("blacki.gmail.tools.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.gmail.get_sandbox_manager", return_value=manager):
         compact = await _materialize_large_gmail_result(
             serializable_result,
             identity="message:write-fails",
@@ -421,11 +421,11 @@ async def test_gmail_attachment_write_failures_are_safe_and_cleaned(
     manager.get_or_create_sandbox = AsyncMock(
         return_value={"sandbox": sandbox, "error": None}
     )
-    caplog.set_level(logging.WARNING, logger="blacki.gmail.tools")
+    caplog.set_level(logging.WARNING, logger="blacki.tools.gmail")
     token = _ACTIVE_SERVICE.set(service)
     try:
         with (
-            patch("blacki.gmail.tools.get_sandbox_manager", return_value=manager),
+            patch("blacki.tools.gmail.get_sandbox_manager", return_value=manager),
             pytest.raises(GmailError, match="could not be written"),
         ):
             await gmail_download_attachment(
@@ -463,7 +463,7 @@ async def test_gmail_attachment_download_rejects_unavailable_sandbox() -> None:
     token = _ACTIVE_SERVICE.set(service)
     try:
         with (
-            patch("blacki.gmail.tools.get_sandbox_manager", return_value=manager),
+            patch("blacki.tools.gmail.get_sandbox_manager", return_value=manager),
             pytest.raises(GmailCredentialError, match="unavailable"),
         ):
             await gmail_download_attachment(
@@ -519,7 +519,7 @@ async def test_all_gmail_wrappers_use_the_active_user_scoped_service(
             return_value={"sandbox": sandbox, "error": None}
         )
         with patch(
-            "blacki.gmail.tools.get_sandbox_manager",
+            "blacki.tools.gmail.get_sandbox_manager",
             return_value=sandbox_manager,
         ):
             assert await gmail_download_attachment(
@@ -616,7 +616,7 @@ async def test_gmail_service_context_handles_missing_storage_and_configuration(
             _ACTIVE_SERVICE.reset(token)
 
         with (
-            patch("blacki.gmail.tools.GmailConfig.from_environment", return_value=None),
+            patch("blacki.tools.gmail.GmailConfig.from_environment", return_value=None),
             pytest.raises(GmailConfigurationError),
         ):
             async with _service_for_context(
@@ -626,11 +626,11 @@ async def test_gmail_service_context_handles_missing_storage_and_configuration(
 
         with (
             patch(
-                "blacki.gmail.tools.GmailConfig.from_environment",
+                "blacki.tools.gmail.GmailConfig.from_environment",
                 return_value=_config(),
             ),
             patch(
-                "blacki.gmail.tools.get_container",
+                "blacki.tools.gmail.get_container",
                 side_effect=RuntimeError("container unavailable"),
             ),
             pytest.raises(GmailCredentialError),
@@ -642,11 +642,11 @@ async def test_gmail_service_context_handles_missing_storage_and_configuration(
 
         with (
             patch(
-                "blacki.gmail.tools.GmailConfig.from_environment",
+                "blacki.tools.gmail.GmailConfig.from_environment",
                 return_value=_config(),
             ),
             patch(
-                "blacki.gmail.tools.get_container",
+                "blacki.tools.gmail.get_container",
                 return_value=SimpleNamespace(gmail_storage=storage),
             ),
         ):
@@ -706,11 +706,11 @@ async def test_gmail_service_context_rejects_mismatched_private_session_metadata
 
         with (
             patch(
-                "blacki.gmail.tools.GmailConfig.from_environment",
+                "blacki.tools.gmail.GmailConfig.from_environment",
                 return_value=_config(),
             ),
             patch(
-                "blacki.gmail.tools.get_container",
+                "blacki.tools.gmail.get_container",
                 return_value=SimpleNamespace(gmail_storage=storage),
             ),
             pytest.raises(GmailCredentialError),
@@ -736,14 +736,14 @@ async def test_gmail_toolset_and_factory_handle_owned_resources_and_failures(
         await factory_toolset.close()
 
         with (
-            patch("blacki.gmail.tools.GmailConfig.from_environment", return_value=None),
+            patch("blacki.tools.gmail.GmailConfig.from_environment", return_value=None),
             pytest.raises(GmailConfigurationError),
         ):
             create_gmail_toolset()
 
         with (
             patch(
-                "blacki.gmail.tools.get_container",
+                "blacki.tools.gmail.get_container",
                 side_effect=RuntimeError("container unavailable"),
             ),
             pytest.raises(GmailCredentialError),

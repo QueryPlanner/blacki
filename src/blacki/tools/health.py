@@ -7,8 +7,7 @@ from typing import Any
 from google.adk.tools import ToolContext
 
 from blacki.container import get_container
-
-from .service import summarize_stored_health
+from blacki.health.service import summarize_stored_health
 
 
 async def get_health_summary(
