@@ -37,6 +37,7 @@ from .access import TelegramAccessStorage, TelegramIdentity, get_telegram_access
 from .album_buffer import AlbumBuffer, _BufferedAlbum
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import escape_markdown_plain, format_for_telegram
+from .progress_callbacks import clear_telegram_progress_for_conversation
 from .settings_menu import SettingsMenu
 from .streaming import split_long_message
 from .transcription import (
@@ -407,7 +408,11 @@ class TelegramBot:
                     logger.warning("Album buffer wait suppressed error: %s", exc)
 
         await self._run_sequenced_turn(
-            conversation_key, current_seq, self._handle_update(update)
+            conversation_key,
+            current_seq,
+            self._handle_update(update),
+            progress_chat_id=chat_id,
+            progress_thread_id=message_thread_id,
         )
 
     def _access_code_fingerprint(self) -> str:
@@ -575,6 +580,9 @@ class TelegramBot:
         conversation_key: str,
         seq: int,
         turn: Coroutine[Any, Any, None],
+        *,
+        progress_chat_id: int,
+        progress_thread_id: int | None,
     ) -> None:
         """Run a turn, cancelling and waiting out any superseded turn first."""
         existing_task = self._conversation_tasks.get(conversation_key)
@@ -608,6 +616,10 @@ class TelegramBot:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
                 self._conversation_task_seqs.pop(conversation_key, None)
+            await clear_telegram_progress_for_conversation(
+                progress_chat_id,
+                progress_thread_id,
+            )
 
     def _on_album_flushed(self, album: _BufferedAlbum) -> None:
         """Schedule processing of a completed album as a background task."""
@@ -626,6 +638,8 @@ class TelegramBot:
                 conversation_key,
                 album.created_seq,
                 self._handle_album_turn(album),
+                progress_chat_id=album.chat_id,
+                progress_thread_id=album.message_thread_id,
             )
         finally:
             if album.future is not None and not album.future.done():

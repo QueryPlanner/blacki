@@ -24,9 +24,9 @@ from fastapi import APIRouter
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 
-from ..usage_ledger import default_usage_ledger_path
+from ..observability.ledger import default_usage_ledger_path
+from ..observability.setup import get_log_dir
 from ..utils.config import ServerEnv
-from ..utils.observability import get_log_dir
 from .data import DashboardStore
 from .models import (
     DEFAULT_PAGE_SIZE,
@@ -235,7 +235,7 @@ def create_dashboard_router(
 
     A store can be supplied by tests or an embedding application.  Normal
     server construction uses the session database under ``AGENT_DIR`` and the
-    log directory selected by :func:`blacki.utils.observability.get_log_dir`.
+    log directory selected by :func:`blacki.observability.setup.get_log_dir`.
     """
     if store is not None:
         dashboard_store = store

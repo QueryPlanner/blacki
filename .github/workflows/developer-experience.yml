@@ -178,4 +178,4 @@ jobs:
             --env OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318 \
             --env OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
             blacki:contract-test -c \
-            "from blacki.utils.observability import validate_observability_environment; validate_observability_environment()"
+            "from blacki.observability.setup import validate_observability_environment; validate_observability_environment()"

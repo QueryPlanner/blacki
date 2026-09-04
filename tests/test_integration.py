@@ -19,7 +19,7 @@ from blacki.agent import (
     AUTO_COMPACTION_TOKEN_THRESHOLD,
     _build_model,
 )
-from blacki.llm_costs import CostAwareLiteLLMClient
+from blacki.observability.costs import CostAwareLiteLLMClient
 
 
 class AgentConfigLike(Protocol):

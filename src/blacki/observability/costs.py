@@ -18,9 +18,9 @@ from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.llm_response import LlmResponse
 from opentelemetry import trace
 
-from .usage_ledger import UsageRecord, default_usage_ledger_path, write_usage_record
+from .ledger import UsageRecord, default_usage_ledger_path, write_usage_record
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("blacki.llm_costs")
 
 COST_METADATA_KEY = "blacki.cost"
 
@@ -140,7 +140,7 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
     }
 
 
-def begin_cost_capture(
+def _begin_cost_capture(
     *,
     user_id: str | None,
     session_id: str | None,
@@ -238,7 +238,7 @@ async def _observe_response(
         logger.warning("Unable to persist model usage to the local cost ledger")
 
 
-def attach_cost_metadata(response: LlmResponse) -> CostObservation | None:
+def _attach_cost_metadata(response: LlmResponse) -> CostObservation | None:
     """Attach the latest safe cost observation to the ADK response event."""
     capture = _ACTIVE_CAPTURE.get()
     if capture is None:

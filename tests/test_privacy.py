@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from google.adk.tools.base_tool import BaseTool
 
-from blacki.privacy import (
-    PrivacyAwareLoggingPlugin,
+from blacki.observability.privacy_logging import PrivacyAwareLoggingPlugin
+from blacki.security.tool_privacy import (
     configure_private_tool_privacy,
     configure_zepto_privacy,
     gmail_configured,

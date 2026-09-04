@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
@@ -22,8 +23,7 @@ from opentelemetry.proto.collector.trace.v1 import (
     trace_service_pb2_grpc,
 )
 
-from blacki.utils.exceptions import ConfigurationError
-from blacki.utils.observability import (
+from blacki.observability.setup import (
     JSONFileSpanExporter,
     JSONFormatter,
     _create_tracer_provider,
@@ -32,8 +32,10 @@ from blacki.utils.observability import (
     get_log_dir,
     setup_logging,
     setup_tracing,
+    shutdown_tracing,
     validate_observability_environment,
 )
+from blacki.utils.exceptions import ConfigurationError
 
 OTLP_ENVIRONMENT_KEYS = (
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
@@ -50,6 +52,25 @@ def clear_otlp_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep every exporter test independent from the developer's shell."""
     for key in OTLP_ENVIRONMENT_KEYS:
         monkeypatch.delenv(key, raising=False)
+
+
+def test_observability_setup_has_stable_import_path() -> None:
+    """Deployment preflight must import the relocated setup module."""
+    module = importlib.import_module("blacki.observability.setup")
+
+    assert (
+        module.validate_observability_environment is validate_observability_environment
+    )
+
+
+def test_shutdown_tracing_handles_missing_and_configured_providers() -> None:
+    """Tracing teardown should be safe when setup could not create a provider."""
+    provider = MagicMock()
+
+    shutdown_tracing(None)
+    shutdown_tracing(provider)
+
+    provider.shutdown.assert_called_once_with()
 
 
 @pytest.fixture
@@ -152,8 +173,8 @@ def test_local_only_provider_writes_span_without_otlp(
     log_path = tmp_path / "traces.jsonl"
 
     with (
-        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
     ):
         provider, mode = _create_tracer_provider(log_path)
         tracer = provider.get_tracer("test.local")
@@ -349,8 +370,8 @@ def test_observability_preflight_constructs_and_closes_selected_exporter(
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
 
     with (
-        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
     ):
         validate_observability_environment()
 
@@ -365,8 +386,8 @@ def test_observability_preflight_constructs_and_closes_selected_exporter(
 def test_observability_preflight_local_mode_constructs_no_exporter() -> None:
     """Local-only preflight has no network-exporter lifecycle."""
     with (
-        patch("blacki.utils.observability.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.utils.observability.HttpOTLPSpanExporter") as mock_http_exporter,
+        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
+        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
     ):
         validate_observability_environment()
 
@@ -506,8 +527,8 @@ def test_setup_tracing_logs_only_selected_mode(
     caplog.set_level(logging.INFO)
 
     with (
-        patch("blacki.utils.observability.get_log_dir", return_value=tmp_path),
-        patch("blacki.utils.observability.trace.set_tracer_provider"),
+        patch("blacki.observability.setup.get_log_dir", return_value=tmp_path),
+        patch("blacki.observability.setup.trace.set_tracer_provider"),
     ):
         provider = setup_tracing()
 
@@ -595,7 +616,7 @@ def test_setup_logging_adds_json_file_handler(
     preserve_logging_configuration: None,
 ) -> None:
     """A writable log directory should receive structured file logs."""
-    with patch("blacki.utils.observability.get_log_dir", return_value=tmp_path):
+    with patch("blacki.observability.setup.get_log_dir", return_value=tmp_path):
         setup_logging("DEBUG")
         logging.getLogger("blacki.test").info("file message")
         for handler in logging.getLogger().handlers:
@@ -616,7 +637,7 @@ def test_setup_logging_falls_back_to_stdout(
     """An unavailable local log directory does not prevent process logging."""
     blocked = Path("/blocked")
     with (
-        patch("blacki.utils.observability.get_log_dir", return_value=blocked),
+        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
         patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
     ):
         setup_logging("INFO")
@@ -628,7 +649,7 @@ def test_setup_tracing_returns_none_for_unwritable_directory() -> None:
     """Tracing should degrade safely when its directory cannot be created."""
     blocked = Path("/blocked")
     with (
-        patch("blacki.utils.observability.get_log_dir", return_value=blocked),
+        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
         patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
     ):
         provider = setup_tracing()

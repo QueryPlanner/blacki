@@ -37,9 +37,9 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
-from .exceptions import ConfigurationError
+from ..utils.exceptions import ConfigurationError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("blacki.utils.observability")
 
 
 @dataclass(frozen=True)
@@ -390,3 +390,10 @@ def setup_tracing() -> TracerProvider | None:
     trace.set_tracer_provider(provider)
     logger.info("Trace exporter mode configured: %s", mode)
     return provider
+
+
+def shutdown_tracing(provider: TracerProvider | None) -> None:
+    """Flush and release an OpenTelemetry provider when one was configured."""
+    if provider is None:
+        return
+    provider.shutdown()

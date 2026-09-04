@@ -2970,14 +2970,21 @@ class TestTelegramBotEdgeCases:
             }
         )
 
-        task = asyncio.create_task(bot._safe_handle_update(update))
-        await asyncio.sleep(0.01)
+        cleanup = AsyncMock()
+        with patch(
+            "blacki.telegram.bot.clear_telegram_progress_for_conversation",
+            new=cleanup,
+        ):
+            task = asyncio.create_task(bot._safe_handle_update(update))
+            await asyncio.sleep(0.01)
 
-        assert bot._conversation_tasks["chat-123"] == task
+            assert bot._conversation_tasks["chat-123"] == task
 
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        cleanup.assert_awaited_once_with(123, None)
 
         assert "chat-123" not in bot._conversation_tasks
 

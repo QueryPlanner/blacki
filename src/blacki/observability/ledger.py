@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..config.paths import agent_root
+
 LEDGER_TABLE = "llm_usage_ledger"
 COST_SCALE = 1_000_000_000
 COST_LEDGER_WARNING = "Cost ledger is temporarily unavailable."
@@ -73,10 +75,8 @@ def default_usage_ledger_path(agent_dir: Path | str | None = None) -> Path:
     configured = os.environ.get("BLACKI_COST_LEDGER_PATH", "").strip()
     if configured:
         return Path(configured)
-    configured_agent_dir = os.environ.get("AGENT_DIR", "").strip()
-    base = Path(agent_dir) if agent_dir is not None else Path(configured_agent_dir)
-    if agent_dir is None and not configured_agent_dir:
-        base = Path(__file__).resolve().parent.parent
+    configured_agent_dir = str(agent_dir).strip() if agent_dir is not None else ""
+    base = Path(configured_agent_dir) if configured_agent_dir else agent_root()
     return base / ".adk" / "costs.db"
 
 

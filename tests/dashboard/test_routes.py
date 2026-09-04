@@ -9,6 +9,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from blacki.dashboard.routes import create_dashboard_router
+from blacki.observability.ledger import (
+    UsageRecord,
+    default_usage_ledger_path,
+    read_usage_ledger,
+    write_usage_record,
+)
 from blacki.utils.config import ServerEnv
 
 
@@ -242,6 +248,59 @@ def test_default_store_uses_session_db_log_dir_and_app_name(tmp_path: Path) -> N
         tmp_path / ".adk" / "tools.db",
         tmp_path / ".adk" / "costs.db",
     )
+
+
+@pytest.mark.parametrize("configured_override", [None, "override.db"])
+def test_dashboard_reads_the_writer_ledger_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured_override: str | None,
+) -> None:
+    """The dashboard and cost writer must resolve one configured ledger path."""
+    agent_dir = tmp_path / "agent"
+    monkeypatch.setenv("AGENT_DIR", str(agent_dir))
+    if configured_override is None:
+        monkeypatch.delenv("BLACKI_COST_LEDGER_PATH", raising=False)
+    else:
+        monkeypatch.setenv(
+            "BLACKI_COST_LEDGER_PATH", str(tmp_path / configured_override)
+        )
+
+    env = _env(agent_dir)
+    writer_path = default_usage_ledger_path()
+    dashboard_path = default_usage_ledger_path(env.agent_dir)
+    write_usage_record(
+        writer_path,
+        UsageRecord(
+            dedupe_key="dashboard-path",
+            observed_at=100.0,
+            user_id="user-1",
+            session_id="session-1",
+            invocation_id="invocation-1",
+            model="test-model",
+            provider_response_id="response-1",
+            input_tokens=2,
+            output_tokens=3,
+            total_tokens=5,
+            cost_usd=0.01,
+            upstream_cost_usd=None,
+            estimated_cost_usd=None,
+            cost_kind="reported",
+            cost_source="provider_usage",
+        ),
+    )
+
+    snapshot = read_usage_ledger(
+        dashboard_path,
+        selected_since=0.0,
+        selected_until=200.0,
+        month_start=0.0,
+        now=200.0,
+    )
+
+    assert writer_path == dashboard_path
+    assert snapshot.available is True
+    assert snapshot.cumulative.records == 1
 
 
 def test_real_store_degrades_cleanly_when_local_records_are_missing(

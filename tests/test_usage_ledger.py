@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from blacki.usage_ledger import (
+from blacki.config.paths import package_root
+from blacki.observability.ledger import (
     COST_LEDGER_WARNING,
     UsageRecord,
     _fixed_cost,
@@ -170,6 +171,64 @@ def test_default_ledger_path_honors_explicit_environment(
 
     monkeypatch.delenv("BLACKI_COST_LEDGER_PATH")
     assert default_usage_ledger_path(tmp_path) == tmp_path / ".adk" / "costs.db"
+
+
+@pytest.mark.parametrize("blank_agent_dir", ["", "   "])
+def test_default_ledger_path_ignores_blank_explicit_agent_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    blank_agent_dir: str,
+) -> None:
+    """Blank dashboard overrides must use the stable configured root."""
+    monkeypatch.delenv("BLACKI_COST_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("AGENT_DIR", raising=False)
+
+    assert default_usage_ledger_path(blank_agent_dir) == (
+        package_root().parent / ".adk" / "costs.db"
+    )
+
+
+def test_default_ledger_path_uses_stable_agent_root_after_relocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relocating the ledger module must not move the default database."""
+    monkeypatch.delenv("BLACKI_COST_LEDGER_PATH", raising=False)
+    monkeypatch.delenv("AGENT_DIR", raising=False)
+
+    assert default_usage_ledger_path() == package_root().parent / ".adk" / "costs.db"
+
+
+def test_ledger_write_preserves_existing_schema(tmp_path: Path) -> None:
+    """The relocated writer must keep every existing ledger column."""
+    path = tmp_path / "costs.db"
+    write_usage_record(path, _record("schema", timestamp=100, cost=0.01))
+
+    connection = sqlite3.connect(path)
+    try:
+        columns = [
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(llm_usage_ledger)")
+        ]
+    finally:
+        connection.close()
+
+    assert columns == [
+        "dedupe_key",
+        "observed_at",
+        "user_id",
+        "session_id",
+        "invocation_id",
+        "model",
+        "provider_response_id",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost_nano_usd",
+        "upstream_cost_nano_usd",
+        "estimated_cost_nano_usd",
+        "cost_kind",
+        "cost_source",
+        "currency",
+    ]
 
 
 def test_ledger_defensive_helpers_cover_invalid_values_and_filters(
