@@ -14,9 +14,12 @@ from google.genai.types import Content, FunctionCall, Part
 
 import blacki.callbacks as callbacks_module
 from blacki.callbacks import (
+    block_telegram_tool_retry,
+    clear_telegram_tool_failure,
     notify_telegram_after_agent,
     notify_telegram_after_model,
     notify_telegram_before_tool,
+    recover_telegram_tool_error,
     reset_telegram_tool_notify_rate_limiter_for_tests,
     telegram_live_tool_progress_enabled,
 )
@@ -53,6 +56,73 @@ def test_live_progress_requires_configured_telegram(
     monkeypatch.setenv("TELEGRAM_TOOL_NOTIFICATIONS", "false")
     monkeypatch.setenv("TELEGRAM_TOOL_PROGRESS_MODE", "off")
     assert telegram_live_tool_progress_enabled() is True
+
+
+def test_telegram_tool_failure_becomes_a_recoverable_result() -> None:
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+
+    result = recover_telegram_tool_error(
+        cast(BaseTool, MockBaseTool("restore_user_file")),
+        {"object_id": "opaque"},
+        cast(ToolContext, context),
+        RuntimeError("sandbox endpoint unavailable"),
+    )
+
+    assert result == {
+        "status": "error",
+        "error": (
+            "The restore_user_file tool is unavailable right now. "
+            "Do not retry it in this turn. Continue without it when possible "
+            "and explain the limitation to the user."
+        ),
+    }
+
+
+def test_telegram_tool_failure_is_suppressed_for_the_current_invocation() -> None:
+    context = MockToolContext(
+        invocation_id="turn-1",
+        state=MockState({"telegram_chat_id": "42"}),
+    )
+    tool = cast(BaseTool, MockBaseTool("restore_user_file"))
+
+    clear_telegram_tool_failure(cast(CallbackContext, context))
+    recover_telegram_tool_error(tool, {}, cast(ToolContext, context), RuntimeError())
+    blocked = block_telegram_tool_retry(
+        tool,
+        {},
+        cast(ToolContext, context),
+    )
+
+    assert blocked == {
+        "status": "error",
+        "error": (
+            "The restore_user_file tool already failed in this turn. "
+            "Do not call it again. Continue without it when possible "
+            "and explain the limitation to the user."
+        ),
+    }
+
+    clear_telegram_tool_failure(cast(CallbackContext, context))
+    assert block_telegram_tool_retry(tool, {}, cast(ToolContext, context)) is None
+
+
+def test_telegram_tool_failure_recovery_skips_non_telegram_sessions() -> None:
+    result = recover_telegram_tool_error(
+        cast(BaseTool, MockBaseTool("restore_user_file")),
+        {},
+        cast(ToolContext, MockToolContext(state=MockState({}))),
+        RuntimeError("sandbox endpoint unavailable"),
+    )
+
+    assert result is None
+    assert (
+        block_telegram_tool_retry(
+            cast(BaseTool, MockBaseTool("restore_user_file")),
+            {},
+            cast(ToolContext, MockToolContext(state=MockState({}))),
+        )
+        is None
+    )
 
 
 def test_telegram_config_ignores_removed_progress_options() -> None:
