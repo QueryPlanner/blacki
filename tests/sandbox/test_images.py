@@ -14,11 +14,11 @@ from google.adk.plugins.multimodal_tool_results_plugin import PARTS_RETURNED_BY_
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
-from blacki.sandbox.images import (
+from blacki.sandbox.images import SandboxMultimodalToolResultsPlugin
+from blacki.tools.sandbox_images import (
     MAX_IMAGE_BYTES,
     MAX_IMAGE_DIMENSION,
     MAX_IMAGE_PIXELS,
-    SandboxMultimodalToolResultsPlugin,
     _inspect_image_bytes,
     _normalize_sandbox_path,
     _validate_dimensions,
@@ -274,7 +274,7 @@ def test_inspect_image_bytes_rejects_empty_and_oversized_data() -> None:
     with pytest.raises(ValueError, match="empty"):
         _inspect_image_bytes(b"")
     with (
-        patch("blacki.sandbox.images.MAX_IMAGE_BYTES", 4),
+        patch("blacki.tools.sandbox_images.MAX_IMAGE_BYTES", 4),
         pytest.raises(ValueError, match="byte limit"),
     ):
         _inspect_image_bytes(b"12345")
@@ -307,7 +307,7 @@ async def test_sandbox_view_image_returns_separate_visual_parts() -> None:
     manager, sandbox = _sandbox_manager(_png_bytes())
     context = SimpleNamespace(state={})
 
-    with patch("blacki.sandbox.images.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
         result = await sandbox_view_image("uploads/photo.png", cast(Any, context))
 
     assert isinstance(result, list)
@@ -326,7 +326,7 @@ async def test_sandbox_view_image_uses_reconnected_sandbox_for_restored_file() -
     state = {"__sandbox_id__": "restored-sandbox"}
     context = SimpleNamespace(state=state)
 
-    with patch("blacki.sandbox.images.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
         result = await sandbox_view_image(
             "/workspace/uploads/restored-photo.png", cast(Any, context)
         )
@@ -352,7 +352,7 @@ async def test_sandbox_view_image_rejects_paths_outside_workspace(path: str) -> 
     manager = MagicMock()
     context = SimpleNamespace(state={})
 
-    with patch("blacki.sandbox.images.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
         result = await sandbox_view_image(path, cast(Any, context))
 
     assert isinstance(result, dict)
@@ -373,7 +373,7 @@ async def test_sandbox_view_image_handles_sandbox_and_file_errors() -> None:
         return_value={"sandbox": None, "error": "Sandbox is disabled"}
     )
     with patch(
-        "blacki.sandbox.images.get_sandbox_manager", return_value=disabled_manager
+        "blacki.tools.sandbox_images.get_sandbox_manager", return_value=disabled_manager
     ):
         disabled = await sandbox_view_image("photo.png", cast(Any, context))
     assert isinstance(disabled, dict)
@@ -386,7 +386,7 @@ async def test_sandbox_view_image_handles_sandbox_and_file_errors() -> None:
     missing_manager, missing_sandbox = _sandbox_manager(_png_bytes())
     missing_sandbox.files.read_bytes.side_effect = FileNotFoundError
     with patch(
-        "blacki.sandbox.images.get_sandbox_manager", return_value=missing_manager
+        "blacki.tools.sandbox_images.get_sandbox_manager", return_value=missing_manager
     ):
         missing = await sandbox_view_image("photo.png", cast(Any, context))
     assert isinstance(missing, dict)
@@ -395,7 +395,7 @@ async def test_sandbox_view_image_handles_sandbox_and_file_errors() -> None:
     failed_manager, failed_sandbox = _sandbox_manager(_png_bytes())
     failed_sandbox.files.read_bytes.side_effect = RuntimeError("secret")
     with patch(
-        "blacki.sandbox.images.get_sandbox_manager", return_value=failed_manager
+        "blacki.tools.sandbox_images.get_sandbox_manager", return_value=failed_manager
     ):
         failed = await sandbox_view_image("photo.png", cast(Any, context))
     assert isinstance(failed, dict)
@@ -408,7 +408,7 @@ async def test_sandbox_view_image_reports_invalid_image() -> None:
     manager, _ = _sandbox_manager(b"not an image")
     context = SimpleNamespace(state={})
 
-    with patch("blacki.sandbox.images.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
         result = await sandbox_view_image("photo.png", cast(Any, context))
 
     assert isinstance(result, dict)
@@ -427,7 +427,7 @@ async def test_multimodal_plugin_keeps_multiple_sandbox_images_independent() -> 
     tool_context = SimpleNamespace(state=state)
     tool = SimpleNamespace(name="sandbox_view_image")
 
-    with patch("blacki.sandbox.images.get_sandbox_manager", return_value=manager):
+    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
         first_result = await sandbox_view_image(
             "uploads/first.png", cast(Any, tool_context)
         )

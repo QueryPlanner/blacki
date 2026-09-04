@@ -9,6 +9,15 @@ import aiosqlite
 import pytest
 from google.adk.tools import ToolContext
 
+from blacki.tools.workouts import (
+    advance_training_cycle,
+    get_todays_training,
+    get_training_history,
+    get_training_metrics,
+    log_training,
+    set_training_program,
+    update_training_metrics,
+)
 from blacki.workouts.storage import (
     SetDetail,
     SqliteWorkoutStorage,
@@ -18,15 +27,6 @@ from blacki.workouts.storage import (
     TrainingProgramState,
     WorkoutExercise,
     WorkoutSession,
-)
-from blacki.workouts.tools import (
-    advance_training_cycle,
-    get_todays_training,
-    get_training_history,
-    get_training_metrics,
-    log_training,
-    set_training_program,
-    update_training_metrics,
 )
 
 
@@ -273,7 +273,7 @@ class TestTrainingTools:
     """Tests for the high-level training tools and workflows."""
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_set_training_program_success(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -317,7 +317,7 @@ class TestTrainingTools:
         mock_storage.add_training_metrics.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_set_training_program_validations(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -388,7 +388,7 @@ class TestTrainingTools:
         ] == "error"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_get_todays_training_no_program(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -401,7 +401,7 @@ class TestTrainingTools:
         assert result["status"] == "not_configured"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_get_todays_training_day_six_swap(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -461,7 +461,7 @@ class TestTrainingTools:
         assert "swapping Day 6 and Day 7" in result["recommendations"][0]["message"]
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_log_training_success_and_advancement(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -517,7 +517,7 @@ class TestTrainingTools:
         mock_storage.advance_training_state.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_advance_training_cycle_errors(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -535,7 +535,7 @@ class TestTrainingTools:
         assert result["status"] == "not_configured"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_get_training_history_tool(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -551,7 +551,7 @@ class TestTrainingTools:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_get_and_update_metrics_tools(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -600,7 +600,7 @@ class TestTrainingRegistryAndPrompt:
 
     def test_training_tools_built_by_registry(self) -> None:
         """Registry build_tools must include all 7 new tools."""
-        from blacki.registry import ToolConfig, build_tools
+        from blacki.tools.registry import ToolConfig, build_tools
 
         config = ToolConfig(sqlite_path="/tmp/test_tools.db")
         tools = build_tools(config)
@@ -825,7 +825,7 @@ class TestTrainingEdgeCasesAndCoverage:
         assert len(history) == 0
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_tool_log_training_parsing_shorthands(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -862,7 +862,7 @@ class TestTrainingEdgeCasesAndCoverage:
         assert result["status"] == "error"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_tool_log_training_metrics_parsing_branches(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -908,7 +908,7 @@ class TestTrainingEdgeCasesAndCoverage:
         ] == "error"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_get_todays_training_day_six_swap_branches(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -1115,12 +1115,12 @@ class TestFullTestCoverageFillers:
             await storage.get_training_history("user1", limit=1)
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_defensive_type_validations(
         self, mock_get_storage, mock_tool_context
     ) -> None:
         """Test defensive type checking added for LLM-provided arguments in tools."""
-        from blacki.workouts.tools import (
+        from blacki.tools.workouts import (
             log_training,
             set_training_program,
             update_training_metrics,
@@ -1178,7 +1178,7 @@ class TestFullTestCoverageFillers:
         assert "must be a dictionary" in res["message"]
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_set_training_program_additional_validations(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -1244,7 +1244,7 @@ class TestFullTestCoverageFillers:
         assert result["status"] == "success"
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_log_training_additional_validations(
         self, mock_get_storage, mock_tool_context
     ) -> None:
@@ -1296,7 +1296,7 @@ class TestFullTestCoverageFillers:
         assert logged_session.cycle_day == 3
 
     @pytest.mark.asyncio
-    @patch("blacki.workouts.tools.get_storage")
+    @patch("blacki.tools.workouts.get_storage")
     async def test_advance_training_cycle_tool_success(
         self, mock_get_storage, mock_tool_context
     ) -> None:

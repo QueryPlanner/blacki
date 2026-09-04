@@ -101,3 +101,8 @@ def load_sandbox_config() -> SandboxConfig:
 
 
 SANDBOX_STATE_KEY: Final[str] = "__sandbox_id__"
+
+
+def sandbox_enabled() -> bool:
+    """Return whether sandbox tools are enabled."""
+    return load_sandbox_config().enabled

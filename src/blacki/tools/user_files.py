@@ -7,10 +7,8 @@ from typing import Any
 from google.adk.tools import FunctionTool, ToolContext
 
 from blacki.sandbox.manager import get_sandbox_manager
-
-from .service import get_user_file_service, sanitize_display_name
-
-SENDER_STATE_KEY = "temp:telegram_sender_user_id"
+from blacki.user_files.config import SENDER_STATE_KEY
+from blacki.user_files.service import get_user_file_service, sanitize_display_name
 
 
 def _sender_id(tool_context: ToolContext) -> str:

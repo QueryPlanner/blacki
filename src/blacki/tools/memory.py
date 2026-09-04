@@ -7,7 +7,7 @@ from typing import Any
 
 from google.adk.tools import ToolContext
 
-from .config import (
+from blacki.memory.config import (
     get_memory_client,
     get_memory_client_error,
     get_search_limit,

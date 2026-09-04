@@ -14,7 +14,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiosqlite
 import pytest
 
-from blacki.user_files.config import R2FileConfig, load_r2_file_config
+from blacki.tools.user_files import (
+    create_user_file_tools,
+    delete_user_file,
+    list_user_files,
+    restore_user_file,
+)
+from blacki.user_files.config import SENDER_STATE_KEY, R2FileConfig, load_r2_file_config
 from blacki.user_files.plugin import UserFilesPromptPlugin
 from blacki.user_files.service import (
     R2ObjectStore,
@@ -25,13 +31,6 @@ from blacki.user_files.service import (
     sanitize_display_name,
 )
 from blacki.user_files.storage import SqliteUserFileStorage, UserFileRecord
-from blacki.user_files.tools import (
-    SENDER_STATE_KEY,
-    create_user_file_tools,
-    delete_user_file,
-    list_user_files,
-    restore_user_file,
-)
 
 
 class FakeObjectStore:
@@ -440,8 +439,8 @@ async def test_tools_enforce_sender_and_materialize_verified_bytes() -> None:
         return_value={"sandbox": sandbox, "error": None}
     )
     with (
-        patch("blacki.user_files.tools.get_user_file_service", return_value=service),
-        patch("blacki.user_files.tools.get_sandbox_manager", return_value=manager),
+        patch("blacki.tools.user_files.get_user_file_service", return_value=service),
+        patch("blacki.tools.user_files.get_sandbox_manager", return_value=manager),
     ):
         listed = await list_user_files("report", 10, context)
         restored = await restore_user_file("opaque", context)
@@ -456,14 +455,14 @@ async def test_tools_enforce_sender_and_materialize_verified_bytes() -> None:
         await list_user_files("", 10, context)
     context.state = {SENDER_STATE_KEY: "sender"}
     service.restore.side_effect = FileNotFoundError("missing")
-    with patch("blacki.user_files.tools.get_user_file_service", return_value=service):
+    with patch("blacki.tools.user_files.get_user_file_service", return_value=service):
         missing = await restore_user_file("missing", context)
     assert missing["status"] == "not_found"
     service.restore.side_effect = None
     manager.get_or_create_sandbox.return_value = {"sandbox": None, "error": "down"}
     with (
-        patch("blacki.user_files.tools.get_user_file_service", return_value=service),
-        patch("blacki.user_files.tools.get_sandbox_manager", return_value=manager),
+        patch("blacki.tools.user_files.get_user_file_service", return_value=service),
+        patch("blacki.tools.user_files.get_sandbox_manager", return_value=manager),
         pytest.raises(RuntimeError, match="down"),
     ):
         await restore_user_file("opaque", context)

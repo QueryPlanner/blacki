@@ -4,14 +4,14 @@ from unittest.mock import AsyncMock, create_autospec, patch
 import pytest
 from google.adk.tools import ToolContext
 
-from blacki.workouts.storage import WorkoutSession
-from blacki.workouts.tools import (
+from blacki.tools.workouts import (
     delete_workout,
     get_last_workout,
     get_todays_workout,
     log_workout,
     set_workout_split,
 )
+from blacki.workouts.storage import WorkoutSession
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def mock_tool_context():
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
+@patch("blacki.tools.workouts.get_storage")
 async def test_log_workout_success(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -42,7 +42,7 @@ async def test_log_workout_success(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
+@patch("blacki.tools.workouts.get_storage")
 async def test_log_workout_includes_previous_session_comparison(
     mock_get_storage,
     mock_tool_context,
@@ -96,7 +96,7 @@ async def test_log_workout_validation(mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
+@patch("blacki.tools.workouts.get_storage")
 async def test_get_last_workout(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -117,7 +117,7 @@ async def test_get_last_workout(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
+@patch("blacki.tools.workouts.get_storage")
 async def test_delete_workout(mock_get_storage, mock_tool_context) -> None:
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage
@@ -130,7 +130,7 @@ async def test_delete_workout(mock_get_storage, mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_preferences_storage")
+@patch("blacki.tools.workouts.get_preferences_storage")
 async def test_set_workout_split(mock_get_pref, mock_tool_context) -> None:
     mock_pref = AsyncMock()
     mock_get_pref.return_value = mock_pref
@@ -173,9 +173,9 @@ async def test_set_workout_split_validation(mock_tool_context) -> None:
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
-@patch("blacki.workouts.tools.get_preferences_storage")
-@patch("blacki.workouts.tools.now_utc")
+@patch("blacki.tools.workouts.get_storage")
+@patch("blacki.tools.workouts.get_preferences_storage")
+@patch("blacki.tools.workouts.now_utc")
 async def test_get_todays_workout(
     mock_now, mock_get_pref, mock_get_storage, mock_tool_context
 ) -> None:
@@ -210,8 +210,8 @@ async def test_get_todays_workout(
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_preferences_storage")
-@patch("blacki.workouts.tools.now_utc")
+@patch("blacki.tools.workouts.get_preferences_storage")
+@patch("blacki.tools.workouts.now_utc")
 async def test_get_todays_workout_rest_day(
     mock_now, mock_get_pref, mock_tool_context
 ) -> None:
@@ -233,7 +233,7 @@ async def test_get_todays_workout_rest_day(
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
+@patch("blacki.tools.workouts.get_storage")
 async def test_log_workout_shorthand_sets(mock_get_storage, mock_tool_context):
     mock_storage = AsyncMock()
     mock_get_storage.return_value = mock_storage

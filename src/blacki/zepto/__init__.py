@@ -5,7 +5,6 @@ from .client import (
     ZEPTO_MCP_URL,
     McpRemoteCredentialStore,
     ZeptoCredentialError,
-    create_zepto_toolset,
 )
 
 __all__ = [
@@ -13,5 +12,4 @@ __all__ = [
     "ZEPTO_MCP_URL",
     "McpRemoteCredentialStore",
     "ZeptoCredentialError",
-    "create_zepto_toolset",
 ]

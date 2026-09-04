@@ -18,7 +18,13 @@ from blacki.declarative_db.plugin import DeclarativeDbPlugin, StoredPreferencesP
 from blacki.declarative_db.storage import (
     SqliteDeclarativeDbStorage,
 )
-from blacki.declarative_db.tools import (
+from blacki.declarative_db.validation import (
+    parse_user_preferences,
+    sanitize_schema_metadata,
+    validate_column_type,
+    validate_identifier,
+)
+from blacki.tools.declarative_db import (
     create_custom_table,
     create_query_template,
     delete_custom_instruction_override,
@@ -26,12 +32,6 @@ from blacki.declarative_db.tools import (
     execute_query_template,
     list_custom_tables_and_templates,
     set_custom_instruction_override,
-)
-from blacki.declarative_db.validation import (
-    parse_user_preferences,
-    sanitize_schema_metadata,
-    validate_column_type,
-    validate_identifier,
 )
 
 # ==============================================================================
@@ -1149,7 +1149,7 @@ class TestAgentTools:
 
         # Patch get_declarative_db_storage in the tools module
         self.patcher = patch(
-            "blacki.declarative_db.tools.get_declarative_db_storage", patcher
+            "blacki.tools.declarative_db.get_declarative_db_storage", patcher
         )
         self.patcher.start()
         yield

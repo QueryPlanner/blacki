@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, create_autospec, patch
 import pytest
 from google.adk.tools import ToolContext
 
+from blacki.tools.workouts import log_workout
 from blacki.workouts.storage import WorkoutExercise, WorkoutSession
-from blacki.workouts.tools import log_workout
 
 
 @pytest.fixture
@@ -17,8 +17,8 @@ def mock_tool_context():
 
 
 @pytest.mark.asyncio
-@patch("blacki.workouts.tools.get_storage")
-@patch("blacki.workouts.tools.parse_date")
+@patch("blacki.tools.workouts.get_storage")
+@patch("blacki.tools.workouts.parse_date")
 async def test_log_workout_append(
     mock_parse_date, mock_get_storage, mock_tool_context
 ) -> None:

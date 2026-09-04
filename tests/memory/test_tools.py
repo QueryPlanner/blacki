@@ -9,7 +9,7 @@ from conftest import MockState, MockToolContext
 from google.adk.tools import ToolContext
 
 from blacki.memory.config import reset_memory_client
-from blacki.memory.tools import (
+from blacki.tools.memory import (
     delete_memory,
     get_all_memories,
     get_memory,
@@ -45,7 +45,7 @@ class TestSaveMemory:
         mock_client = MagicMock()
         mock_client.add.return_value = {"id": "mem_123", "event": "ADD"}
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await save_memory("private-shopping-memory", tool_context)
 
         assert result["status"] == "success"
@@ -62,7 +62,7 @@ class TestSaveMemory:
 
         mock_client = MagicMock()
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await save_memory("   ", tool_context)
 
         assert result["status"] == "error"
@@ -74,7 +74,7 @@ class TestSaveMemory:
         monkeypatch.delenv("MEM0_API_KEY", raising=False)
         tool_context = self._tool_context()
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=None):
+        with patch("blacki.tools.memory.get_memory_client", return_value=None):
             result = await save_memory("test memory", tool_context)
 
         assert result["status"] == "error"
@@ -94,7 +94,7 @@ class TestSaveMemory:
         mock_client = MagicMock()
         mock_client.add.return_value = {"id": "mem_123"}
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await save_memory("test", tool_context)
 
         assert result["status"] == "success"
@@ -137,7 +137,7 @@ class TestSearchMemory:
             ]
         }
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await search_memory("private-shopping-query", tool_context)
 
         assert result["status"] == "success"
@@ -156,7 +156,7 @@ class TestSearchMemory:
 
         mock_client = MagicMock()
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await search_memory("   ", tool_context)
 
         assert result["status"] == "error"
@@ -173,7 +173,7 @@ class TestSearchMemory:
         mock_client = MagicMock()
         mock_client.search.return_value = {"results": []}
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await search_memory("nonexistent", tool_context)
 
         assert result["status"] == "success"
@@ -208,7 +208,7 @@ class TestGetAllMemories:
             ]
         }
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await get_all_memories(tool_context, page=1, page_size=10)
 
         assert result["status"] == "success"
@@ -243,7 +243,7 @@ class TestGetMemory:
             "user_id": "test_user",
         }
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await get_memory("mem_123", tool_context)
 
         assert result["status"] == "success"
@@ -259,7 +259,7 @@ class TestGetMemory:
         mock_client = MagicMock()
         mock_client.get.return_value = None
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await get_memory("nonexistent", tool_context)
 
         assert result["status"] == "error"
@@ -293,7 +293,7 @@ class TestUpdateMemory:
             "user_id": "test_user",
         }
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await update_memory("mem_123", "Updated text", tool_context)
 
         assert result["status"] == "success"
@@ -328,7 +328,7 @@ class TestDeleteMemory:
             "user_id": "test_user",
         }
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await delete_memory("mem_123", tool_context)
 
         assert result["status"] == "success"
@@ -344,7 +344,7 @@ class TestDeleteMemory:
 
         mock_client = MagicMock()
 
-        with patch("blacki.memory.tools.get_memory_client", return_value=mock_client):
+        with patch("blacki.tools.memory.get_memory_client", return_value=mock_client):
             result = await delete_memory("   ", tool_context)
 
         assert result["status"] == "error"
