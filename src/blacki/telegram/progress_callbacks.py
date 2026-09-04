@@ -1,8 +1,7 @@
-"""Agent lifecycle callback functions for monitoring.
+"""Telegram live progress callbacks for status updates.
 
-This module provides callback functions that execute at various stages of the
-agent lifecycle. These callbacks enable comprehensive logging and optional
-Telegram tool notifications for Telegram-backed sessions.
+This module manages Telegram status delivery, rate limiting, and client
+lifecycle for Telegram-backed sessions.
 """
 
 import asyncio
@@ -10,24 +9,24 @@ import logging
 import os
 import re
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 from google.adk.agents.callback_context import CallbackContext
-from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
-from .llm_costs import attach_cost_metadata, begin_cost_capture
-from .privacy import is_private_tool, private_tool_privacy_enabled
-from .telegram.api import TelegramApiClient, TelegramApiError
-from .telegram.formatting import format_for_telegram
-from .telegram.progress import describe_tool
-from .telegram.streaming import is_message_not_modified_error
-from .telegram.types import ParseMode
+from ..security.tool_privacy import is_private_tool
+from .api import TelegramApiClient, TelegramApiError
+from .formatting import format_for_telegram
+from .progress import describe_tool
+from .streaming import is_message_not_modified_error
+from .types import ParseMode
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("blacki.callbacks")
 
 # Per-chat monotonic timestamps for rate limiting (bounded; see _touch_rate_limit).
 
@@ -85,7 +84,7 @@ async def _get_or_create_live_status_session(
         return _LIVE_STATUS_SESSIONS[session_key]
 
 
-# Reuse one HTTP client per bot token (narrow lock only for swap / teardown).
+# Reuse one HTTP client per bot token and serialize use with lifecycle changes.
 _NOTIFY_CLIENT_LOCK = asyncio.Lock()
 _shared_notify_client: TelegramApiClient | None = None
 _shared_notify_token: str | None = None
@@ -108,6 +107,19 @@ def _evict_oldest_live_status_sessions(
     sorted_keys = sorted(storage, key=lambda key: storage[key].last_sent_time)
     for key in sorted_keys[:count]:
         del storage[key]
+
+
+async def _record_notification_timestamp(chat_key: str, now: float) -> None:
+    """Record a successful send while keeping the rate-limit map bounded."""
+    async with _INTERMEDIATE_NOTIFY_LOCK:
+        map_is_full = (
+            len(_INTERMEDIATE_NOTIFY_LAST) >= _MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES
+            and chat_key not in _INTERMEDIATE_NOTIFY_LAST
+        )
+        if map_is_full:
+            evict_count = max(1, _MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES // 8)
+            _evict_oldest_rate_limit_entries(_INTERMEDIATE_NOTIFY_LAST, evict_count)
+        _INTERMEDIATE_NOTIFY_LAST[chat_key] = now
 
 
 async def _rate_limit_allows_notification(
@@ -235,19 +247,37 @@ async def close_shared_notify_client() -> None:
                 logger.exception("Error closing shared Telegram notify client")
         _shared_notify_client = None
         _shared_notify_token = None
+        async with _INTERMEDIATE_NOTIFY_LOCK:
+            _INTERMEDIATE_NOTIFY_LAST.clear()
+        async with _LIVE_STATUS_LOCK:
+            _LIVE_STATUS_SESSIONS.clear()
+
+
+async def _ensure_shared_telegram_notify_client(token: str) -> TelegramApiClient:
+    """Create or swap the shared client while its lock is held."""
+    global _shared_notify_client, _shared_notify_token
+    if _shared_notify_client is not None and _shared_notify_token == token:
+        return _shared_notify_client
+    if _shared_notify_client is not None:
+        await _shared_notify_client.close()
+    _shared_notify_client = TelegramApiClient(token)
+    _shared_notify_token = token
+    return _shared_notify_client
 
 
 async def _shared_telegram_notify_client(token: str) -> TelegramApiClient:
     """Return a shared ``TelegramApiClient`` for this bot token (create or swap)."""
-    global _shared_notify_client, _shared_notify_token
     async with _NOTIFY_CLIENT_LOCK:
-        if _shared_notify_client is not None and _shared_notify_token == token:
-            return _shared_notify_client
-        if _shared_notify_client is not None:
-            await _shared_notify_client.close()
-        _shared_notify_client = TelegramApiClient(token)
-        _shared_notify_token = token
-        return _shared_notify_client
+        return await _ensure_shared_telegram_notify_client(token)
+
+
+@asynccontextmanager
+async def _shared_telegram_notify_client_lease(
+    token: str,
+) -> AsyncIterator[TelegramApiClient]:
+    """Hold the client lock across one network operation."""
+    async with _NOTIFY_CLIENT_LOCK:
+        yield await _ensure_shared_telegram_notify_client(token)
 
 
 async def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
@@ -257,6 +287,21 @@ async def reset_telegram_tool_notify_rate_limiter_for_tests() -> None:
     async with _LIVE_STATUS_LOCK:
         _LIVE_STATUS_SESSIONS.clear()
     _schedule_shared_notify_client_close_for_tests()
+
+
+async def clear_telegram_progress_for_conversation(
+    chat_id: int,
+    message_thread_id: int | None,
+) -> None:
+    """Remove live progress state after a Telegram turn exits unexpectedly."""
+    async with _LIVE_STATUS_LOCK:
+        stale_keys = [
+            key
+            for key in _LIVE_STATUS_SESSIONS
+            if key[0] == chat_id and key[1] == message_thread_id
+        ]
+        for key in stale_keys:
+            _LIVE_STATUS_SESSIONS.pop(key, None)
 
 
 def _parse_optional_int(value: str | int | None) -> int | None:
@@ -309,21 +354,20 @@ async def notify_telegram_before_tool(
             label = describe_tool(tool.name, args, private=is_private_tool(tool))
 
         if session.message_id is None:
-            client = await _shared_telegram_notify_client(token)
-            message_id = await _safe_send_status_message(
-                client,
-                chat_id=chat_id,
-                text=label,
-                message_thread_id=thread_id,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
+            async with _shared_telegram_notify_client_lease(token) as client:
+                message_id = await _safe_send_status_message(
+                    client,
+                    chat_id=chat_id,
+                    text=label,
+                    message_thread_id=thread_id,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
             if message_id is not None:
                 session.message_id = message_id
                 session.last_sent_text = label
                 now = time.monotonic()
                 session.last_sent_time = now
-                async with _INTERMEDIATE_NOTIFY_LOCK:
-                    _INTERMEDIATE_NOTIFY_LAST[str(chat_id)] = now
+                await _record_notification_timestamp(str(chat_id), now)
         else:
             if label == session.last_sent_text:
                 return None
@@ -345,14 +389,14 @@ async def notify_telegram_before_tool(
                 )
                 return None
 
-            client = await _shared_telegram_notify_client(token)
-            success = await _safe_edit_message_text(
-                client,
-                chat_id=chat_id,
-                message_id=session.message_id,
-                text=label,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
+            async with _shared_telegram_notify_client_lease(token) as client:
+                success = await _safe_edit_message_text(
+                    client,
+                    chat_id=chat_id,
+                    message_id=session.message_id,
+                    text=label,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
             if success:
                 session.last_sent_text = label
                 session.last_sent_time = now
@@ -439,245 +483,13 @@ async def notify_telegram_after_agent(
         if not token:
             return None
 
-        client = await _shared_telegram_notify_client(token)
-        elapsed = time.monotonic() - session.started_at
-        await _safe_edit_message_text(
-            client,
-            chat_id=chat_id,
-            message_id=session.message_id,
-            text=f"✓ Worked for {_format_elapsed_duration(elapsed)}",
-            parse_mode=ParseMode.MARKDOWN_V2,
-        )
+        async with _shared_telegram_notify_client_lease(token) as client:
+            elapsed = time.monotonic() - session.started_at
+            await _safe_edit_message_text(
+                client,
+                chat_id=chat_id,
+                message_id=session.message_id,
+                text=f"✓ Worked for {_format_elapsed_duration(elapsed)}",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
     return None
-
-
-class LoggingCallbacks:
-    """Provides comprehensive logging callbacks for ADK agent lifecycle events.
-
-    This class groups all agent lifecycle callback methods together and supports
-    logger injection following the strategy pattern. All callbacks are
-    non-intrusive and return None.
-
-    Attributes:
-        logger: Logger instance for recording agent lifecycle events.
-    """
-
-    def __init__(self, logger: logging.Logger | None = None) -> None:
-        """Initialize logging callbacks with optional logger.
-
-        Args:
-            logger: Optional logger instance. If not provided, creates one
-                   using the module name.
-        """
-        if logger is None:
-            logger = logging.getLogger(self.__class__.__module__)
-        self.logger = logger
-
-    def before_agent(self, callback_context: CallbackContext) -> None:
-        """Callback executed before agent processing begins.
-
-        Args:
-            callback_context (CallbackContext): Context containing agent name,
-                invocation ID, state, and user content.
-        """
-        self.logger.info(
-            f"*** Starting agent '{callback_context.agent_name}' "
-            f"with invocation_id '{callback_context.invocation_id}' ***"
-        )
-        self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
-
-        if not private_tool_privacy_enabled() and (
-            user_content := callback_context.user_content
-        ):
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
-            self.logger.debug(f"User Content: {content_data}")
-
-        return None
-
-    def after_agent(self, callback_context: CallbackContext) -> None:
-        """Callback executed after agent processing completes.
-
-        Args:
-            callback_context (CallbackContext): Context containing agent name,
-                invocation ID, state, and user content.
-        """
-        self.logger.info(
-            f"*** Leaving agent '{callback_context.agent_name}' "
-            f"with invocation_id '{callback_context.invocation_id}' ***"
-        )
-        self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
-
-        if not private_tool_privacy_enabled() and (
-            user_content := callback_context.user_content
-        ):
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
-            self.logger.debug(f"User Content: {content_data}")
-
-        return None
-
-    def before_model(
-        self,
-        callback_context: CallbackContext,
-        llm_request: LlmRequest,
-    ) -> None:
-        """Callback executed before LLM model invocation.
-
-        Args:
-            callback_context (CallbackContext): Context containing agent name,
-                invocation ID, state, and user content.
-            llm_request (LlmRequest): The request being sent to the LLM model
-                containing message contents.
-        """
-        self.logger.info(
-            f"*** Before LLM call for agent '{callback_context.agent_name}' "
-            f"with invocation_id '{callback_context.invocation_id}' ***"
-        )
-        session = getattr(callback_context, "session", None)
-        begin_cost_capture(
-            user_id=getattr(callback_context, "user_id", None),
-            session_id=getattr(session, "id", None),
-            invocation_id=getattr(callback_context, "invocation_id", None),
-        )
-        self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
-
-        redact_content = private_tool_privacy_enabled()
-        if not redact_content and (user_content := callback_context.user_content):
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
-            self.logger.debug(f"User Content: {content_data}")
-
-        self.logger.debug(f"LLM request contains {len(llm_request.contents)} messages:")
-        if redact_content:
-            self.logger.debug("LLM request content redacted in private-tool mode")
-        else:
-            for i, content in enumerate(llm_request.contents, start=1):
-                self.logger.debug(
-                    f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
-                )
-
-        return None
-
-    def after_model(
-        self,
-        callback_context: CallbackContext,
-        llm_response: LlmResponse,
-    ) -> None:
-        """Callback executed after LLM model responds.
-
-        Args:
-            callback_context (CallbackContext): Context containing agent name,
-                invocation ID, state, and user content.
-            llm_response (LlmResponse): The response received from the LLM model.
-        """
-        self.logger.info(
-            f"*** After LLM call for agent '{callback_context.agent_name}' "
-            f"with invocation_id '{callback_context.invocation_id}' ***"
-        )
-        self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
-
-        redact_content = private_tool_privacy_enabled()
-        if not redact_content and (user_content := callback_context.user_content):
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
-            self.logger.debug(f"User Content: {content_data}")
-
-        if redact_content:
-            self.logger.debug("LLM response content redacted in private-tool mode")
-        elif llm_content := llm_response.content:
-            response_data = llm_content.model_dump(exclude_none=True, mode="json")
-            self.logger.debug(f"LLM response: {response_data}")
-
-        cost_observation = attach_cost_metadata(llm_response)
-        if cost_observation:
-            self.logger.debug(
-                "LLM cost captured: %s",
-                {
-                    key: cost_observation[key]
-                    for key in (
-                        "cost_usd",
-                        "upstream_cost_usd",
-                        "estimated_cost_usd",
-                        "cost_kind",
-                    )
-                    if key in cost_observation
-                },
-            )
-
-        return None
-
-    def before_tool(
-        self,
-        tool: BaseTool,
-        args: dict[str, Any],
-        tool_context: ToolContext,
-    ) -> None:
-        """Callback executed before tool invocation.
-
-        Args:
-            tool (BaseTool): The tool being invoked.
-            args (dict[str, Any]): Arguments being passed to the tool.
-            tool_context (ToolContext): Context containing agent name, invocation ID,
-                state, user content, and event actions.
-        """
-        self.logger.info(
-            f"*** Before invoking tool '{tool.name}' in agent "
-            f"'{tool_context.agent_name}' with invocation_id "
-            f"'{tool_context.invocation_id}' ***"
-        )
-        if private_tool_privacy_enabled():
-            self.logger.debug("Tool payload redacted in private-tool mode")
-            return None
-        if is_private_tool(tool):
-            self.logger.debug("Private tool payload redacted")
-            return None
-        self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
-
-        if content := tool_context.user_content:
-            self.logger.debug(
-                f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
-            )
-
-        actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
-        self.logger.debug(f"EventActions: {actions_data}")
-        self.logger.debug(f"args: {args}")
-
-        return None
-
-    def after_tool(
-        self,
-        tool: BaseTool,
-        args: dict[str, Any],
-        tool_context: ToolContext,
-        tool_response: dict[str, Any],
-    ) -> None:
-        """Callback executed after tool invocation completes.
-
-        Args:
-            tool (BaseTool): The tool that was invoked.
-            args (dict[str, Any]): Arguments that were passed to the tool.
-            tool_context (ToolContext): Context containing agent name, invocation ID,
-                state, user content, and event actions.
-            tool_response (dict[str, Any]): The response returned by the tool.
-        """
-        self.logger.info(
-            f"*** After invoking tool '{tool.name}' in agent "
-            f"'{tool_context.agent_name}' with invocation_id "
-            f"'{tool_context.invocation_id}' ***"
-        )
-        if private_tool_privacy_enabled():
-            self.logger.debug("Tool payload redacted in private-tool mode")
-            return None
-        if is_private_tool(tool):
-            self.logger.debug("Private tool payload redacted")
-            return None
-        self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
-
-        if content := tool_context.user_content:
-            self.logger.debug(
-                f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
-            )
-
-        actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
-        self.logger.debug(f"EventActions: {actions_data}")
-        self.logger.debug(f"args: {args}")
-        self.logger.debug(f"Tool response: {tool_response}")
-
-        return None

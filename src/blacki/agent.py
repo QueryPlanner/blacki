@@ -14,13 +14,6 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 
-from .callbacks import (
-    LoggingCallbacks,
-    notify_telegram_after_agent,
-    notify_telegram_after_model,
-    notify_telegram_before_tool,
-    telegram_live_tool_progress_enabled,
-)
 from .inference import (
     InferenceProfile,
     apply_inference_profile,
@@ -28,11 +21,8 @@ from .inference import (
     inference_profile_from_environment,
     load_inference_profile,
 )
-from .privacy import (
-    PrivacyAwareLoggingPlugin,
-    configure_private_tool_privacy,
-    private_tool_privacy_enabled,
-)
+from .observability.lifecycle import LoggingCallbacks
+from .observability.privacy_logging import PrivacyAwareLoggingPlugin
 from .prompt import (
     DomainPolicyPlugin,
     ResponsePolicyPlugin,
@@ -40,6 +30,16 @@ from .prompt import (
     return_global_instruction,
     return_instruction_root,
     return_instruction_task_worker,
+)
+from .security.tool_privacy import (
+    configure_private_tool_privacy,
+    private_tool_privacy_enabled,
+)
+from .telegram.progress_callbacks import (
+    notify_telegram_after_agent,
+    notify_telegram_after_model,
+    notify_telegram_before_tool,
+    telegram_live_tool_progress_enabled,
 )
 from .tools.registry import build_tool_config_from_env, build_tools
 
@@ -176,7 +176,7 @@ def _build_model() -> str | LiteLlm:
             litellm_kwargs: dict[str, Any] = {}
             if model_name.lower().startswith("openrouter/") and openrouter_api_key:
                 litellm_kwargs["api_key"] = openrouter_api_key
-            from .llm_costs import CostAwareLiteLLMClient
+            from .observability.costs import CostAwareLiteLLMClient
 
             litellm_kwargs["llm_client"] = CostAwareLiteLLMClient()
 

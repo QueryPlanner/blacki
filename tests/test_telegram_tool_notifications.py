@@ -1,5 +1,6 @@
 """Behavior tests for always-on live Telegram tool progress."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,16 +13,16 @@ from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 from google.genai.types import Content, FunctionCall, Part
 
-import blacki.callbacks as callbacks_module
-from blacki.callbacks import (
+import blacki.telegram.progress_callbacks as callbacks_module
+from blacki.telegram import TelegramConfig
+from blacki.telegram.api import TelegramApiError
+from blacki.telegram.progress_callbacks import (
     notify_telegram_after_agent,
     notify_telegram_after_model,
     notify_telegram_before_tool,
     reset_telegram_tool_notify_rate_limiter_for_tests,
     telegram_live_tool_progress_enabled,
 )
-from blacki.telegram import TelegramConfig
-from blacki.telegram.api import TelegramApiError
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +74,7 @@ def test_telegram_config_ignores_removed_progress_options() -> None:
 @pytest.mark.asyncio
 async def test_live_progress_is_inert_without_telegram_configuration() -> None:
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
-    with patch("blacki.callbacks.TelegramApiClient") as client_class:
+    with patch("blacki.telegram.progress_callbacks.TelegramApiClient") as client_class:
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "test"},
@@ -91,7 +92,9 @@ async def test_live_progress_skips_non_telegram_sessions(
     client = MagicMock()
     client.send_message = AsyncMock()
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "test"},
@@ -112,7 +115,9 @@ async def test_live_progress_uses_one_message_for_a_turn(
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
     context.invocation_id = "turn-1"
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "first"},
@@ -159,7 +164,9 @@ async def test_live_progress_uses_model_preamble_then_finishes(
     tool_context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
     tool_context.invocation_id = "turn-2"
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_after_model(context, response)
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("get_calorie_summary")),
@@ -184,7 +191,9 @@ async def test_live_progress_redacts_private_tool_arguments(
     client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("send_text_to_speech")),
             {"text": "private spoken content"},
@@ -205,7 +214,9 @@ async def test_live_progress_telegram_errors_do_not_block_tool(
     )
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "test"},
@@ -313,6 +324,34 @@ async def test_rate_limit_allows_notification_evicts_when_full() -> None:
 
 
 @pytest.mark.asyncio
+async def test_first_status_sends_keep_rate_limit_map_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Initial status sends must use the same bounded timestamp path as edits."""
+    configure_telegram(monkeypatch)
+    monkeypatch.setattr(callbacks_module, "_MAX_INTERMEDIATE_NOTIFY_RATE_ENTRIES", 2)
+    client = MagicMock()
+    client.send_message = AsyncMock(return_value=MagicMock(message_id=7))
+
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
+        for chat_id in (1, 2, 3):
+            context = MockToolContext(
+                state=MockState({"telegram_chat_id": str(chat_id)})
+            )
+            context.invocation_id = f"turn-{chat_id}"
+            await notify_telegram_before_tool(
+                cast(BaseTool, MockBaseTool("brave_search")),
+                {"query": "test"},
+                cast(ToolContext, context),
+            )
+
+    assert len(callbacks_module._INTERMEDIATE_NOTIFY_LAST) == 2
+    assert set(callbacks_module._INTERMEDIATE_NOTIFY_LAST) == {"2", "3"}
+
+
+@pytest.mark.asyncio
 async def test_get_or_create_live_status_session_evicts_when_full(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -413,10 +452,16 @@ async def test_close_shared_notify_client() -> None:
     client.close = AsyncMock()
     callbacks_module._shared_notify_client = client
     callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
+    callbacks_module._INTERMEDIATE_NOTIFY_LAST["42"] = 1.0
+    callbacks_module._LIVE_STATUS_SESSIONS[(42, None, "turn")] = (
+        callbacks_module._LiveStatusSession(message_id=7)
+    )
 
     await callbacks_module.close_shared_notify_client()
 
     client.close.assert_awaited_once()
+    assert callbacks_module._INTERMEDIATE_NOTIFY_LAST == {}
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
     assert callbacks_module._shared_notify_client is None
 
 
@@ -426,9 +471,15 @@ async def test_close_shared_notify_client_swallows_close_error() -> None:
     client.close = AsyncMock(side_effect=RuntimeError("boom"))
     callbacks_module._shared_notify_client = client
     callbacks_module._shared_notify_token = "test-bot-token"  # noqa: S105
+    callbacks_module._INTERMEDIATE_NOTIFY_LAST["42"] = 1.0
+    callbacks_module._LIVE_STATUS_SESSIONS[(42, None, "turn")] = (
+        callbacks_module._LiveStatusSession(message_id=7)
+    )
 
     await callbacks_module.close_shared_notify_client()
 
+    assert callbacks_module._INTERMEDIATE_NOTIFY_LAST == {}
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
     assert callbacks_module._shared_notify_client is None
 
 
@@ -436,10 +487,16 @@ async def test_close_shared_notify_client_swallows_close_error() -> None:
 async def test_close_shared_notify_client_when_none_is_noop() -> None:
     callbacks_module._shared_notify_client = None
     callbacks_module._shared_notify_token = None
+    callbacks_module._INTERMEDIATE_NOTIFY_LAST["42"] = 1.0
+    callbacks_module._LIVE_STATUS_SESSIONS[(42, None, "turn")] = (
+        callbacks_module._LiveStatusSession(message_id=7)
+    )
 
     await callbacks_module.close_shared_notify_client()
 
     assert callbacks_module._shared_notify_client is None
+    assert callbacks_module._INTERMEDIATE_NOTIFY_LAST == {}
+    assert callbacks_module._LIVE_STATUS_SESSIONS == {}
 
 
 @pytest.mark.asyncio
@@ -449,12 +506,52 @@ async def test_shared_telegram_notify_client_swaps_on_token_change() -> None:
     callbacks_module._shared_notify_client = old_client
     callbacks_module._shared_notify_token = "old-bot-token"  # noqa: S105
 
-    with patch("blacki.callbacks.TelegramApiClient") as client_class:
+    with patch("blacki.telegram.progress_callbacks.TelegramApiClient") as client_class:
         new_client = await callbacks_module._shared_telegram_notify_client("new-token")
 
     old_client.close.assert_awaited_once()
     assert new_client is client_class.return_value
     await callbacks_module.close_shared_notify_client()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_inflight_status_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown must not close a shared client during a status request."""
+    configure_telegram(monkeypatch)
+    send_started = asyncio.Event()
+    release_send = asyncio.Event()
+    client = MagicMock()
+
+    async def send_message(**_: object) -> MagicMock:
+        send_started.set()
+        await release_send.wait()
+        return MagicMock(message_id=7)
+
+    client.send_message = AsyncMock(side_effect=send_message)
+    client.close = AsyncMock()
+    context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
+
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
+        send_task = asyncio.create_task(
+            notify_telegram_before_tool(
+                cast(BaseTool, MockBaseTool("brave_search")),
+                {"query": "test"},
+                cast(ToolContext, context),
+            )
+        )
+        await send_started.wait()
+        close_task = asyncio.create_task(callbacks_module.close_shared_notify_client())
+        await asyncio.sleep(0)
+        assert close_task.done() is False
+        release_send.set()
+        await send_task
+        await close_task
+
+    client.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -464,7 +561,7 @@ async def test_before_tool_invalid_chat_id_logs_warning(
     configure_telegram(monkeypatch)
     context = MockToolContext(state=MockState({"telegram_chat_id": "not-a-number"}))
 
-    with patch("blacki.callbacks.TelegramApiClient") as client_class:
+    with patch("blacki.telegram.progress_callbacks.TelegramApiClient") as client_class:
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "test"},
@@ -475,6 +572,29 @@ async def test_before_tool_invalid_chat_id_logs_warning(
 
 
 @pytest.mark.asyncio
+async def test_clear_progress_removes_only_matching_conversation() -> None:
+    """Unexpected turn exits should not remove another chat's live status."""
+    matching = (42, 7, "turn-1")
+    other_thread = (42, 8, "turn-2")
+    other_chat = (43, 7, "turn-3")
+    callbacks_module._LIVE_STATUS_SESSIONS[matching] = (
+        callbacks_module._LiveStatusSession(message_id=1)
+    )
+    callbacks_module._LIVE_STATUS_SESSIONS[other_thread] = (
+        callbacks_module._LiveStatusSession(message_id=2)
+    )
+    callbacks_module._LIVE_STATUS_SESSIONS[other_chat] = (
+        callbacks_module._LiveStatusSession(message_id=3)
+    )
+
+    await callbacks_module.clear_telegram_progress_for_conversation(42, 7)
+
+    assert matching not in callbacks_module._LIVE_STATUS_SESSIONS
+    assert other_thread in callbacks_module._LIVE_STATUS_SESSIONS
+    assert other_chat in callbacks_module._LIVE_STATUS_SESSIONS
+
+
+@pytest.mark.asyncio
 async def test_before_tool_blank_token_short_circuits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -482,10 +602,13 @@ async def test_before_tool_blank_token_short_circuits(
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
 
     with patch(
-        "blacki.callbacks.telegram_live_tool_progress_enabled", return_value=True
+        "blacki.telegram.progress_callbacks.telegram_live_tool_progress_enabled",
+        return_value=True,
     ):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
-        with patch("blacki.callbacks.TelegramApiClient") as client_class:
+        with patch(
+            "blacki.telegram.progress_callbacks.TelegramApiClient"
+        ) as client_class:
             await notify_telegram_before_tool(
                 cast(BaseTool, MockBaseTool("brave_search")),
                 {"query": "test"},
@@ -506,7 +629,9 @@ async def test_before_tool_skips_edit_when_label_unchanged(
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
     context.invocation_id = "turn-same-label"
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "same"},
@@ -532,7 +657,9 @@ async def test_before_tool_coalesces_rapid_edits(
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
     context.invocation_id = "turn-coalesce"
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "first"},
@@ -560,7 +687,9 @@ async def test_before_tool_edit_failure_keeps_previous_label(
     context = MockToolContext(state=MockState({"telegram_chat_id": "42"}))
     context.invocation_id = "turn-edit-fails"
 
-    with patch("blacki.callbacks.TelegramApiClient", return_value=client):
+    with patch(
+        "blacki.telegram.progress_callbacks.TelegramApiClient", return_value=client
+    ):
         await notify_telegram_before_tool(
             cast(BaseTool, MockBaseTool("brave_search")),
             {"query": "first"},
@@ -712,10 +841,13 @@ async def test_after_agent_blank_token_short_circuits(
     )
 
     with patch(
-        "blacki.callbacks.telegram_live_tool_progress_enabled", return_value=True
+        "blacki.telegram.progress_callbacks.telegram_live_tool_progress_enabled",
+        return_value=True,
     ):
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "")
-        with patch("blacki.callbacks.TelegramApiClient") as client_class:
+        with patch(
+            "blacki.telegram.progress_callbacks.TelegramApiClient"
+        ) as client_class:
             await notify_telegram_after_agent(context)
 
     client_class.assert_not_called()

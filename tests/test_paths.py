@@ -36,3 +36,14 @@ def test_configured_agent_root_controls_application_data_directory(
     assert agent_root() == configured_root
     assert application_data_directory() == configured_root / ".adk"
     assert skills_directory() == package_root() / "skills"
+
+
+@pytest.mark.parametrize("configured_value", ["", "   "])
+def test_blank_agent_root_uses_stable_default(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_value: str,
+) -> None:
+    """Blank AGENT_DIR values must not create relative or whitespace paths."""
+    monkeypatch.setenv("AGENT_DIR", configured_value)
+
+    assert agent_root() == package_root().parent

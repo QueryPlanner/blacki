@@ -52,7 +52,7 @@ from blacki.dashboard.data import (
     _window_bounds,
 )
 from blacki.dashboard.models import clamp_limit, clamp_offset
-from blacki.usage_ledger import UsageRecord, write_usage_record
+from blacki.observability.ledger import UsageRecord, write_usage_record
 
 
 def _make_db(path: Path) -> None:

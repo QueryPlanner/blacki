@@ -11,16 +11,15 @@ from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
-from blacki.llm_costs import (
+from blacki.observability.costs import (
     CostAwareLiteLLMClient,
     _observe_response,
     _remember_observation,
     _set_span_cost_attributes,
-    attach_cost_metadata,
-    begin_cost_capture,
     extract_cost_observation,
 )
-from blacki.usage_ledger import read_usage_ledger
+from blacki.observability.ledger import read_usage_ledger
+from blacki.observability.lifecycle import attach_cost_metadata, begin_cost_capture
 
 
 def test_extract_cost_observation_preserves_provider_and_upstream_costs() -> None:
@@ -82,7 +81,7 @@ def test_extract_cost_observation_distinguishes_estimated_unknown_and_invalid() 
 def test_span_cost_attributes_are_recorded_when_span_is_active() -> None:
     span = MagicMock()
     span.is_recording.return_value = True
-    with patch("blacki.llm_costs.trace.get_current_span", return_value=span):
+    with patch("blacki.observability.costs.trace.get_current_span", return_value=span):
         _set_span_cost_attributes(
             {
                 "cost_usd": 0.01,
@@ -97,7 +96,7 @@ def test_span_cost_attributes_are_recorded_when_span_is_active() -> None:
     span.set_attribute.assert_any_call("gen_ai.usage.cost", 0.01)
     span.set_attribute.assert_any_call("gen_ai.usage.cost_estimate", 0.02)
     span.set_attribute.assert_any_call("gen_ai.cost.upstream_inference_cost", 0.009)
-    with patch("blacki.llm_costs.trace.get_current_span", return_value=span):
+    with patch("blacki.observability.costs.trace.get_current_span", return_value=span):
         _set_span_cost_attributes({"cost_source": "unknown", "cost_kind": "unknown"})
 
 
@@ -132,7 +131,10 @@ async def test_observe_response_handles_missing_capture_and_write_errors(
 
     begin_cost_capture(user_id="user-1", session_id="session-1", invocation_id="inv-1")
     caplog.set_level("WARNING")
-    with patch("blacki.llm_costs.write_usage_record", side_effect=OSError("read-only")):
+    with patch(
+        "blacki.observability.costs.write_usage_record",
+        side_effect=OSError("read-only"),
+    ):
         await _observe_response(
             {"usage": {"total_tokens": 1, "cost": 0.001}},
             "openrouter/test",

@@ -7,7 +7,6 @@ interactive agent testing.
 
 import asyncio
 import logging
-import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,22 +19,23 @@ from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
 from .adk_runtime import create_adk_runtime
+from .config.paths import agent_root
 from .container import AppContainer, close_container, init_container
 from .dashboard.routes import create_dashboard_router
-from .privacy import configure_private_tool_privacy
-from .utils import (
-    ConfigurationError,
-    ServerEnv,
+from .observability.setup import (
     configure_otel_resource,
-    initialize_environment,
     setup_logging,
     setup_tracing,
-    validation,
+    shutdown_tracing,
 )
+from .security.tool_privacy import configure_private_tool_privacy
+from .utils import ConfigurationError, ServerEnv, initialize_environment, validation
 
 logger = logging.getLogger(__name__)
 
 env = initialize_environment(ServerEnv)
+AGENT_DIR = str(agent_root())
+env.agent_dir = AGENT_DIR
 private_tool_secure_mode = configure_private_tool_privacy()
 
 configure_otel_resource(
@@ -46,7 +46,7 @@ if not private_tool_secure_mode:
     GoogleADKInstrumentor().instrument()
 
 setup_logging(log_level=env.log_level)
-setup_tracing()
+_tracer_provider = setup_tracing()
 
 _telegram_bot = None
 _container: AppContainer | None = None
@@ -55,6 +55,14 @@ _google_health_scheduler = None
 _google_health_export_worker: Any = None
 _gmail_oauth_service: Any = None
 _google_health_backfill_tasks: set[asyncio.Task[None]] = set()
+
+
+def _shutdown_tracer_provider() -> None:
+    """Release the process-wide tracer provider exactly once."""
+    global _tracer_provider
+    provider = _tracer_provider
+    _tracer_provider = None
+    shutdown_tracing(provider)
 
 
 def _schedule_google_health_backfill(telegram_user_id: str | None = None) -> None:
@@ -315,8 +323,6 @@ async def _stop_google_health() -> None:
     _google_health_export_worker = None
 
 
-AGENT_DIR = os.getenv("AGENT_DIR", str(Path(__file__).resolve().parent.parent))
-
 DEFAULT_SQLITE_PATH = str(Path(AGENT_DIR) / ".adk" / "tools.db")
 
 
@@ -372,9 +378,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
         await close_shared_exa_search_client()
 
-        from .callbacks import close_shared_notify_client
+        from .telegram.progress_callbacks import close_shared_notify_client
 
         await close_shared_notify_client()
+        _shutdown_tracer_provider()
 
 
 app: FastAPI = get_fast_api_app(
