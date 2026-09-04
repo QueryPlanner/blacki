@@ -12,14 +12,16 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
-from blacki.prompt import (
-    DomainPolicyPlugin,
-    ResponsePolicyPlugin,
-    build_domain_instruction,
+from blacki.prompts.instructions import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
     return_instruction_task_worker,
+)
+from blacki.prompts.policies import (
+    DomainPolicyPlugin,
+    ResponsePolicyPlugin,
+    build_domain_instruction,
     select_domain_policy_names,
 )
 
@@ -132,7 +134,7 @@ class TestStablePromptLayers:
         instant = datetime(2025, 1, 15, 2, 0, tzinfo=UTC)
         with (
             patch.dict("os.environ", {"AGENT_TIMEZONE": "America/New_York"}),
-            patch("blacki.prompt.now_utc", return_value=instant),
+            patch("blacki.prompts.instructions.now_utc", return_value=instant),
         ):
             instruction = return_global_instruction(mock_readonly_context)  # type: ignore[arg-type]
 

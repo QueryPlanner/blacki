@@ -622,7 +622,7 @@ class TestTrainingRegistryAndPrompt:
 
     def test_prompt_guidance_for_training(self) -> None:
         """A workout request should load the training-program policy."""
-        from blacki.prompt import build_domain_instruction
+        from blacki.prompts.policies import build_domain_instruction
 
         tool_names = {
             "set_training_program",

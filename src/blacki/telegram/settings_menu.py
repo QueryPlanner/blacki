@@ -6,15 +6,15 @@ import os
 from collections.abc import Awaitable, Callable, Sequence
 from typing import cast
 
-from blacki.inference import (
+from blacki.models.capabilities import (
+    ModelCapabilities,
+    OpenRouterModelCapabilitiesResolver,
+)
+from blacki.models.inference import (
     InferenceProfile,
     ReasoningConfig,
     ReasoningEffort,
     update_inference_profile,
-)
-from blacki.model_capabilities import (
-    ModelCapabilities,
-    OpenRouterModelCapabilitiesResolver,
 )
 from blacki.utils.preferences import get_preferences_storage
 

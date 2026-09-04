@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import pytest
 
-from blacki.adk_runtime import AdkRuntime
 from blacki.health.service import (
     GoogleHealthOAuthError,
     GoogleHealthService,
     SyncResult,
 )
+from blacki.runtime.adk import AdkRuntime
 from blacki.telegram import TelegramConfig
 from blacki.telegram.api import TelegramApiClient
 from blacki.telegram.bot import (

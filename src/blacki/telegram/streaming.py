@@ -13,7 +13,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from blacki.adk_runtime import StreamChunk
+from blacki.runtime.adk import StreamChunk
 
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import format_for_telegram, get_open_markdown_entities

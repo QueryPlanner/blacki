@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import aiosqlite
 import pytest
 
-from blacki.inference import (
+from blacki.models.inference import (
     INFERENCE_PROFILE_PREFERENCE_KEY,
     LEGACY_MODEL_PREFERENCE_KEY,
     InferenceProfile,
@@ -335,7 +335,7 @@ async def test_reasoning_callback_migrates_legacy_model(
     storage = await _initialized_preferences_storage()
     await storage.set("123", LEGACY_MODEL_PREFERENCE_KEY, "legacy-model")
 
-    from blacki.inference import load_inference_profile
+    from blacki.models.inference import load_inference_profile
 
     async def load_profile(chat_id: int | str) -> InferenceProfile:
         return await load_inference_profile(storage, str(chat_id))
@@ -372,7 +372,7 @@ async def test_stale_reasoning_callback_preserves_new_model(
     storage = await _initialized_preferences_storage()
     await storage.set("123", LEGACY_MODEL_PREFERENCE_KEY, "legacy-model")
 
-    from blacki.inference import load_inference_profile
+    from blacki.models.inference import load_inference_profile
 
     async def load_profile(chat_id: int | str) -> InferenceProfile:
         return await load_inference_profile(storage, str(chat_id))

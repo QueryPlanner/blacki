@@ -19,8 +19,8 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
-from .inference import InferenceProfile, inference_profile_context
-from .utils.config import ServerEnv
+from ..models.inference import InferenceProfile, inference_profile_context
+from ..utils.config import ServerEnv
 
 logger = logging.getLogger(__name__)
 
@@ -325,7 +325,7 @@ class AdkRuntime:
         agent_app: App | None = None,
     ) -> None:
         if agent_app is None:
-            from .agent import app as default_agent_app
+            from ..agent import app as default_agent_app
 
             agent_app = default_agent_app
 

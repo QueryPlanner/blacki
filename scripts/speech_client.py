@@ -13,8 +13,8 @@ import numpy as np
 import sounddevice as sd  # type: ignore
 from dotenv import load_dotenv
 
-from blacki.adk_runtime import SessionLocator, create_adk_runtime
 from blacki.container import close_container, init_container
+from blacki.runtime.adk import SessionLocator, create_adk_runtime
 from blacki.utils.config import ServerEnv, initialize_environment
 
 # Audio Recording Settings
