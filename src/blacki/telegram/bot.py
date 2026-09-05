@@ -71,11 +71,11 @@ _MAX_EMPTY_RESPONSE_RETRIES = 1
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
 _MAX_TELEGRAM_FILE_BYTES = 20 * 1024 * 1024
-_JPEG_MAGIC = b"\xff\xd8\xff"
 _IMAGE_FILE_EXTENSIONS = frozenset({".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"})
 _DEFAULT_IMAGE_PROMPT = "Describe this image."
 _MAX_ALBUM_PHOTOS = 10
 _MAX_ALBUM_BYTES = 20 * 1024 * 1024
+_NATIVE_IMAGE_STORAGE_TIMEOUT_SECONDS = 5.0
 
 
 def _looks_like_image_attachment(file_name: str, mime_type: str | None) -> bool:
@@ -83,6 +83,11 @@ def _looks_like_image_attachment(file_name: str, mime_type: str | None) -> bool:
     return (mime_type or "").strip().lower().startswith("image/") or Path(
         file_name
     ).suffix.lower() in _IMAGE_FILE_EXTENSIONS
+
+
+def _is_image_document(mime_type: str | None) -> bool:
+    """Return whether Telegram sent a document with an image media type."""
+    return (mime_type or "").strip().lower().startswith("image/")
 
 
 def _format_google_health_sync_counts(value: object) -> str:
@@ -185,9 +190,10 @@ class TelegramBot:
         self._polling_task: asyncio.Task[None] | None = None
         self._conversation_tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_task_seqs: dict[str, int] = {}
+        self._conversation_task_kinds: dict[str, str] = {}
+        self._conversation_turn_locks: dict[str, asyncio.Lock] = {}
         self._album_buffer = AlbumBuffer(on_flush=self._on_album_flushed)
-        self._update_counter: int = 0
-        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
             "telegram_chat_type", default=None
         )
@@ -376,8 +382,7 @@ class TelegramBot:
 
         # Check if this update is part of a photo album
         if update.message.photo and update.message.media_group_id is not None:
-            self._update_counter += 1
-            await self._album_buffer.add_message(update.message, self._update_counter)
+            await self._album_buffer.add_message(update.message, update.update_id)
             return
 
         chat_id = update.message.chat.id
@@ -387,8 +392,16 @@ class TelegramBot:
             message_thread_id=message_thread_id,
         )
 
-        self._update_counter += 1
-        current_seq = self._update_counter
+        current_seq = update.update_id
+        turn_kind = (
+            "media"
+            if update.message.photo
+            or (
+                update.message.document is not None
+                and _is_image_document(update.message.document.mime_type)
+            )
+            else "text"
+        )
 
         for active_album in self._album_buffer.get_active(chat_id, message_thread_id):
             if active_album.future is not None:
@@ -413,6 +426,7 @@ class TelegramBot:
             self._handle_update(update),
             progress_chat_id=chat_id,
             progress_thread_id=message_thread_id,
+            turn_kind=turn_kind,
         )
 
     def _access_code_fingerprint(self) -> str:
@@ -583,14 +597,17 @@ class TelegramBot:
         *,
         progress_chat_id: int,
         progress_thread_id: int | None,
+        turn_kind: str = "text",
     ) -> None:
-        """Run a turn, cancelling and waiting out any superseded turn first."""
+        """Run one conversation turn without concurrent session mutation."""
         existing_task = self._conversation_tasks.get(conversation_key)
         existing_seq = self._conversation_task_seqs.get(conversation_key, 0)
+        existing_kind = self._conversation_task_kinds.get(conversation_key, "text")
         supersedes_existing = (
             existing_task is not None
             and not existing_task.done()
             and seq >= existing_seq
+            and not (turn_kind == "media" and existing_kind == "media")
         )
         if supersedes_existing and existing_task is not None:
             logger.info(
@@ -602,13 +619,19 @@ class TelegramBot:
         if current_task is not None:
             self._conversation_tasks[conversation_key] = current_task
             self._conversation_task_seqs[conversation_key] = seq
+            self._conversation_task_kinds[conversation_key] = turn_kind
+
+        turn_lock = self._conversation_turn_locks.setdefault(
+            conversation_key, asyncio.Lock()
+        )
 
         try:
             # Wait for the superseded task to fully clean up before starting
             if supersedes_existing and existing_task is not None:
                 await asyncio.wait([existing_task])
 
-            await turn
+            async with turn_lock:
+                await turn
         except asyncio.CancelledError:
             logger.info("Message turn superseded for conversation %s", conversation_key)
             raise
@@ -616,6 +639,7 @@ class TelegramBot:
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
                 self._conversation_task_seqs.pop(conversation_key, None)
+                self._conversation_task_kinds.pop(conversation_key, None)
             await clear_telegram_progress_for_conversation(
                 progress_chat_id,
                 progress_thread_id,
@@ -640,7 +664,16 @@ class TelegramBot:
                 self._handle_album_turn(album),
                 progress_chat_id=album.chat_id,
                 progress_thread_id=album.message_thread_id,
+                turn_kind="media",
             )
+        except asyncio.CancelledError:
+            self._album_buffer.mark_retryable(album)
+            raise
+        except Exception:
+            self._album_buffer.mark_retryable(album)
+            raise
+        else:
+            self._album_buffer.mark_completed(album)
         finally:
             if album.future is not None and not album.future.done():
                 album.future.set_result(None)
@@ -662,7 +695,7 @@ class TelegramBot:
         """Validate, download, and process a flushed album's photos."""
         chat_id = album.chat_id
         message_thread_id = album.message_thread_id
-        messages = album.messages
+        messages = sorted(album.messages, key=lambda item: item.message_id)
 
         if len(messages) > _MAX_ALBUM_PHOTOS:
             await self._send_photo_error(
@@ -677,7 +710,7 @@ class TelegramBot:
 
         # Check total reported size before download
         total_reported_size = 0
-        photo_items: list[tuple[str, int | None]] = []
+        photo_items: list[tuple[str, str, int | None]] = []
         caption: str | None = None
 
         for msg in messages:
@@ -700,7 +733,9 @@ class TelegramBot:
                     )
                     return
                 total_reported_size += best_photo.file_size
-            photo_items.append((best_photo.file_id, best_photo.file_size))
+            photo_items.append(
+                (best_photo.file_id, best_photo.file_unique_id, best_photo.file_size)
+            )
 
         if total_reported_size > _MAX_ALBUM_BYTES:
             await self._send_photo_error(
@@ -719,6 +754,7 @@ class TelegramBot:
             message_thread_id=message_thread_id,
             conversation_key=session_identity.conversation_key,
             chat_type=album.chat_type,
+            sender_user_id=self._album_sender_user_id(messages),
         )
 
         try:
@@ -731,7 +767,7 @@ class TelegramBot:
             downloaded_images: list[bytes] = []
             total_downloaded_bytes = 0
 
-            for file_id, _ in photo_items:
+            for file_id, _, _ in photo_items:
                 image_bytes = await self._download_and_validate_photo(file_id)
 
                 total_downloaded_bytes += len(image_bytes)
@@ -740,10 +776,59 @@ class TelegramBot:
 
                 downloaded_images.append(image_bytes)
 
-            prompt = caption if caption is not None else _DEFAULT_IMAGE_PROMPT
+            sender_user_id = self._album_sender_user_id(messages)
+            storage_results = await asyncio.gather(
+                *(
+                    self._shield_attachment_ingest(
+                        state=state,
+                        owner_id=(
+                            str(sender_user_id) if sender_user_id is not None else None
+                        ),
+                        display_name=f"photo-{file_unique_id}.jpg",
+                        media_kind="photo",
+                        mime_type="image/jpeg",
+                        telegram_file_unique_id=file_unique_id,
+                        data=image_bytes,
+                        materialize_in_sandbox=False,
+                        timeout_seconds=_NATIVE_IMAGE_STORAGE_TIMEOUT_SECONDS,
+                    )
+                    for (_, file_unique_id, _), image_bytes in zip(
+                        photo_items, downloaded_images, strict=True
+                    )
+                ),
+                return_exceptions=True,
+            )
+            storage_warnings: list[str] = []
+            for result in storage_results:
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "Native album image storage failed (%s)",
+                        type(result).__name__,
+                    )
+                    continue
+                ingest, _, _ = result
+                if ingest.warning and ingest.warning not in storage_warnings:
+                    storage_warnings.append(ingest.warning)
 
-            parts: list[types.Part] = [types.Part.from_text(text=prompt)]
-            for img_bytes in downloaded_images:
+            for warning in storage_warnings:
+                await self._send_storage_warning_best_effort(
+                    chat_id, message_thread_id, warning
+                )
+
+            prompt = caption if caption is not None else _DEFAULT_IMAGE_PROMPT
+            instruction = (
+                f"{prompt}\n\n"
+                f"These are {len(downloaded_images)} separate images. "
+                "Analyze each image independently and do not treat them as a collage."
+            )
+
+            parts: list[types.Part] = [types.Part.from_text(text=instruction)]
+            for index, img_bytes in enumerate(downloaded_images, start=1):
+                parts.append(
+                    types.Part.from_text(
+                        text=f"Image {index} of {len(downloaded_images)}:"
+                    )
+                )
                 parts.append(
                     types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
                 )
@@ -753,7 +838,7 @@ class TelegramBot:
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
                 state=state,
-                message_text=prompt,
+                message_text=instruction,
                 user_parts=parts,
             )
         except Exception:
@@ -763,6 +848,16 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 text="❌ Sorry, I failed to process the photo.",
             )
+
+    @staticmethod
+    def _album_sender_user_id(messages: Sequence[Message]) -> int | None:
+        """Return one sender ID only when every album member agrees on it."""
+        sender_ids = {
+            message.from_user.id
+            for message in messages
+            if message.from_user is not None
+        }
+        return next(iter(sender_ids)) if len(sender_ids) == 1 else None
 
     async def _handle_update(self, update: Update) -> None:
         """Handle an incoming update."""
@@ -813,6 +908,19 @@ class TelegramBot:
             return
 
         if message.document:
+            if _is_image_document(message.document.mime_type):
+                await self._handle_image_document_upload(
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    file_id=message.document.file_id,
+                    file_unique_id=message.document.file_unique_id,
+                    file_name=message.document.file_name or "image",
+                    file_size=message.document.file_size,
+                    mime_type=message.document.mime_type,
+                    caption=message.caption,
+                    sender_user_id=sender_user_id,
+                )
+                return
             file_id = message.document.file_id
             file_unique_id = message.document.file_unique_id
             file_name = message.document.file_name or "document"
@@ -860,6 +968,101 @@ class TelegramBot:
             caption=message.caption,
             sender_user_id=sender_user_id,
         )
+
+    async def _handle_image_document_upload(
+        self,
+        *,
+        chat_id: int,
+        message_thread_id: int | None,
+        file_id: str,
+        file_unique_id: str,
+        file_name: str,
+        file_size: int | None,
+        mime_type: str | None,
+        caption: str | None,
+        sender_user_id: int | None,
+    ) -> None:
+        """Send an image/* Telegram document to ADK as native image input."""
+        if file_size is not None and file_size > _MAX_NATIVE_IMAGE_BYTES:
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ The image is too large to process (10 MB maximum).",
+            )
+            return
+
+        session_identity = self._build_session_identity(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+        )
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=session_identity.conversation_key,
+            chat_type=self._chat_type_context.get(),
+            sender_user_id=sender_user_id,
+        )
+
+        try:
+            from blacki.tools.sandbox_images import inspect_image_bytes
+
+            await self.api.send_chat_action(
+                chat_id=chat_id,
+                action="upload_document",
+                message_thread_id=message_thread_id,
+            )
+            file_info = await self.api.get_file(file_id)
+            file_path_api = file_info.get("file_path")
+            if not file_path_api:
+                raise ValueError("Telegram did not return an image file path")
+            image_bytes = await self.api.download_file(file_path_api)
+            if not image_bytes:
+                raise ValueError("Telegram returned an empty image")
+            if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
+                raise ValueError("Telegram image exceeds the 10 MB limit")
+            metadata = inspect_image_bytes(image_bytes)
+
+            ingest, _, _ = await self._shield_attachment_ingest(
+                state=state,
+                owner_id=str(sender_user_id) if sender_user_id is not None else None,
+                display_name=file_name,
+                media_kind="document",
+                mime_type=metadata.mime_type,
+                telegram_file_unique_id=file_unique_id,
+                data=image_bytes,
+                materialize_in_sandbox=False,
+                timeout_seconds=_NATIVE_IMAGE_STORAGE_TIMEOUT_SECONDS,
+            )
+            if ingest.warning:
+                await self._send_storage_warning_best_effort(
+                    chat_id, message_thread_id, ingest.warning
+                )
+
+            prompt = (
+                caption.strip()
+                if caption and caption.strip()
+                else _DEFAULT_IMAGE_PROMPT
+            )
+            await self._run_turn_and_send_response(
+                session_identity=session_identity,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                state=state,
+                message_text=prompt,
+                user_parts=(
+                    types.Part.from_text(text=prompt),
+                    types.Part.from_bytes(
+                        data=image_bytes, mime_type=metadata.mime_type
+                    ),
+                ),
+            )
+        except Exception:
+            logger.exception("Failed to handle Telegram image document")
+            await self._send_photo_error(
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
+                text="❌ Sorry, I failed to process the image.",
+            )
 
     async def _handle_voice_upload(
         self,
@@ -988,7 +1191,7 @@ class TelegramBot:
             )
             image_bytes = await self._download_and_validate_photo(file_id)
 
-            ingest, sandbox_path, sandbox_error = await self._shield_attachment_ingest(
+            ingest, _, _ = await self._shield_attachment_ingest(
                 state=state,
                 owner_id=str(sender_user_id) if sender_user_id is not None else None,
                 display_name=f"photo-{file_unique_id or file_id}.jpg",
@@ -996,30 +1199,19 @@ class TelegramBot:
                 mime_type="image/jpeg",
                 telegram_file_unique_id=file_unique_id,
                 data=image_bytes,
+                materialize_in_sandbox=False,
+                timeout_seconds=_NATIVE_IMAGE_STORAGE_TIMEOUT_SECONDS,
             )
             if ingest.warning:
-                await self._send_storage_warning(
+                await self._send_storage_warning_best_effort(
                     chat_id, message_thread_id, ingest.warning
                 )
-            if sandbox_error and ingest.stored_file is not None:
-                await self.api.send_message(
-                    chat_id=chat_id,
-                    text=(
-                        "✅ The photo was saved in durable storage, but the sandbox is "
-                        "unavailable. Ask me to restore it later."
-                    ),
-                    message_thread_id=message_thread_id,
-                )
-                return
 
             prompt = (
                 caption.strip()
                 if caption and caption.strip()
                 else _DEFAULT_IMAGE_PROMPT
             )
-            message_text = prompt
-            if sandbox_path:
-                message_text = f"{prompt}\nSandbox working copy: {sandbox_path}"
             user_parts = (
                 types.Part.from_text(text=prompt),
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
@@ -1029,7 +1221,7 @@ class TelegramBot:
                 chat_id=chat_id,
                 message_thread_id=message_thread_id,
                 state=state,
-                message_text=message_text,
+                message_text=prompt,
                 user_parts=user_parts,
             )
         except Exception:
@@ -1064,8 +1256,12 @@ class TelegramBot:
         mime_type: str | None,
         telegram_file_unique_id: str | None,
         data: bytes,
+        materialize_in_sandbox: bool = True,
+        timeout_seconds: float | None = None,
     ) -> tuple[IngestResult, str | None, str | None]:
-        """Finish durable storage and sandbox materialization before cancellation."""
+        """Run attachment ingest, optionally bounding native-image storage."""
+        from blacki.user_files.service import IngestResult
+
         task = asyncio.create_task(
             self._store_and_materialize_attachment(
                 state=state,
@@ -1075,13 +1271,62 @@ class TelegramBot:
                 mime_type=mime_type,
                 telegram_file_unique_id=telegram_file_unique_id,
                 data=data,
+                materialize_in_sandbox=materialize_in_sandbox,
             )
         )
+        self._background_tasks.add(task)
+
+        def _consume_ingest_task(done_task: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done_task)
+            if done_task.cancelled():
+                return
+            with contextlib.suppress(asyncio.CancelledError):
+                done_task.exception()
+
+        task.add_done_callback(_consume_ingest_task)
         try:
-            return await asyncio.shield(task)
+            if timeout_seconds is None:
+                return await asyncio.shield(task)
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+        except TimeoutError:
+            task.cancel()
+            return (
+                IngestResult(
+                    None,
+                    "temporary",
+                    "R2 storage timed out; this attachment is available only "
+                    "temporarily.",
+                ),
+                None,
+                None,
+            )
         except asyncio.CancelledError:
-            await task
+            task.cancel()
             raise
+        except Exception:
+            if timeout_seconds is None:
+                raise
+            logger.exception("Native image durable storage failed")
+            return (
+                IngestResult(
+                    None,
+                    "temporary",
+                    "R2 storage failed; this attachment is available only temporarily.",
+                ),
+                None,
+                None,
+            )
+
+    async def _send_storage_warning_best_effort(
+        self, chat_id: int, message_thread_id: int | None, warning: str
+    ) -> None:
+        """Send a storage warning without blocking the native image turn."""
+        try:
+            await self._send_storage_warning(chat_id, message_thread_id, warning)
+        except Exception as exc:
+            logger.warning(
+                "Failed to send Telegram storage warning (%s)", type(exc).__name__
+            )
 
     async def _store_and_materialize_attachment(
         self,
@@ -1093,6 +1338,7 @@ class TelegramBot:
         mime_type: str | None,
         telegram_file_unique_id: str | None,
         data: bytes,
+        materialize_in_sandbox: bool = True,
     ) -> tuple[IngestResult, str | None, str | None]:
         """Persist an attachment when configured and create its sandbox copy."""
         from blacki.sandbox.manager import get_sandbox_manager
@@ -1120,6 +1366,9 @@ class TelegramBot:
         else:
             ingest = IngestResult(None, "temporary")
 
+        if not materialize_in_sandbox:
+            return ingest, None, None
+
         manager = get_sandbox_manager()
         if not manager.config.enabled:
             return ingest, None, "Sandbox is disabled"
@@ -1146,6 +1395,8 @@ class TelegramBot:
 
     async def _download_and_validate_photo(self, file_id: str) -> bytes:
         """Download a Telegram photo and validate its size and format."""
+        from blacki.tools.sandbox_images import inspect_image_bytes
+
         file_info = await self.api.get_file(file_id)
         file_path_api = file_info.get("file_path")
         if not file_path_api:
@@ -1156,7 +1407,8 @@ class TelegramBot:
             raise ValueError("Telegram returned an empty photo")
         if len(image_bytes) > _MAX_NATIVE_IMAGE_BYTES:
             raise ValueError("Telegram photo exceeds the 10 MB limit")
-        if not image_bytes.startswith(_JPEG_MAGIC):
+        metadata = inspect_image_bytes(image_bytes)
+        if metadata.format_name != "JPEG":
             raise ValueError("Telegram photo is not a JPEG image")
         return image_bytes
 

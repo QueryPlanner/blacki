@@ -58,8 +58,10 @@ the owning package rather than recreating root-level modules.
 
 1. The Telegram bot polls Telegram's HTTPS API for updates.
 2. A Telegram chat is mapped to the ADK runtime.
-3. Text is sent as an ADK text part. Telegram photos are downloaded, validated,
-   and sent as caption/default text plus an inline JPEG part.
+3. Text is sent as an ADK text part. Telegram photos and `image/*` documents
+   are downloaded, validated, and sent as native inline image parts. Media
+   groups become one ordered, separately labelled multimodal turn. Native image
+   uploads never require sandbox materialization; R2 cataloging is best-effort.
 4. The agent calls the configured model and tools.
 5. The response is sent back through Telegram's API. When the private Kokoro
    tool is enabled and selected, it synthesizes a bounded MP3 in memory and
@@ -135,9 +137,11 @@ Blacki uses different stores for different responsibilities:
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
 first two as application state.
 
-Native Telegram photos are capped at 10 MB because ADK retains inline user
-parts in session history for later conversation turns. This bounds session
-database growth and image replay costs while preserving multimodal context.
+Native Telegram photos and image documents are capped at 10 MB because ADK
+retains inline user parts in session history for later conversation turns. This
+bounds session database growth and image replay costs while preserving
+multimodal context. Non-image Telegram documents continue to use the temporary
+per-session sandbox path.
 
 ## Managed integrations
 

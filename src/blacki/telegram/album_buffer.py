@@ -10,6 +10,7 @@ arrive, then hands the complete album to a caller-supplied flush callback.
 import asyncio
 import contextlib
 import logging
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import cast
@@ -18,8 +19,18 @@ from .types import ChatType, Message
 
 logger = logging.getLogger(__name__)
 
-_ALBUM_DEBOUNCE_SECONDS = 0.5
-_ALBUM_MAX_WAIT_SECONDS = 2.0
+_ALBUM_DEBOUNCE_SECONDS = 1.0
+# This is a safety net for a *stalled* album, not a normal-path flush
+# trigger: the debounce timer above already extends correctly on every
+# arrival, so a healthy album -- even one delivered slowly -- flushes via
+# debounce shortly after its last message. This cap only exists so a
+# media group that never fully arrives (e.g. Telegram never delivers the
+# last item) can't buffer forever and starve the conversation's next
+# turn. 15s tolerates a slow upload of Telegram's max 10-photo media
+# group (a few seconds per photo) without leaving a genuinely stuck
+# conversation waiting anywhere near that long.
+_ALBUM_MAX_WAIT_SECONDS = 15.0
+_MAX_COMPLETED_ALBUMS = 256
 
 
 @dataclass(slots=True)
@@ -51,6 +62,10 @@ class AlbumBuffer:
         self._on_flush = on_flush
         self._buffers: dict[tuple[int, int | None, str], _BufferedAlbum] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
+        self._inflight_message_ids: dict[tuple[int, int | None, str], set[int]] = {}
+        self._completed_message_ids: OrderedDict[
+            tuple[int, int | None, str], set[int]
+        ] = OrderedDict()
 
     def get_active(
         self, chat_id: int, message_thread_id: int | None
@@ -63,13 +78,31 @@ class AlbumBuffer:
         ]
 
     async def add_message(self, message: Message, seq: int) -> None:
-        """Buffer an incoming album message; wait until its album is flushed."""
+        """Buffer an incoming album message until its album is flushed."""
         chat_id = message.chat.id
         message_thread_id = message.message_thread_id
         media_group_id = cast(str, message.media_group_id)
         key = (chat_id, message_thread_id, media_group_id)
 
         album = self._buffers.get(key)
+        inflight_ids = self._inflight_message_ids.get(key)
+        if (
+            album is None
+            and inflight_ids is not None
+            and message.message_id in inflight_ids
+        ):
+            # The original update is still being processed. Do not create a
+            # second turn for a Telegram retry while it is in flight.
+            return
+        completed_ids = self._completed_message_ids.get(key)
+        if album is None and completed_ids is not None:
+            if message.message_id in completed_ids:
+                # Telegram retries can deliver an already flushed update after
+                # the original task has completed. It must not create a second
+                # model turn.
+                return
+            self._completed_message_ids.move_to_end(key)
+
         if album is None:
             loop = asyncio.get_running_loop()
             future: asyncio.Future[None] = loop.create_future()
@@ -95,9 +128,15 @@ class AlbumBuffer:
             max_wait_task.add_done_callback(self._background_tasks.discard)
             album.max_wait_task = max_wait_task
         else:
+            if any(item.message_id == message.message_id for item in album.messages):
+                if album.future is not None:
+                    await asyncio.shield(album.future)
+                return
             album.messages.append(message)
             if album.debounce_handle is not None:
                 album.debounce_handle.cancel()
+
+        album.messages.sort(key=lambda item: item.message_id)
 
         loop = asyncio.get_running_loop()
         album.debounce_handle = loop.call_later(
@@ -150,7 +189,27 @@ class AlbumBuffer:
             album.max_wait_task.cancel()
             album.max_wait_task = None
 
+        key_message_ids = {message.message_id for message in album.messages}
+        if key_message_ids:
+            self._inflight_message_ids[key] = key_message_ids
+
         self._on_flush(album)
+
+    def mark_completed(self, album: _BufferedAlbum) -> None:
+        """Suppress retries after the flushed album finishes successfully."""
+        key = (album.chat_id, album.message_thread_id, album.media_group_id)
+        message_ids = self._inflight_message_ids.pop(key, None)
+        if not message_ids:
+            return
+        self._completed_message_ids[key] = message_ids
+        self._completed_message_ids.move_to_end(key)
+        while len(self._completed_message_ids) > _MAX_COMPLETED_ALBUMS:
+            self._completed_message_ids.popitem(last=False)
+
+    def mark_retryable(self, album: _BufferedAlbum) -> None:
+        """Allow a retry after a flushed album is cancelled or fails."""
+        key = (album.chat_id, album.message_thread_id, album.media_group_id)
+        self._inflight_message_ids.pop(key, None)
 
     def cleanup(self, album: _BufferedAlbum) -> None:
         """Cancel timers and tasks and release a buffered album."""

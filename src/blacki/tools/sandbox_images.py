@@ -238,7 +238,7 @@ def _parse_bmp(data: bytes) -> ImageMetadata:
     return _metadata("BMP", "image/bmp", width, height)
 
 
-def _inspect_image_bytes(data: bytes) -> ImageMetadata:
+def inspect_image_bytes(data: bytes) -> ImageMetadata:
     """Validate a bounded image and return its provider-neutral metadata."""
     if not isinstance(data, bytes) or not data:
         raise ValueError("Image file is empty or unreadable.")
@@ -257,6 +257,11 @@ def _inspect_image_bytes(data: bytes) -> ImageMetadata:
         return _parse_bmp(data)
     formats = ", ".join(SUPPORTED_IMAGE_FORMATS)
     raise ValueError(f"Unsupported image format. Supported formats: {formats}.")
+
+
+# Keep the previous private name available to callers while the validator is
+# also used by Telegram's native image-document path.
+_inspect_image_bytes = inspect_image_bytes
 
 
 def _normalize_sandbox_path(path: str) -> str:
@@ -328,7 +333,7 @@ async def sandbox_view_image(
         )
 
     try:
-        metadata = _inspect_image_bytes(data)
+        metadata = inspect_image_bytes(data)
     except ValueError as exc:
         return _error_result(str(exc), sandbox_path)
 
