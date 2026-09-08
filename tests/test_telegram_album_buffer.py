@@ -26,6 +26,93 @@ def buffer(on_flush: MagicMock) -> AlbumBuffer:
     return AlbumBuffer(on_flush=on_flush)
 
 
+def _album_message(message_id: int, group_id: str = "ordered") -> Message:
+    """Build one small photo update for buffer state-machine tests."""
+    return Message.model_validate(
+        {
+            "message_id": message_id,
+            "date": "2024-01-01T00:00:00Z",
+            "chat": {"id": 123, "type": "private"},
+            "media_group_id": group_id,
+            "photo": [
+                {
+                    "file_id": f"photo-{message_id}",
+                    "file_unique_id": f"unique-{message_id}",
+                    "width": 10,
+                    "height": 10,
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_buffer_sorts_and_deduplicates_updates(
+    buffer: AlbumBuffer, on_flush: MagicMock
+) -> None:
+    """Polling retries and task scheduling cannot reorder or duplicate images."""
+    messages = [_album_message(30), _album_message(10), _album_message(30)]
+    tasks = [
+        asyncio.create_task(buffer.add_message(message, seq))
+        for seq, message in enumerate(messages, start=1)
+    ]
+    await asyncio.sleep(0)
+
+    album = buffer._buffers[(123, None, "ordered")]
+    assert [message.message_id for message in album.messages] == [10, 30]
+
+    buffer._flush(album)
+    assert album.future is not None
+    album.future.set_result(None)
+    await asyncio.gather(*tasks)
+    assert on_flush.call_count == 1
+    flushed = on_flush.call_args.args[0]
+    assert [message.message_id for message in flushed.messages] == [10, 30]
+    buffer.mark_completed(flushed)
+
+    # A duplicate arriving after the turn was scheduled is ignored as well.
+    await buffer.add_message(_album_message(10), 4)
+    assert on_flush.call_count == 1
+
+    # A genuinely late member reuses the completed key and starts a fresh
+    # bounded buffer, while the duplicate above does not.
+    late_task = asyncio.create_task(buffer.add_message(_album_message(20), 5))
+    await asyncio.sleep(0)
+    late_album = buffer._buffers[(123, None, "ordered")]
+    buffer._flush(late_album)
+    assert late_album.future is not None
+    late_album.future.set_result(None)
+    await late_task
+    assert on_flush.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_flushed_album_can_be_retried_after_cancellation(
+    buffer: AlbumBuffer, on_flush: MagicMock
+) -> None:
+    """Cancellation clears in-flight IDs so Telegram can retry the album."""
+    task = asyncio.create_task(buffer.add_message(_album_message(1, "retry"), 1))
+    await asyncio.sleep(0)
+    album = buffer._buffers[(123, None, "retry")]
+    buffer._flush(album)
+    await buffer.add_message(_album_message(1, "retry"), 2)
+    assert on_flush.call_count == 1
+    buffer.mark_retryable(album)
+    assert album.future is not None
+    album.future.set_result(None)
+    await task
+
+    retry_task = asyncio.create_task(buffer.add_message(_album_message(1, "retry"), 2))
+    await asyncio.sleep(0)
+    retry_album = buffer._buffers[(123, None, "retry")]
+    assert retry_album is not album
+    buffer._flush(retry_album)
+    assert retry_album.future is not None
+    retry_album.future.set_result(None)
+    await retry_task
+    assert on_flush.call_count == 2
+
+
 @pytest.mark.asyncio
 async def test_cleanup_album_buffer_branches(buffer: AlbumBuffer) -> None:
     """Test cleanup() when handles are None or future is done/None."""
@@ -97,6 +184,10 @@ async def test_buffer_album_message_branches(buffer: AlbumBuffer) -> None:
     assert len(album.messages) == 1
     assert album.debounce_handle is not None
     album.debounce_handle.cancel()
+
+    # A duplicate in an existing album with no future returns immediately.
+    await buffer.add_message(msg, 2)
+    assert len(album.messages) == 1
 
 
 @pytest.mark.asyncio
@@ -182,6 +273,20 @@ async def test_flush_album_branches(buffer: AlbumBuffer) -> None:
     )
     buffer._flush(album_none_handles)
     assert album_none_handles.processed is True
+
+    with patch("blacki.telegram.album_buffer._MAX_COMPLETED_ALBUMS", 1):
+        for group_id in ("evict-1", "evict-2"):
+            album = _BufferedAlbum(
+                chat_id=123,
+                message_thread_id=None,
+                media_group_id=group_id,
+                chat_type=ChatType.PRIVATE,
+                messages=[_album_message(1, group_id)],
+            )
+            buffer._buffers[(123, None, group_id)] = album
+            buffer._flush(album)
+            buffer.mark_completed(album)
+        assert list(buffer._completed_message_ids) == [(123, None, "evict-2")]
 
 
 def test_flush_is_idempotent_against_debounce_max_wait_race(

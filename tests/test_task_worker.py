@@ -16,15 +16,15 @@ from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from blacki.adk_runtime import AdkRuntime, SessionLocator
 from blacki.agent import (
     TASK_WORKER_NAME,
     _task_worker_enabled,
     create_agent,
     create_app,
 )
-from blacki.callbacks import recover_telegram_tool_error
+from blacki.runtime.adk import AdkRuntime, SessionLocator
 from blacki.sandbox.config import SANDBOX_STATE_KEY
+from blacki.telegram.progress_callbacks import recover_telegram_tool_error
 from blacki.tools.registry import ToolConfig
 
 
@@ -360,7 +360,7 @@ async def test_telegram_tool_failure_does_not_fail_the_root_runner(
             return_value=ToolConfig(weather_enabled=False),
         ),
         patch("blacki.agent.build_tools", return_value=[failing_tool]),
-        patch("blacki.agent._build_model", return_value=model),
+        patch("blacki.agent.build_model", return_value=model),
         patch("blacki.agent.telegram_live_tool_progress_enabled", return_value=False),
     ):
         agent = create_agent(include_user_scoped_tools=True)
@@ -429,7 +429,7 @@ async def test_task_worker_shares_session_sandbox_state_end_to_end(
                 [inspect_sandbox_state],
             ],
         ),
-        patch("blacki.agent._build_model", return_value=model),
+        patch("blacki.agent.build_model", return_value=model),
         patch("blacki.agent.telegram_live_tool_progress_enabled", return_value=False),
     ):
         agent = create_agent()

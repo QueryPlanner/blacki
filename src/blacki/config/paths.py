@@ -18,7 +18,8 @@ def skills_directory() -> Path:
 
 def agent_root() -> Path:
     """Return the configured agent root, preserving relative paths."""
-    return Path(os.getenv("AGENT_DIR", str(package_root().parent)))
+    configured = os.getenv("AGENT_DIR", "").strip()
+    return Path(configured or package_root().parent)
 
 
 def application_data_directory() -> Path:

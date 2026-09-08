@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Generator
 from typing import Any, cast
@@ -19,10 +20,10 @@ def mock_dependencies() -> Generator[MagicMock]:
     with (
         patch("google.adk.cli.fast_api.get_fast_api_app") as mock_get_app,
         patch("blacki.utils.initialize_environment") as mock_init_env,
-        patch("blacki.utils.configure_otel_resource"),
+        patch("blacki.observability.setup.configure_otel_resource"),
         patch("openinference.instrumentation.google_adk.GoogleADKInstrumentor"),
-        patch("blacki.utils.setup_logging"),
-        patch("blacki.utils.setup_tracing"),
+        patch("blacki.observability.setup.setup_logging"),
+        patch("blacki.observability.setup.setup_tracing"),
     ):
         mock_env = MagicMock()
         mock_env.session_uri = None
@@ -54,6 +55,151 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
 
     assert call_kwargs["session_service_uri"] is None
     assert call_kwargs["lifespan"] is server.lifespan
+    assert server.env.agent_dir == server.AGENT_DIR
+
+
+def test_server_configures_privacy_before_observability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Privacy settings must precede instrumentation and exporter setup."""
+    sys.modules.pop("blacki.server", None)
+    calls: list[str] = []
+    mock_env = MagicMock()
+    mock_env.agent_name = "order-test"
+    mock_env.log_level = "INFO"
+    mock_env.allow_origins_list = ["*"]
+    mock_env.serve_web_interface = False
+    mock_env.reload_agents = False
+    mock_env.sqlite_path = None
+
+    def record_privacy() -> bool:
+        calls.append("privacy")
+        return False
+
+    def record_resource(*, agent_name: str) -> None:
+        _ = agent_name
+        calls.append("resource")
+
+    def record_instrumentation() -> None:
+        calls.append("instrumentation")
+
+    def record_logging(*, log_level: str) -> None:
+        _ = log_level
+        calls.append("logging")
+
+    def record_tracing() -> None:
+        calls.append("tracing")
+
+    with (
+        patch("google.adk.cli.fast_api.get_fast_api_app", return_value=FastAPI()),
+        patch("blacki.utils.initialize_environment", return_value=mock_env),
+        patch(
+            "blacki.security.tool_privacy.configure_private_tool_privacy",
+            side_effect=record_privacy,
+        ),
+        patch(
+            "blacki.observability.setup.configure_otel_resource",
+            side_effect=record_resource,
+        ),
+        patch(
+            "openinference.instrumentation.google_adk.GoogleADKInstrumentor"
+        ) as instrumentor,
+        patch(
+            "blacki.observability.setup.setup_logging",
+            side_effect=record_logging,
+        ),
+        patch(
+            "blacki.observability.setup.setup_tracing",
+            side_effect=record_tracing,
+        ),
+    ):
+        instrumentor.return_value.instrument.side_effect = record_instrumentation
+        import blacki.server as server
+
+    assert server.private_tool_secure_mode is False
+    assert calls == ["privacy", "resource", "instrumentation", "logging", "tracing"]
+    monkeypatch.setitem(sys.modules, "blacki.server", server)
+
+
+def test_private_startup_disables_capture_before_observability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Private mode sets capture flags before setup and skips instrumentation."""
+    monkeypatch.setenv("KOKORO_TTS_BASE_URL", "http://kokoro.internal")
+    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "true")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+    sys.modules.pop("blacki.server", None)
+    calls: list[str] = []
+    mock_env = MagicMock()
+    mock_env.agent_name = "private-order-test"
+    mock_env.log_level = "INFO"
+    mock_env.allow_origins_list = ["*"]
+    mock_env.serve_web_interface = False
+    mock_env.reload_agents = False
+    mock_env.sqlite_path = None
+    mock_env.agent_dir = "src"
+
+    from blacki.security.tool_privacy import (
+        configure_private_tool_privacy as real_configure_private_tool_privacy,
+    )
+
+    def record_privacy() -> bool:
+        result = real_configure_private_tool_privacy()
+        calls.append("privacy")
+        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+        assert (
+            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+        )
+        return result
+
+    def record_resource(*, agent_name: str) -> None:
+        _ = agent_name
+        calls.append("resource")
+        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+
+    def record_logging(*, log_level: str) -> None:
+        _ = log_level
+        calls.append("logging")
+        assert (
+            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+        )
+
+    def record_tracing() -> None:
+        calls.append("tracing")
+        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+        assert (
+            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+        )
+
+    with (
+        patch("google.adk.cli.fast_api.get_fast_api_app", return_value=FastAPI()),
+        patch("blacki.utils.initialize_environment", return_value=mock_env),
+        patch(
+            "blacki.security.tool_privacy.configure_private_tool_privacy",
+            side_effect=record_privacy,
+        ),
+        patch(
+            "blacki.observability.setup.configure_otel_resource",
+            side_effect=record_resource,
+        ),
+        patch(
+            "openinference.instrumentation.google_adk.GoogleADKInstrumentor"
+        ) as instrumentor,
+        patch(
+            "blacki.observability.setup.setup_logging",
+            side_effect=record_logging,
+        ),
+        patch(
+            "blacki.observability.setup.setup_tracing",
+            side_effect=record_tracing,
+        ),
+    ):
+        import blacki.server as server
+
+    assert server.private_tool_secure_mode is True
+    assert calls == ["privacy", "resource", "logging", "tracing"]
+    instrumentor.return_value.instrument.assert_not_called()
+    monkeypatch.setitem(sys.modules, "blacki.server", server)
 
 
 def test_server_always_mounts_dashboard(
@@ -119,6 +265,7 @@ async def test_server_lifespan_closes_search_clients(
     close_brave = AsyncMock()
     close_exa = AsyncMock()
     close_notify = AsyncMock()
+    tracer_provider = MagicMock()
     log_warning = MagicMock()
 
     with (
@@ -138,7 +285,12 @@ async def test_server_lifespan_closes_search_clients(
             new=close_brave,
         ),
         patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
-        patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
+        patch(
+            "blacki.telegram.progress_callbacks.close_shared_notify_client",
+            new=close_notify,
+        ),
+        patch.object(server, "_tracer_provider", tracer_provider),
+        patch.object(server, "shutdown_tracing") as shutdown_tracing,
     ):
         async with server.lifespan(server.app):
             pass
@@ -148,6 +300,7 @@ async def test_server_lifespan_closes_search_clients(
     close_brave.assert_awaited_once()
     close_exa.assert_awaited_once()
     close_notify.assert_awaited_once()
+    shutdown_tracing.assert_called_once_with(tracer_provider)
     log_warning.assert_called_once_with("test warning")
 
 
@@ -189,7 +342,10 @@ async def test_lifespan_cleans_up_after_validation_failure(
             new=close_brave,
         ),
         patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
-        patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
+        patch(
+            "blacki.telegram.progress_callbacks.close_shared_notify_client",
+            new=close_notify,
+        ),
         pytest.raises(server.ConfigurationError, match="invalid"),
     ):
         async with server.lifespan(server.app):
@@ -236,7 +392,10 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
             new=close_brave,
         ),
         patch("blacki.tools.search.close_shared_exa_search_client", new=close_exa),
-        patch("blacki.callbacks.close_shared_notify_client", new=close_notify),
+        patch(
+            "blacki.telegram.progress_callbacks.close_shared_notify_client",
+            new=close_notify,
+        ),
     ):
         async with server.lifespan(server.app):
             server._container = None

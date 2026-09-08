@@ -15,10 +15,10 @@ from blacki.declarative_db.plugin import (
     DeclarativeDbPlugin,
     StoredPreferencesPlugin,
 )
-from blacki.prompt import (
+from blacki.prompts.instructions import return_global_instruction
+from blacki.prompts.policies import (
     DomainPolicyPlugin,
     ResponsePolicyPlugin,
-    return_global_instruction,
 )
 
 _container_lock = asyncio.Lock()

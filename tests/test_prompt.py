@@ -12,14 +12,16 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 
-from blacki.prompt import (
-    DomainPolicyPlugin,
-    ResponsePolicyPlugin,
-    build_domain_instruction,
+from blacki.prompts.instructions import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
     return_instruction_task_worker,
+)
+from blacki.prompts.policies import (
+    DomainPolicyPlugin,
+    ResponsePolicyPlugin,
+    build_domain_instruction,
     select_domain_policy_names,
 )
 
@@ -87,6 +89,9 @@ class TestStablePromptLayers:
             in normalized
         )
         assert "Treat writing as conversation, not a report" in normalized
+        assert "The user reads replies in Telegram's mobile chat UI" in normalized
+        assert "Avoid Markdown tables and table-like code blocks" in normalized
+        assert "use a readable text list with one item per line instead" in normalized
         assert "Never invent a memory or callback" in normalized
         assert "do not take an external action without authorization" in normalized
         assert "Use these cues sparingly" in normalized
@@ -110,6 +115,7 @@ class TestStablePromptLayers:
         assert "<delegated_task_worker>" in instruction
         assert "report a concise result" in instruction
         assert "<natural_chat_style>" not in instruction
+        assert "Telegram's mobile chat UI" not in instruction
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
@@ -132,7 +138,7 @@ class TestStablePromptLayers:
         instant = datetime(2025, 1, 15, 2, 0, tzinfo=UTC)
         with (
             patch.dict("os.environ", {"AGENT_TIMEZONE": "America/New_York"}),
-            patch("blacki.prompt.now_utc", return_value=instant),
+            patch("blacki.prompts.instructions.now_utc", return_value=instant),
         ):
             instruction = return_global_instruction(mock_readonly_context)  # type: ignore[arg-type]
 

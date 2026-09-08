@@ -1,5 +1,5 @@
 # mypy: disable-error-code="no-untyped-def"
-"""Unit tests for the LoggingCallbacks class in the blacki.logging_callbacks module."""
+"""Unit tests for observability lifecycle callbacks."""
 
 import logging
 from typing import Any, cast
@@ -18,7 +18,7 @@ from conftest import (
     MockToolContext,
 )
 
-from blacki.callbacks import LoggingCallbacks
+from blacki.observability.lifecycle import LoggingCallbacks
 
 # Note: Custom mock classes (conftest.py) use duck typing to match ADK interfaces.
 
@@ -297,7 +297,7 @@ class TestModelCallbacks:
     ) -> None:
         caplog.set_level(logging.DEBUG)
         monkeypatch.setattr(
-            "blacki.callbacks.attach_cost_metadata",
+            "blacki.observability.lifecycle.attach_cost_metadata",
             lambda _response: {
                 "cost_usd": 0.01,
                 "upstream_cost_usd": 0.009,

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from blacki.privacy import is_private_tool
+from blacki.security.tool_privacy import is_private_tool
 from blacki.telegram.formatting import MARKDOWN_SPECIAL_CHARS
 from blacki.telegram.progress import describe_tool
 

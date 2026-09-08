@@ -197,16 +197,20 @@ capability-aware menu.
 
 To verify image input, select a vision-capable model, send a Telegram photo,
 and optionally add a caption as the instruction. Without a caption, Blacki asks
-the model to describe the image. Native photo input is limited to 10 MB;
+the model to describe the image. Native photo input is limited to 10 MB.
+Telegram documents whose MIME type is `image/*` also use native inline image
+input, are limited to 10 MB, and never need an OpenSandbox instance. Other
 documents, audio, video, and voice messages continue to use the sandbox upload
-path. When an image is sent as a Telegram file/document, Blacki exposes its
-`/workspace/uploads/...` path to the agent and the agent can call
-`sandbox_view_image` to attach it as a visual input. Call the tool once per
-image when several files are present; each image remains a separate model
-input rather than being combined into a collage. The tool accepts a path below
-`/workspace`, validates common PNG, JPEG, GIF, WebP, and BMP files, and is
-read-only. A model that does not support images will return the normal photo
-processing error without changing the selected model.
+path. Native photos and image documents are still best-effort copied to the
+private R2 file catalog when it is enabled; R2 or sandbox availability does not
+block their inline model turn. A media group produces one turn with separately
+labelled image parts ordered by Telegram message ID, so the model analyzes each
+image independently rather than treating the group as one collage. The
+`sandbox_view_image` tool remains available for images already in the sandbox
+or restored from R2. Because Telegram does not send a separate album-complete
+update, Blacki waits for one second of quiet after the latest album item, with
+a 15-second cap for stalled delivery. An unusually delayed item after that
+quiet window is treated as a separate media group.
 
 ## Tool notifications
 

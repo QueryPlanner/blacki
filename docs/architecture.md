@@ -24,14 +24,44 @@ per-user and per-session spend without parsing prompts or responses.
 LiteLLM/OpenRouter model from the environment, registers tools, and assembles
 the ADK application plugins.
 
+## Application composition
+
+The application dependency direction is:
+
+```text
+server -> agent -> tools
+              -> prompts and plugins
+              -> models
+              -> observability
+server -> runtime.adk -> ADK sessions and runners
+```
+
+`agent.py` is the ADK composition and discovery entry point. It selects tool
+lists from `tools/registry.py`, selects models through `models/factory.py`, and
+assembles the prompt and observability plugins. `models/inference.py` owns
+request-scoped model settings. `models/capabilities.py` keeps OpenRouter
+metadata at the provider boundary.
+
+`runtime/adk.py` owns the shared ADK runner, session versioning, confirmation
+handling, and Telegram-facing turn orchestration. `prompts/instructions.py`
+contains root and worker instruction text. `prompts/policies.py` contains
+domain routing and response-policy plugins. These packages remain separate so
+model and prompt code do not import the application composition entry point.
+
+Keep `blacki.agent`, `blacki.server:main`, and `python -m blacki.server` as the
+stable discovery and execution interfaces. New internal imports should point to
+the owning package rather than recreating root-level modules.
+
 ## Request paths
 
 ### Telegram
 
 1. The Telegram bot polls Telegram's HTTPS API for updates.
 2. A Telegram chat is mapped to the ADK runtime.
-3. Text is sent as an ADK text part. Telegram photos are downloaded, validated,
-   and sent as caption/default text plus an inline JPEG part.
+3. Text is sent as an ADK text part. Telegram photos and `image/*` documents
+   are downloaded, validated, and sent as native inline image parts. Media
+   groups become one ordered, separately labelled multimodal turn. Native image
+   uploads never require sandbox materialization; R2 cataloging is best-effort.
 4. The agent calls the configured model and tools.
 5. The response is sent back through Telegram's API. When the private Kokoro
    tool is enabled and selected, it synthesizes a bounded MP3 in memory and
@@ -107,9 +137,11 @@ Blacki uses different stores for different responsibilities:
 Compose maps `.adk_state/`, `data/`, and `logs/` from the host. Back up the
 first two as application state.
 
-Native Telegram photos are capped at 10 MB because ADK retains inline user
-parts in session history for later conversation turns. This bounds session
-database growth and image replay costs while preserving multimodal context.
+Native Telegram photos and image documents are capped at 10 MB because ADK
+retains inline user parts in session history for later conversation turns. This
+bounds session database growth and image replay costs while preserving
+multimodal context. Non-image Telegram documents continue to use the temporary
+per-session sandbox path.
 
 ## Managed integrations
 

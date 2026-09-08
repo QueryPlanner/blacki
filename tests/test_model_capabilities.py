@@ -9,7 +9,7 @@ from unittest.mock import create_autospec
 import httpx
 import pytest
 
-from blacki.model_capabilities import (
+from blacki.models.capabilities import (
     OPENROUTER_MODELS_BASE_URL,
     OpenRouterModelCapabilitiesResolver,
     normalize_openrouter_model_id,

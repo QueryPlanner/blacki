@@ -87,7 +87,7 @@ service:
 ENV_FILE=.env docker compose --env-file .env \
   -f compose.yaml -f compose.prod.yaml run --rm --no-deps --no-build \
   --entrypoint python agent -c \
-  'from blacki.utils.observability import validate_observability_environment; validate_observability_environment()'
+  'from blacki.observability.setup import validate_observability_environment; validate_observability_environment()'
 ```
 
 The production workflow runs this preflight before stopping the existing

@@ -14,8 +14,31 @@ from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
 from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 
-from .callbacks import (
-    LoggingCallbacks,
+from .models.factory import build_model, normalize_model_for_openrouter
+from .models.inference import (
+    InferenceProfile,
+    apply_inference_profile,
+    get_active_inference_profile,
+    inference_profile_from_environment,
+    load_inference_profile,
+)
+from .observability.lifecycle import LoggingCallbacks
+from .observability.privacy_logging import PrivacyAwareLoggingPlugin
+from .prompts.instructions import (
+    return_description_root,
+    return_global_instruction,
+    return_instruction_root,
+    return_instruction_task_worker,
+)
+from .prompts.policies import (
+    DomainPolicyPlugin,
+    ResponsePolicyPlugin,
+)
+from .security.tool_privacy import (
+    configure_private_tool_privacy,
+    private_tool_privacy_enabled,
+)
+from .telegram.progress_callbacks import (
     block_telegram_tool_retry,
     clear_telegram_tool_failure,
     notify_telegram_after_agent,
@@ -24,31 +47,10 @@ from .callbacks import (
     recover_telegram_tool_error,
     telegram_live_tool_progress_enabled,
 )
-from .inference import (
-    InferenceProfile,
-    apply_inference_profile,
-    get_active_inference_profile,
-    inference_profile_from_environment,
-    load_inference_profile,
-)
-from .privacy import (
-    PrivacyAwareLoggingPlugin,
-    configure_private_tool_privacy,
-    private_tool_privacy_enabled,
-)
-from .prompt import (
-    DomainPolicyPlugin,
-    ResponsePolicyPlugin,
-    return_description_root,
-    return_global_instruction,
-    return_instruction_root,
-    return_instruction_task_worker,
-)
 from .tools.registry import build_tool_config_from_env, build_tools
 
 if TYPE_CHECKING:
     from google.adk.agents.callback_context import CallbackContext
-    from google.adk.models.lite_llm import LiteLlm
     from google.adk.models.llm_request import LlmRequest
 
 logger = logging.getLogger(__name__)
@@ -84,7 +86,7 @@ class TelegramModelOverridePlugin(BasePlugin):
         if profile.model:
             model_name = profile.model
             if self.normalize_openrouter:
-                model_name = _normalize_model_for_openrouter(model_name)
+                model_name = normalize_model_for_openrouter(model_name)
             profile = profile.model_copy(update={"model": model_name})
             logger.info("Overriding model for Telegram chat to: %s", model_name)
 
@@ -136,62 +138,6 @@ def _find_and_load_dotenv() -> None:
         if candidate.is_file():
             load_dotenv(candidate, override=False)
             break
-
-
-def _normalize_model_for_openrouter(model_name: str) -> str:
-    """Map common IDs to OpenRouter/LiteLLM form when routing via OpenRouter only.
-
-    Examples:
-        ``gemini-2.5-flash`` → ``openrouter/google/gemini-2.5-flash``
-        ``google/gemini-2.0-flash-001`` → ``openrouter/google/gemini-2.0-flash-001``
-        ``openrouter/openai/gpt-oss-120b`` → unchanged
-    """
-    normalized = model_name.strip()
-    lower = normalized.lower()
-    if lower.startswith("openrouter/"):
-        return normalized
-    if "/" in normalized:
-        return f"openrouter/{normalized}"
-    if normalized.startswith("gemini-"):
-        return f"openrouter/google/{normalized}"
-    return normalized
-
-
-def _build_model() -> str | LiteLlm:
-    """Build the model configuration from environment variables.
-
-    Returns:
-        Either a string model name or a LiteLlm instance.
-    """
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
-
-    model_name = os.getenv("ROOT_AGENT_MODEL", "gemini-2.5-flash")
-    model: str | LiteLlm = model_name
-
-    use_litellm = openrouter_api_key is not None or "/" in model_name.lower()
-    if openrouter_api_key:
-        model_name = _normalize_model_for_openrouter(model_name)
-
-    if use_litellm:
-        try:
-            from google.adk.models import LiteLlm
-
-            litellm_kwargs: dict[str, Any] = {}
-            if model_name.lower().startswith("openrouter/") and openrouter_api_key:
-                litellm_kwargs["api_key"] = openrouter_api_key
-            from .llm_costs import CostAwareLiteLLMClient
-
-            litellm_kwargs["llm_client"] = CostAwareLiteLLMClient()
-
-            logger.info("Using LiteLlm for model: %s", model_name)
-            return LiteLlm(model=model_name, **litellm_kwargs)
-        except ImportError:
-            logger.warning(
-                "LiteLlm not available, falling back to string model name. "
-                "OpenRouter models may not work."
-            )
-
-    return model
 
 
 def _task_worker_enabled() -> bool:
@@ -253,7 +199,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
                 mode="task",
                 before_agent_callback=logging_callbacks.before_agent,
                 after_agent_callback=after_agent_callbacks.copy(),
-                model=_build_model(),
+                model=build_model(),
                 instruction=return_instruction_task_worker(),
                 tools=worker_tools,
                 before_model_callback=logging_callbacks.before_model,
@@ -269,7 +215,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         description=return_description_root(),
         before_agent_callback=logging_callbacks.before_agent,
         after_agent_callback=after_agent_callbacks,
-        model=_build_model(),
+        model=build_model(),
         instruction=return_instruction_root(),
         tools=agent_tools,
         before_model_callback=logging_callbacks.before_model,

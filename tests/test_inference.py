@@ -12,7 +12,7 @@ from google.genai import types
 from pydantic import ValidationError
 
 from blacki.agent import TelegramModelOverridePlugin
-from blacki.inference import (
+from blacki.models.inference import (
     InferenceProfile,
     ReasoningConfig,
     ReasoningEffort,

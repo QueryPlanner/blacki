@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from ..usage_ledger import (
+from ..observability.ledger import (
     LedgerSummary,
     UsageLedgerSnapshot,
     fixed_cost_to_usd,

@@ -61,6 +61,19 @@ If any command changes files or you fix a failure, restart the sequence from
 The coverage threshold is 100% branch coverage. Tests should exercise real
 internal classes and mock only external boundaries.
 
+## Add a tool
+
+Put a Blacki-owned callable tool or toolset in `src/blacki/tools/`. Keep the
+provider client, OAuth service, storage, and other supporting code in its
+existing domain package. Register the tool in `src/blacki/tools/registry.py`
+and add it to the appropriate public, private, or worker exposure path.
+
+Do not import `blacki.agent`, `blacki.server`, or `blacki.telegram` from a tool
+module. Do not add a tool to a domain package `__init__.py` as a shortcut. Add
+tests for its successful result, its provider-missing or failure path, its
+exposure boundary, and any confirmation metadata. Run the full quality-check
+sequence after changing the registry or an exposure rule.
+
 ## Documentation
 
 Install the documentation group and start the live preview:
