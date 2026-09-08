@@ -39,9 +39,12 @@ from .security.tool_privacy import (
     private_tool_privacy_enabled,
 )
 from .telegram.progress_callbacks import (
+    block_telegram_tool_retry,
+    clear_telegram_tool_failure,
     notify_telegram_after_agent,
     notify_telegram_after_model,
     notify_telegram_before_tool,
+    recover_telegram_tool_error,
     telegram_live_tool_progress_enabled,
 )
 from .tools.registry import build_tool_config_from_env, build_tools
@@ -174,6 +177,14 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         after_model_callbacks.append(notify_telegram_after_model)
         after_agent_callbacks.append(notify_telegram_after_agent)
 
+    if include_user_scoped_tools:
+        before_tool_callbacks.append(block_telegram_tool_retry)
+        after_agent_callbacks.append(clear_telegram_tool_failure)
+
+    telegram_tool_error_callback = (
+        recover_telegram_tool_error if include_user_scoped_tools else None
+    )
+
     sub_agents: list[BaseAgent] = []
     if _task_worker_enabled():
         worker_tools = build_tools(tool_config, include_user_scoped_tools=False)
@@ -195,6 +206,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
                 after_model_callback=after_model_callbacks.copy(),
                 before_tool_callback=before_tool_callbacks.copy(),
                 after_tool_callback=logging_callbacks.after_tool,
+                on_tool_error_callback=telegram_tool_error_callback,
             )
         )
 
@@ -210,6 +222,7 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         after_model_callback=after_model_callbacks,
         before_tool_callback=before_tool_callbacks,
         after_tool_callback=logging_callbacks.after_tool,
+        on_tool_error_callback=telegram_tool_error_callback,
         sub_agents=sub_agents,
     )
 
