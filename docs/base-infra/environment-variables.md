@@ -99,12 +99,21 @@ its presence changes model routing.
 | `CLOUDFLARE_API_TOKEN` | unset | Cloudflare Workers AI API token for Telegram voice transcription |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
 | `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
+| `BROWSER_TAKEOVER_PUBLIC_URL` | unset | HTTPS URL for private Agent Browser takeover |
+| `BROWSER_TAKEOVER_TTL_SECONDS` | `300` | One-time takeover lifetime, from 60 to 900 seconds |
+| `BROWSER_TAKEOVER_STREAM_PORT` | `9223` | Agent Browser stream port inside each sandbox |
 
 The token is required and format-validated when Telegram is enabled. When
 `TELEGRAM_ACCESS_CODE` is set, new users enter it with `/start <access-code>`;
 historical private chats with existing Blacki sessions remain authorized, while
 groups and topics are rejected. Rotating the code requires code-authorized
 users to authenticate again without deleting their stored Blacki data.
+
+Browser takeover is enabled only when `BROWSER_TAKEOVER_PUBLIC_URL` is set.
+Put that route behind an authenticated HTTPS reverse proxy on Tailscale. The
+tool sends its one-time fragment link directly to the private Telegram chat,
+waits for the user to return control, and never includes the link in model
+context. The sandbox image must provide the `agent-browser` executable.
 
 `KOKORO_TTS_BASE_URL` is an optional HTTP or HTTPS base URL without a path to
 `/v1/audio/speech`; Blacki appends that fixed endpoint. The URL must be

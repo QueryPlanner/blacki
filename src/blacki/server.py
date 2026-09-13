@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
 from openinference.instrumentation.google_adk import GoogleADKInstrumentor
 
+from .browser_takeover.routes import create_browser_takeover_router
 from .config.paths import agent_root
 from .container import AppContainer, close_container, init_container
 from .dashboard.routes import create_dashboard_router
@@ -381,6 +382,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         from .telegram.progress_callbacks import close_shared_notify_client
 
         await close_shared_notify_client()
+
+        from .browser_takeover import reset_browser_takeover_service
+
+        await reset_browser_takeover_service()
         _shutdown_tracer_provider()
 
 
@@ -396,6 +401,7 @@ app: FastAPI = get_fast_api_app(
 )
 
 app.include_router(create_dashboard_router(env))
+app.include_router(create_browser_takeover_router())
 
 
 @app.get(

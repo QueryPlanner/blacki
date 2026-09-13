@@ -51,6 +51,7 @@ nav:
       - Telegram setup: telegram-setup.md
       - Zepto MCP: zepto-mcp.md
       - Gmail API: gmail.md
+      - Private browser takeover: browser-takeover.md
       - Local development: development.md
   - Operate:
       - Configuration: base-infra/environment-variables.md
