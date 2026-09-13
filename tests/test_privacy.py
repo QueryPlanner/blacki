@@ -61,6 +61,7 @@ def test_private_tool_identification_uses_zepto_and_gmail_prefix() -> None:
     assert is_private_tool(_tool("send_text_to_speech")) is True
     assert is_private_tool(_tool("search_products")) is False
     assert is_private_tool(_tool("get_health_summary")) is True
+    assert is_private_tool(_tool("start_browser_takeover")) is True
 
 
 def test_configure_zepto_privacy_is_explicit_and_forces_safe_values(
@@ -135,6 +136,17 @@ def test_kokoro_tts_enables_content_redaction(
 
     assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
     assert os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+
+
+def test_browser_takeover_enables_content_redaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "BROWSER_TAKEOVER_PUBLIC_URL",
+        "https://blacki.example.ts.net/browser-takeover",
+    )
+
+    assert private_tool_privacy_enabled() is True
 
 
 def test_secure_zepto_app_removes_content_logging_plugin(

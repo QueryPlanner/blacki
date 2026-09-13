@@ -87,6 +87,7 @@ class BrowserTakeoverService:
         """Start streaming the session browser and mint a single-use link."""
         safe_url = _validated_login_url(login_url)
         owner_key = self._owner_key(state)
+        expired_session: _TakeoverSession | None = None
         async with self._lock:
             active_id = self._owners.get(owner_key)
             active = self._sessions.get(active_id or "")
@@ -96,14 +97,18 @@ class BrowserTakeoverService:
                 )
             if active is not None:
                 self._remove_session_locked(active)
+                expired_session = active
             if owner_key in self._starting_owners:
                 raise BrowserTakeoverError(
                     "A browser takeover is already starting for this conversation"
                 )
             self._starting_owners.add(owner_key)
 
-        manager = get_sandbox_manager()
+        sandbox: Any | None = None
         try:
+            if expired_session is not None:
+                await self._stop_stream(expired_session.sandbox)
+            manager = get_sandbox_manager()
             result = await manager.get_or_create_sandbox(state)
             sandbox = result.get("sandbox")
             if sandbox is None:
@@ -121,16 +126,13 @@ class BrowserTakeoverService:
                 raise BrowserTakeoverError("Agent Browser takeover could not start")
             endpoint = await sandbox.get_endpoint(self.config.stream_port)
         except BrowserTakeoverError:
-            async with self._lock:
-                self._starting_owners.discard(owner_key)
+            await self._abort_start(owner_key, sandbox)
             raise
         except asyncio.CancelledError:
-            async with self._lock:
-                self._starting_owners.discard(owner_key)
+            await self._abort_start(owner_key, sandbox)
             raise
         except Exception as exc:
-            async with self._lock:
-                self._starting_owners.discard(owner_key)
+            await self._abort_start(owner_key, sandbox)
             raise BrowserTakeoverError(
                 "Agent Browser takeover could not start"
             ) from exc
@@ -159,33 +161,45 @@ class BrowserTakeoverService:
 
     async def redeem(self, takeover_token: str) -> str | None:
         """Consume a link token and return a cookie token exactly once."""
-        if not takeover_token or len(takeover_token) > 256:
+        if not isinstance(takeover_token, str) or not takeover_token:
             return None
+        if len(takeover_token) > 256:
+            return None
+        expired_session: _TakeoverSession | None = None
         async with self._lock:
             session_id = self._takeover_tokens.pop(_digest(takeover_token), None)
             session = self._sessions.get(session_id or "")
             if session is None or self._expired(session):
                 if session is not None:
                     self._remove_session_locked(session)
-                return None
-            browser_token = secrets.token_urlsafe(32)
-            digest = _digest(browser_token)
-            session.browser_token_digest = digest
-            self._browser_tokens[digest] = session.session_id
-            return browser_token
+                    expired_session = session
+            else:
+                browser_token = secrets.token_urlsafe(32)
+                digest = _digest(browser_token)
+                session.browser_token_digest = digest
+                self._browser_tokens[digest] = session.session_id
+                return browser_token
+        if expired_session is not None:
+            await self._stop_stream(expired_session.sandbox)
+        return None
 
     async def authorize(self, browser_token: str | None) -> _TakeoverSession | None:
         """Resolve an active browser cookie without exposing its value."""
         if not browser_token:
             return None
+        expired_session: _TakeoverSession | None = None
         async with self._lock:
             session_id = self._browser_tokens.get(_digest(browser_token))
             session = self._sessions.get(session_id or "")
             if session is None or self._expired(session):
                 if session is not None:
                     self._remove_session_locked(session)
-                return None
-            return session
+                    expired_session = session
+            else:
+                return session
+        if expired_session is not None:
+            await self._stop_stream(expired_session.sandbox)
+        return None
 
     async def complete(self, browser_token: str | None) -> bool:
         """End human control and wake the waiting agent tool."""
@@ -216,13 +230,7 @@ class BrowserTakeoverService:
                 self._remove_session_locked(session)
         if session is None:
             return
-        try:
-            await session.sandbox.commands.run(
-                _STOP_COMMAND,
-                opts=RunCommandOpts(timeout=timedelta(seconds=10)),
-            )
-        except Exception:
-            return
+        await self._stop_stream(session.sandbox)
 
     async def close_all(self) -> None:
         """Invalidate all links during application shutdown."""
@@ -241,13 +249,23 @@ class BrowserTakeoverService:
             if sandbox_key in stopped:
                 continue
             stopped.add(sandbox_key)
-            try:
-                await session.sandbox.commands.run(
-                    _STOP_COMMAND,
-                    opts=RunCommandOpts(timeout=timedelta(seconds=10)),
-                )
-            except Exception:  # noqa: S112 - shutdown stays silent and secret-free
-                continue
+            await self._stop_stream(session.sandbox)
+
+    async def _abort_start(self, owner_key: str, sandbox: Any | None) -> None:
+        if sandbox is not None:
+            await self._stop_stream(sandbox)
+        async with self._lock:
+            self._starting_owners.discard(owner_key)
+
+    @staticmethod
+    async def _stop_stream(sandbox: Any) -> None:
+        try:
+            await sandbox.commands.run(
+                _STOP_COMMAND,
+                opts=RunCommandOpts(timeout=timedelta(seconds=10)),
+            )
+        except Exception:  # noqa: S112 - cleanup stays silent and secret-free
+            return
 
     @staticmethod
     def _owner_key(state: Any) -> str:

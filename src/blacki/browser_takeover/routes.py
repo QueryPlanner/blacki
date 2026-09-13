@@ -218,6 +218,8 @@ def create_browser_takeover_router() -> APIRouter:
                 return _private_response({"status": "invalid"}, status_code=404)
             body = json.loads(raw_body)
             token = body.get("token", "") if isinstance(body, dict) else ""
+            if not isinstance(token, str):
+                token = ""
         except (json.JSONDecodeError, UnicodeDecodeError):
             token = ""
         browser_token = await service.redeem(token)
@@ -257,11 +259,10 @@ def create_browser_takeover_router() -> APIRouter:
             service is not None
             and websocket.headers.get("origin") == service.config.public_origin
         )
-        session = (
-            await service.authorize(token)
-            if service is not None and same_origin
-            else None
-        )
+        if service is None or not same_origin:
+            await websocket.close(code=4401)
+            return
+        session = await service.authorize(token)
         if session is None:
             await websocket.close(code=4401)
             return
@@ -302,5 +303,7 @@ def create_browser_takeover_router() -> APIRouter:
             return
         except Exception:
             await websocket.close(code=1011)
+        finally:
+            await service.complete(token)
 
     return router
