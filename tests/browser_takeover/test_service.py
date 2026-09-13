@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,7 +23,7 @@ class FakeCommands:
         self.error = error
         self.calls: list[tuple[str, object]] = []
 
-    async def run(self, command: str, *, opts: object) -> SimpleNamespace:
+    async def run(self, command: str, *, opts: Any) -> SimpleNamespace:
         self.calls.append((command, opts))
         return SimpleNamespace(error=self.error)
 
