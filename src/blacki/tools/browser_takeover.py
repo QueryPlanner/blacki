@@ -83,7 +83,13 @@ async def _send_takeover_link(
             protect_content=True,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text="Take over browser", url=takeover_url)]
+                    [
+                        InlineKeyboardButton(
+                            text="Take over browser",
+                            callback_data=None,
+                            url=takeover_url,
+                        )
+                    ]
                 ]
             ),
         )
