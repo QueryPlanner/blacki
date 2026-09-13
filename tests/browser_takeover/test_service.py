@@ -9,6 +9,7 @@ import pytest
 from blacki.browser_takeover.config import BrowserTakeoverConfig
 from blacki.browser_takeover.service import (
     BrowserTakeoverError,
+    BrowserTakeoverLease,
     BrowserTakeoverService,
     _websocket_url,
     get_browser_takeover_service,
@@ -59,7 +60,7 @@ async def _create(
     service: BrowserTakeoverService,
     state: dict[str, str],
     sandbox: FakeSandbox | None = None,
-):
+) -> tuple[BrowserTakeoverLease, FakeSandbox]:
     sandbox = sandbox or FakeSandbox()
     manager = SimpleNamespace(
         get_or_create_sandbox=AsyncMock(
