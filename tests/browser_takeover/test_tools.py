@@ -1,20 +1,27 @@
 """Tests for the model-blind Telegram takeover tool."""
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from google.adk.tools import ToolContext
 
 from blacki.browser_takeover import BrowserTakeoverError, BrowserTakeoverLease
 from blacki.tools.browser_takeover import _send_takeover_link, start_browser_takeover
 
 
-def _context() -> SimpleNamespace:
-    return SimpleNamespace(
-        state={
-            "telegram_chat_id": "42",
-            "telegram_thread_id": "9",
-            "telegram_chat_type": "private",
-            "temp:telegram_sender_user_id": "42",
-        }
+def _context() -> ToolContext:
+    return cast(
+        ToolContext,
+        SimpleNamespace(
+            state={
+                "telegram_chat_id": "42",
+                "telegram_thread_id": "9",
+                "telegram_chat_type": "private",
+                "temp:telegram_sender_user_id": "42",
+            },
+        ),
     )
 
 
@@ -111,7 +118,7 @@ async def test_tool_handles_unavailable_create_expiry_and_delivery_failure() -> 
 
 
 async def test_link_is_sent_directly_as_protected_telegram_content(
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot-token")
     api = AsyncMock()
@@ -136,7 +143,9 @@ async def test_link_is_sent_directly_as_protected_telegram_content(
     assert kwargs["reply_markup"].inline_keyboard[0][0].url.endswith("#token")
 
 
-async def test_link_delivery_requires_telegram_token(monkeypatch) -> None:
+async def test_link_delivery_requires_telegram_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
 
     try:
