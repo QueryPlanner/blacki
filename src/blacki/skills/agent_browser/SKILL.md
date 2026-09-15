@@ -194,6 +194,12 @@ agent-browser auth save my-app --url https://app.example.com/login \
 agent-browser auth login my-app    # fills + clicks, waits for form
 ```
 
+In a private Telegram session, prefer `start_browser_takeover` when it is
+available. It pauses the tool call, sends a one-time interactive browser link
+directly to the user, and resumes only after the user returns control. Never ask
+the user to send a password or OTP through Telegram. Never put credentials in a
+`sandbox_run_command` argument, environment variable, file, or tool result.
+
 ### Persist session across runs
 
 ```bash

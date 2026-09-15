@@ -261,6 +261,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -304,6 +305,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.11.0,<3.0.0" },
     { name = "python-dotenv", specifier = ">=1.0.0,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.0,<7.0.0" },
+    { name = "websockets", specifier = ">=15.0.1,<16.0.0" },
 ]
 
 [package.metadata.requires-dev]

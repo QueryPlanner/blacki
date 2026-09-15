@@ -24,6 +24,7 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "list_user_files",
         "restore_user_file",
         "delete_user_file",
+        "start_browser_takeover",
     }
 )
 
@@ -70,6 +71,7 @@ def private_tool_privacy_enabled() -> bool:
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
+        or bool(os.getenv("BROWSER_TAKEOVER_PUBLIC_URL", "").strip())
     )
 
 

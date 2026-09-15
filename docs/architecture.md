@@ -216,6 +216,28 @@ An authenticated capability must be implemented as a separately authorized,
 short-lived broker operation. Adding a standing environment variable is not an
 acceptable opt-in path.
 
+### Browser authentication takeover
+
+When `BROWSER_TAKEOVER_PUBLIC_URL` is configured, the private Telegram root
+agent can pause an Agent Browser operation and hand the live browser viewport
+to the authenticated Telegram user. Blacki sends the one-time link directly
+through the Telegram API; the tool result returned to the model never contains
+the link or its token.
+
+The browser page redeems the fragment token once, replaces it with an
+HttpOnly, SameSite cookie, and proxies only Agent Browser's viewport and input
+protocol. Passwords, OTPs, and typed text travel as transient browser
+input events. They are not ADK messages, tool arguments, session events, or log
+fields. Completing the takeover closes the stream before the model resumes.
+
+Takeover state is process-local, hashed, bound to one private Telegram
+conversation, and expires after five minutes by default. The upstream sandbox
+endpoint and routing headers are never sent to the browser client. The public
+URL must sit behind authenticated HTTPS, normally a Tailscale ACL. Browser
+cookies and local storage remain sensitive state inside the session sandbox.
+Do not enable traces, screenshots, HAR capture, or video recording during a
+takeover.
+
 ## Health semantics
 
 `/live` is side-effect-free and process-only. `/ready` checks the already

@@ -52,6 +52,7 @@ class ToolConfig:
     zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
     gmail_config: GmailConfig | None = field(default=None, repr=False)
     r2_files_enabled: bool = False
+    browser_takeover_enabled: bool = False
 
 
 def build_tools(
@@ -112,6 +113,13 @@ def build_tools(
 
     if include_user_scoped_tools and config.r2_files_enabled:
         tools.extend(_build_user_file_tools())
+
+    if (
+        include_user_scoped_tools
+        and config.sandbox_enabled
+        and config.browser_takeover_enabled
+    ):
+        tools.extend(_build_browser_takeover_tools())
 
     tools.extend(_build_memory_tools())
 
@@ -371,6 +379,18 @@ def _build_user_file_tools() -> list[Any]:
         return []
 
 
+def _build_browser_takeover_tools() -> list[Any]:
+    """Build the private Telegram Agent Browser takeover tool."""
+    try:
+        from blacki.tools.browser_takeover import start_browser_takeover
+
+        logger.info("Private browser takeover tool enabled for the Telegram root agent")
+        return [start_browser_takeover]
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("Private browser takeover tool disabled: %s", exc)
+        return []
+
+
 def _build_health_tools() -> list[Any]:
     """Build the private, read-only Google Health tool."""
     try:
@@ -432,6 +452,9 @@ def build_tool_config_from_env() -> ToolConfig:
         gmail_config = GmailConfig.from_environment()
     except GmailConfigurationError as exc:
         logger.warning("Gmail API disabled: %s", exc)
+    from blacki.browser_takeover import BrowserTakeoverConfig
+
+    browser_takeover_enabled = BrowserTakeoverConfig.from_environment() is not None
 
     return ToolConfig(
         exa_api_key=os.getenv("EXA_API_KEY", "").strip() or None,
@@ -460,6 +483,7 @@ def build_tool_config_from_env() -> ToolConfig:
         gmail_config=gmail_config,
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
+        browser_takeover_enabled=browser_takeover_enabled,
     )
 
 
