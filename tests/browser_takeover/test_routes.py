@@ -263,7 +263,7 @@ def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None
         max_size=8 * 1024 * 1024,
     )
     service.authorize.assert_awaited_once_with("browser-cookie")
-    service.complete.assert_awaited_once_with("browser-cookie")
+    service.complete.assert_not_awaited()
 
 
 def test_websocket_forwards_valid_input_and_binary_frames() -> None:
@@ -289,7 +289,7 @@ def test_websocket_forwards_valid_input_and_binary_frames() -> None:
         assert websocket.receive_bytes() == b"frame"
 
     assert upstream.sent == [message]
-    service.complete.assert_awaited_once_with("browser-cookie")
+    service.complete.assert_not_awaited()
 
 
 def test_websocket_ignores_upstream_disconnect() -> None:
@@ -313,7 +313,7 @@ def test_websocket_ignores_upstream_disconnect() -> None:
     ):
         pass
 
-    service.complete.assert_awaited_once_with("browser-cookie")
+    service.complete.assert_not_awaited()
 
 
 def test_websocket_closes_on_unexpected_upstream_error() -> None:
@@ -339,4 +339,4 @@ def test_websocket_closes_on_unexpected_upstream_error() -> None:
         websocket.receive_text()
 
     assert caught.value.code == 1011
-    service.complete.assert_awaited_once_with("browser-cookie")
+    service.complete.assert_not_awaited()
