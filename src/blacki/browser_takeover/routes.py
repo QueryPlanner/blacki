@@ -303,7 +303,5 @@ def create_browser_takeover_router() -> APIRouter:
             return
         except Exception:
             await websocket.close(code=1011)
-        finally:
-            await service.complete(token)
 
     return router
