@@ -35,8 +35,10 @@ class _TakeoverSession:
     sandbox: Any = field(repr=False)
     upstream_url: str = field(repr=False)
     upstream_headers: dict[str, str] = field(repr=False)
+    expected_origin: str
     expires_at: float
-    completed: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    finished: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    completed: bool = False
     browser_token_digest: str | None = field(default=None, repr=False)
 
 
@@ -70,6 +72,27 @@ def _validated_login_url(login_url: str) -> str:
     return parsed.geturl()
 
 
+def _origin(url: str) -> str:
+    parsed = urlsplit(url)
+    host = parsed.hostname
+    if host is None:
+        raise BrowserTakeoverError("Browser takeover requires a valid login host")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise BrowserTakeoverError(
+            "Browser takeover login URL has an invalid port"
+        ) from exc
+    host = host.lower()
+    if ":" in host:
+        host = f"[{host}]"
+    default_port = (parsed.scheme == "https" and port == 443) or (
+        parsed.scheme == "http" and port == 80
+    )
+    port_suffix = "" if port is None or default_port else f":{port}"
+    return f"{parsed.scheme.lower()}://{host}{port_suffix}"
+
+
 class BrowserTakeoverService:
     """Create one-time links and proxy only the matching browser stream."""
 
@@ -86,6 +109,7 @@ class BrowserTakeoverService:
     async def create(self, *, login_url: str, state: Any) -> BrowserTakeoverLease:
         """Start streaming the session browser and mint a single-use link."""
         safe_url = _validated_login_url(login_url)
+        expected_origin = _origin(safe_url)
         owner_key = self._owner_key(state)
         expired_session: _TakeoverSession | None = None
         async with self._lock:
@@ -145,6 +169,7 @@ class BrowserTakeoverService:
             sandbox=sandbox,
             upstream_url=_websocket_url(endpoint.endpoint),
             upstream_headers=dict(endpoint.headers),
+            expected_origin=expected_origin,
             expires_at=time.monotonic() + self.config.ttl_seconds,
         )
         async with self._lock:
@@ -206,19 +231,20 @@ class BrowserTakeoverService:
         session = await self.authorize(browser_token)
         if session is None:
             return False
-        session.completed.set()
+        session.completed = True
+        session.finished.set()
         return True
 
     async def wait(self, lease: BrowserTakeoverLease) -> bool:
-        """Wait for the user to return control or for the lease to expire."""
+        """Wait for explicit user completion or for the lease to end."""
         async with self._lock:
             session = self._sessions.get(lease.session_id)
         if session is None:
             return False
         remaining = max(0.0, session.expires_at - time.monotonic())
         try:
-            await asyncio.wait_for(session.completed.wait(), timeout=remaining)
-            return True
+            await asyncio.wait_for(session.finished.wait(), timeout=remaining)
+            return session.completed
         except TimeoutError:
             return False
 
@@ -242,7 +268,7 @@ class BrowserTakeoverService:
             self._owners.clear()
             self._starting_owners.clear()
         for session in sessions:
-            session.completed.set()
+            session.finished.set()
         stopped: set[int] = set()
         for session in sessions:
             sandbox_key = id(session.sandbox)
@@ -298,7 +324,7 @@ class BrowserTakeoverService:
             self._takeover_tokens.pop(token, None)
         if session.browser_token_digest:
             self._browser_tokens.pop(session.browser_token_digest, None)
-        session.completed.set()
+        session.finished.set()
 
 
 _service: BrowserTakeoverService | None = None
