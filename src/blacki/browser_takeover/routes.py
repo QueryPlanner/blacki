@@ -361,9 +361,7 @@ def _valid_keyboard(payload: dict[str, Any]) -> bool:
     if event_type not in _ALLOWED_KEYBOARD_EVENTS:
         return False
     modifiers = payload.get("modifiers")
-    if modifiers is not None and (
-        not _is_int(modifiers) or not 0 <= modifiers <= 15
-    ):
+    if modifiers is not None and (not _is_int(modifiers) or not 0 <= modifiers <= 15):
         return False
     if event_type == "char":
         text = payload.get("text")
@@ -374,11 +372,7 @@ def _valid_keyboard(payload: dict[str, Any]) -> bool:
         )
     key = payload.get("key")
     code = payload.get("code")
-    return (
-        _short_string(key)
-        and bool(key)
-        and (code is None or _short_string(code))
-    )
+    return _short_string(key) and bool(key) and (code is None or _short_string(code))
 
 
 def _valid_mouse(payload: dict[str, Any]) -> bool:
@@ -403,9 +397,7 @@ def _valid_mouse(payload: dict[str, Any]) -> bool:
     if not _bounded_number(payload.get("x")) or not _bounded_number(payload.get("y")):
         return False
     modifiers = payload.get("modifiers")
-    if modifiers is not None and (
-        not _is_int(modifiers) or not 0 <= modifiers <= 15
-    ):
+    if modifiers is not None and (not _is_int(modifiers) or not 0 <= modifiers <= 15):
         return False
     button = payload.get("button")
     if button is not None and button not in _ALLOWED_MOUSE_BUTTONS:
@@ -418,9 +410,8 @@ def _valid_mouse(payload: dict[str, Any]) -> bool:
     if event_type == "mouseWheel":
         if "deltaX" not in payload and "deltaY" not in payload:
             return False
-        return (
-            ("deltaX" not in payload or _bounded_number(payload.get("deltaX")))
-            and ("deltaY" not in payload or _bounded_number(payload.get("deltaY")))
+        return ("deltaX" not in payload or _bounded_number(payload.get("deltaX"))) and (
+            "deltaY" not in payload or _bounded_number(payload.get("deltaY"))
         )
     return True
 

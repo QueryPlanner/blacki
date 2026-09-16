@@ -159,15 +159,13 @@ def test_complete_requires_origin_and_valid_cookie() -> None:
 def test_client_protocol_is_allowlisted_and_shape_validated() -> None:
     assert (
         _valid_client_message(
-            '{"type":"input_keyboard","eventType":"keyDown",'
-            '"key":"x","code":"KeyX"}'
+            '{"type":"input_keyboard","eventType":"keyDown","key":"x","code":"KeyX"}'
         )
         is True
     )
     assert (
         _valid_client_message(
-            '{"type":"input_mouse","eventType":"mouseWheel",'
-            '"x":10,"y":20,"deltaY":100}'
+            '{"type":"input_mouse","eventType":"mouseWheel","x":10,"y":20,"deltaY":100}'
         )
         is True
     )
@@ -347,10 +345,7 @@ def test_websocket_forwards_valid_input_and_binary_frames() -> None:
     upstream = _InteractiveUpstream()
     client = TestClient(_app())
     client.cookies.set(COOKIE_NAME, "browser-cookie")
-    message = (
-        '{"type":"input_keyboard","eventType":"keyDown",'
-        '"key":"x","code":"KeyX"}'
-    )
+    message = '{"type":"input_keyboard","eventType":"keyDown","key":"x","code":"KeyX"}'
     with (
         patch("blacki.browser_takeover.routes._service", return_value=service),
         patch("blacki.browser_takeover.routes.connect", return_value=upstream),
