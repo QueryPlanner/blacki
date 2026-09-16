@@ -1,6 +1,5 @@
 """Private human takeover for Agent Browser sessions."""
 
-# CI type-fix trigger; removed after the branch patch lands.
 from .config import BrowserTakeoverConfig, BrowserTakeoverConfigurationError
 from .service import (
     BrowserTakeoverError,
