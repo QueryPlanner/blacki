@@ -13,6 +13,7 @@ from blacki.browser_takeover.service import (
     BrowserTakeoverError,
     BrowserTakeoverLease,
     BrowserTakeoverService,
+    _origin,
     _websocket_url,
     get_browser_takeover_service,
     reset_browser_takeover_service,
@@ -492,6 +493,15 @@ def test_websocket_endpoint_normalization() -> None:
     assert _websocket_url("sandbox:9223") == "ws://sandbox:9223"
     assert _websocket_url("http://sandbox/route") == "ws://sandbox/route"
     assert _websocket_url("wss://sandbox/route") == "wss://sandbox/route"
+
+
+def test_login_origin_normalizes_ipv6_hosts() -> None:
+    assert _origin("https://[::1]/login") == "https://[::1]"
+
+
+def test_login_origin_rejects_missing_hosts() -> None:
+    with pytest.raises(BrowserTakeoverError, match="valid login host"):
+        _origin("https://:443/login")
 
 
 async def test_process_service_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:

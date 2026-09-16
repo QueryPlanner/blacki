@@ -171,6 +171,12 @@ def test_client_protocol_is_allowlisted_and_shape_validated() -> None:
     )
     assert (
         _valid_client_message(
+            '{"type":"input_mouse","eventType":"mousePressed","x":10,"y":20}'
+        )
+        is True
+    )
+    assert (
+        _valid_client_message(
             '{"type":"input_touch","eventType":"touchStart",'
             '"touchPoints":[{"x":10,"y":20,"id":1}]}'
         )
@@ -191,6 +197,123 @@ def test_client_protocol_is_allowlisted_and_shape_validated() -> None:
     assert _valid_client_message('{"type":"config","maxFps":121}') is False
     assert _valid_client_message("not-json") is False
     assert _valid_client_message("x" * (16 * 1024 + 1)) is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "ack", "seq": 3, "extra": True},
+        {"type": "config"},
+        {"type": "config", "extra": True},
+        {
+            "type": "input_keyboard",
+            "eventType": "unsupported",
+            "key": "x",
+        },
+        {
+            "type": "input_keyboard",
+            "eventType": "keyDown",
+            "key": "x",
+            "modifiers": 16,
+        },
+        {"type": "input_keyboard", "eventType": "char", "text": ""},
+        {
+            "type": "input_mouse",
+            "eventType": "unsupported",
+            "x": 1,
+            "y": 1,
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mousePressed",
+            "x": 1,
+            "y": 1,
+            "extra": True,
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mousePressed",
+            "x": "bad",
+            "y": 1,
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mousePressed",
+            "x": 1,
+            "y": 1,
+            "modifiers": 16,
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mousePressed",
+            "x": 1,
+            "y": 1,
+            "button": "bad",
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mousePressed",
+            "x": 1,
+            "y": 1,
+            "clickCount": 4,
+        },
+        {
+            "type": "input_mouse",
+            "eventType": "mouseWheel",
+            "x": 1,
+            "y": 1,
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [1],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [{"x": 1, "y": 1, "id": 1, "extra": True}],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [{"x": "bad", "y": 1}],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "unsupported",
+            "touchPoints": [],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": "bad",
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [{"x": 0, "y": 0}] * 11,
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchMove",
+            "touchPoints": [],
+        },
+        {
+            "type": "input_touch",
+            "eventType": "touchStart",
+            "touchPoints": [],
+            "extra": True,
+        },
+        [],
+    ],
+)
+def test_client_protocol_rejects_malformed_shapes(payload: object) -> None:
+    assert _valid_client_message(json.dumps(payload)) is False
 
 
 def test_server_protocol_drops_sensitive_noise_and_sanitizes_navigation() -> None:
@@ -218,6 +341,38 @@ def test_server_protocol_drops_sensitive_noise_and_sanitizes_navigation() -> Non
 
     assert _safe_server_message('{"type":"console","text":"password"}') is None
     assert _safe_server_message('{"type":"tabs","tabs":[]}') is None
+    assert _safe_server_message("[]") is None
+    assert _safe_server_message('{"type":"frame","data":123}') is None
+    frame_without_optional_data = _safe_server_message(
+        '{"type":"frame","seq":-1,"data":"abc"}'
+    )
+    assert frame_without_optional_data is not None
+    assert json.loads(frame_without_optional_data) == {
+        "type": "frame",
+        "data": "abc",
+    }
+    frame_without_safe_metadata = _safe_server_message(
+        '{"type":"frame","data":"abc","metadata":{"evil":"secret"}}'
+    )
+    assert frame_without_safe_metadata is not None
+    assert json.loads(frame_without_safe_metadata) == {
+        "type": "frame",
+        "data": "abc",
+    }
+    assert _safe_server_message('{"type":"status","connected":"yes"}') is None
+    assert _safe_server_message('{"type":"url","url":123}') is None
+    assert (
+        _safe_server_message('{"type":"url","url":"https://example.test:bad"}') is None
+    )
+    assert _safe_server_message('{"type":"url","url":"ftp://example.test"}') is None
+    ipv6_navigation = _safe_server_message(
+        '{"type":"url","url":"https://[::1]:443/login"}'
+    )
+    assert ipv6_navigation is not None
+    assert json.loads(ipv6_navigation) == {
+        "type": "navigation",
+        "origin": "https://[::1]",
+    }
     assert _safe_server_message("not-json") is None
 
 
@@ -310,6 +465,31 @@ class _InteractiveUpstream:
         self._message_received.set()
 
 
+class _TwoMessageUpstream:
+    def __init__(self) -> None:
+        self._messages = [
+            '{"type":"console","text":"secret"}',
+            '{"type":"status","connected":true}',
+        ]
+
+    async def __aenter__(self) -> "_TwoMessageUpstream":
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    def __aiter__(self) -> "_TwoMessageUpstream":
+        return self
+
+    async def __anext__(self) -> str:
+        if not self._messages:
+            raise StopAsyncIteration
+        return self._messages.pop(0)
+
+    async def send(self, _message: str) -> None:
+        return None
+
+
 def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None:
     service = _service()
     service.authorize.return_value = _authorized_session()
@@ -336,6 +516,29 @@ def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None
         max_size=8 * 1024 * 1024,
     )
     service.authorize.assert_awaited_once_with("browser-cookie")
+    service.complete.assert_not_awaited()
+
+
+def test_websocket_drops_unsafe_server_messages_before_safe_messages() -> None:
+    service = _service()
+    service.authorize.return_value = _authorized_session()
+    upstream = _TwoMessageUpstream()
+    client = TestClient(_app())
+    client.cookies.set(COOKIE_NAME, "browser-cookie")
+    with (
+        patch("blacki.browser_takeover.routes._service", return_value=service),
+        patch("blacki.browser_takeover.routes.connect", return_value=upstream),
+        client.websocket_connect(
+            "/browser-takeover/ws",
+            headers={"origin": "http://127.0.0.1"},
+        ) as websocket,
+    ):
+        assert websocket.receive_json()["type"] == "takeover_meta"
+        assert websocket.receive_json() == {
+            "type": "status",
+            "connected": True,
+        }
+
     service.complete.assert_not_awaited()
 
 
