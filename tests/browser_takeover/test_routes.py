@@ -1,6 +1,7 @@
 """Tests for the private takeover page and WebSocket proxy."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -13,6 +14,7 @@ from websockets.exceptions import ConnectionClosed
 from blacki.browser_takeover.config import BrowserTakeoverConfig
 from blacki.browser_takeover.routes import (
     COOKIE_NAME,
+    _safe_server_message,
     _valid_client_message,
     create_browser_takeover_router,
 )
@@ -36,6 +38,14 @@ def _service() -> SimpleNamespace:
     )
 
 
+def _authorized_session() -> SimpleNamespace:
+    return SimpleNamespace(
+        upstream_url="wss://sandbox.internal/private",
+        upstream_headers={"X-Route": "secret"},
+        expected_origin="https://accounts.example.test",
+    )
+
+
 def test_page_is_hidden_when_takeover_is_disabled() -> None:
     with patch(
         "blacki.browser_takeover.routes.get_browser_takeover_service",
@@ -46,13 +56,17 @@ def test_page_is_hidden_when_takeover_is_disabled() -> None:
     assert response.status_code == 404
 
 
-def test_page_has_private_security_headers() -> None:
+def test_page_has_private_security_headers_and_human_controls() -> None:
     service = _service()
     with patch("blacki.browser_takeover.routes._service", return_value=service):
         response = TestClient(_app()).get("/browser-takeover")
 
     assert response.status_code == 200
     assert "Private browser control" in response.text
+    assert "Expected site: verifying..." in response.text
+    assert "verify this site before typing sensitive data" in response.text
+    assert "input_touch" in response.text
+    assert "mouseWheel" in response.text
     assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.headers["referrer-policy"] == "no-referrer"
     assert response.headers["x-frame-options"] == "DENY"
@@ -142,11 +156,71 @@ def test_complete_requires_origin_and_valid_cookie() -> None:
     service.complete.assert_awaited_once_with("browser-cookie")
 
 
-def test_invalid_client_messages_are_not_forwardable() -> None:
-    assert _valid_client_message('{"type":"input_keyboard","key":"x"}') is True
+def test_client_protocol_is_allowlisted_and_shape_validated() -> None:
+    assert (
+        _valid_client_message(
+            '{"type":"input_keyboard","eventType":"keyDown",'
+            '"key":"x","code":"KeyX"}'
+        )
+        is True
+    )
+    assert (
+        _valid_client_message(
+            '{"type":"input_mouse","eventType":"mouseWheel",'
+            '"x":10,"y":20,"deltaY":100}'
+        )
+        is True
+    )
+    assert (
+        _valid_client_message(
+            '{"type":"input_touch","eventType":"touchStart",'
+            '"touchPoints":[{"x":10,"y":20,"id":1}]}'
+        )
+        is True
+    )
+    assert _valid_client_message('{"type":"ack","seq":3}') is True
+    assert _valid_client_message('{"type":"config","maxFps":12,"pacing":"ack"}') is True
+
+    assert _valid_client_message('{"type":"status","connected":true}') is False
     assert _valid_client_message('{"type":"run_command"}') is False
+    assert (
+        _valid_client_message(
+            '{"type":"input_keyboard","eventType":"keyDown",'
+            '"key":"x","code":"KeyX","command":"rm"}'
+        )
+        is False
+    )
+    assert _valid_client_message('{"type":"config","maxFps":121}') is False
     assert _valid_client_message("not-json") is False
     assert _valid_client_message("x" * (16 * 1024 + 1)) is False
+
+
+def test_server_protocol_drops_sensitive_noise_and_sanitizes_navigation() -> None:
+    safe_url = _safe_server_message(
+        '{"type":"url","url":"https://EXAMPLE.test:443/login?token=secret#step"}'
+    )
+    assert safe_url is not None
+    assert json.loads(safe_url) == {
+        "type": "navigation",
+        "origin": "https://example.test",
+    }
+    assert "secret" not in safe_url
+
+    safe_frame = _safe_server_message(
+        '{"type":"frame","seq":7,"data":"abc",'
+        '"metadata":{"deviceWidth":1280,"deviceHeight":720,"evil":"secret"}}'
+    )
+    assert safe_frame is not None
+    assert json.loads(safe_frame) == {
+        "type": "frame",
+        "seq": 7,
+        "data": "abc",
+        "metadata": {"deviceWidth": 1280, "deviceHeight": 720},
+    }
+
+    assert _safe_server_message('{"type":"console","text":"password"}') is None
+    assert _safe_server_message('{"type":"tabs","tabs":[]}') is None
+    assert _safe_server_message("not-json") is None
 
 
 def test_websocket_rejects_missing_cookie() -> None:
@@ -240,10 +314,7 @@ class _InteractiveUpstream:
 
 def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None:
     service = _service()
-    service.authorize.return_value = SimpleNamespace(
-        upstream_url="wss://sandbox.internal/private",
-        upstream_headers={"X-Route": "secret"},
-    )
+    service.authorize.return_value = _authorized_session()
     upstream = _Upstream()
     client = TestClient(_app())
     client.cookies.set(COOKIE_NAME, "browser-cookie")
@@ -255,6 +326,10 @@ def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None
             headers={"origin": "http://127.0.0.1"},
         ) as websocket,
     ):
+        assert websocket.receive_json() == {
+            "type": "takeover_meta",
+            "expectedOrigin": "https://accounts.example.test",
+        }
         assert websocket.receive_text() == '{"type":"status","connected":true}'
 
     dial.assert_called_once_with(
@@ -268,14 +343,14 @@ def test_websocket_proxies_authorized_stream_without_exposing_endpoint() -> None
 
 def test_websocket_forwards_valid_input_and_binary_frames() -> None:
     service = _service()
-    service.authorize.return_value = SimpleNamespace(
-        upstream_url="wss://sandbox.internal/private",
-        upstream_headers={"X-Route": "secret"},
-    )
+    service.authorize.return_value = _authorized_session()
     upstream = _InteractiveUpstream()
     client = TestClient(_app())
     client.cookies.set(COOKIE_NAME, "browser-cookie")
-    message = '{"type":"input_keyboard","key":"x"}'
+    message = (
+        '{"type":"input_keyboard","eventType":"keyDown",'
+        '"key":"x","code":"KeyX"}'
+    )
     with (
         patch("blacki.browser_takeover.routes._service", return_value=service),
         patch("blacki.browser_takeover.routes.connect", return_value=upstream),
@@ -284,6 +359,7 @@ def test_websocket_forwards_valid_input_and_binary_frames() -> None:
             headers={"origin": "http://127.0.0.1"},
         ) as websocket,
     ):
+        assert websocket.receive_json()["type"] == "takeover_meta"
         websocket.send_text('{"type":"run_command"}')
         websocket.send_text(message)
         assert websocket.receive_bytes() == b"frame"
@@ -294,10 +370,7 @@ def test_websocket_forwards_valid_input_and_binary_frames() -> None:
 
 def test_websocket_ignores_upstream_disconnect() -> None:
     service = _service()
-    service.authorize.return_value = SimpleNamespace(
-        upstream_url="wss://sandbox.internal/private",
-        upstream_headers={},
-    )
+    service.authorize.return_value = _authorized_session()
     client = TestClient(_app())
     client.cookies.set(COOKIE_NAME, "browser-cookie")
     with (
@@ -318,10 +391,7 @@ def test_websocket_ignores_upstream_disconnect() -> None:
 
 def test_websocket_closes_on_unexpected_upstream_error() -> None:
     service = _service()
-    service.authorize.return_value = SimpleNamespace(
-        upstream_url="wss://sandbox.internal/private",
-        upstream_headers={},
-    )
+    service.authorize.return_value = _authorized_session()
     client = TestClient(_app())
     client.cookies.set(COOKIE_NAME, "browser-cookie")
     with (
@@ -334,9 +404,10 @@ def test_websocket_closes_on_unexpected_upstream_error() -> None:
             "/browser-takeover/ws",
             headers={"origin": "http://127.0.0.1"},
         ) as websocket,
-        pytest.raises(WebSocketDisconnect) as caught,
     ):
-        websocket.receive_text()
+        assert websocket.receive_json()["type"] == "takeover_meta"
+        with pytest.raises(WebSocketDisconnect) as caught:
+            websocket.receive_text()
 
     assert caught.value.code == 1011
     service.complete.assert_not_awaited()
