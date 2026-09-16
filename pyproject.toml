@@ -33,6 +33,7 @@ dependencies = [
     "mem0ai>=0.1.0,<1.0.0",
     "opensandbox-code-interpreter>=0.1.2",
     "boto3>=1.40.0,<2.0.0",
+    "websockets>=15.0.1,<16.0.0",
 ]
 
 [project.scripts]
