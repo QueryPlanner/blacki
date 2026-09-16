@@ -120,6 +120,7 @@ async def test_create_redeem_complete_wait_and_close(
     assert session is not None
     assert session.upstream_url == "wss://sandbox-proxy.test/route"
     assert session.upstream_headers == {"X-Sandbox-Route": "private"}
+    assert session.expected_origin == "https://accounts.example.test"
     assert await service.complete(browser_token) is True
     assert await service.wait(lease) is True
 
@@ -132,7 +133,7 @@ async def test_create_redeem_complete_wait_and_close(
     assert await service.wait(lease) is False
 
 
-async def test_wait_expires_and_close_all_wakes_waiter(
+async def test_wait_expires_and_close_all_wakes_without_success(
     config: BrowserTakeoverConfig,
     state: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
@@ -157,7 +158,71 @@ async def test_wait_expires_and_close_all_wakes_waiter(
     await asyncio.sleep(0)
     await service.close_all()
 
-    assert await waiter is True
+    assert await waiter is False
+
+
+async def test_expired_redeem_wakes_waiter_without_success(
+    config: BrowserTakeoverConfig,
+    state: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr(
+        "blacki.browser_takeover.service.time.monotonic",
+        lambda: now[0],
+    )
+    service = BrowserTakeoverService(config)
+    lease, _ = await _create(service, state)
+    waiter = asyncio.create_task(service.wait(lease))
+    await asyncio.sleep(0)
+
+    now[0] = 10e9
+    assert await service.redeem(lease.takeover_url.rsplit("#", 1)[1]) is None
+    assert await waiter is False
+
+
+async def test_expired_authorize_wakes_waiter_without_success(
+    config: BrowserTakeoverConfig,
+    state: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr(
+        "blacki.browser_takeover.service.time.monotonic",
+        lambda: now[0],
+    )
+    service = BrowserTakeoverService(config)
+    lease, _ = await _create(service, state)
+    browser_token = await service.redeem(lease.takeover_url.rsplit("#", 1)[1])
+    assert browser_token is not None
+    waiter = asyncio.create_task(service.wait(lease))
+    await asyncio.sleep(0)
+
+    now[0] = 10e9
+    assert await service.authorize(browser_token) is None
+    assert await waiter is False
+
+
+async def test_replacing_expired_takeover_wakes_old_waiter_without_success(
+    config: BrowserTakeoverConfig,
+    state: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [100.0]
+    monkeypatch.setattr(
+        "blacki.browser_takeover.service.time.monotonic",
+        lambda: now[0],
+    )
+    service = BrowserTakeoverService(config)
+    lease, _ = await _create(service, state)
+    waiter = asyncio.create_task(service.wait(lease))
+    await asyncio.sleep(0)
+
+    now[0] = 10e9
+    replacement, _ = await _create(service, state)
+
+    assert await waiter is False
+    await service.close(replacement)
 
 
 @pytest.mark.parametrize(
@@ -188,7 +253,12 @@ async def test_create_requires_matching_private_telegram_identity(
 
 @pytest.mark.parametrize(
     "url",
-    ["http://example.test/login", "not-a-url", "https://user:pass@example.test"],
+    [
+        "http://example.test/login",
+        "not-a-url",
+        "https://user:pass@example.test",
+        "https://example.test:bad/login",
+    ],
 )
 async def test_create_rejects_unsafe_login_url(
     config: BrowserTakeoverConfig,
