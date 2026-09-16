@@ -1,8 +1,5 @@
 name: Code Quality
 
-permissions:
-  contents: write
-
 on:
   push:
     branches: [ "main", "migration/port-agent-foundation" ]
@@ -22,54 +19,43 @@ on:
 
 jobs:
   test:
-    name: Apply MyPy narrowing fix
-    if: github.event_name == 'pull_request'
+    name: Lint & Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.13']
 
     steps:
-      - name: Checkout PR branch
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.head_ref }}
-
-      - name: Patch type guards
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-
-          path = Path("src/blacki/browser_takeover/routes.py")
-          text = path.read_text()
-          replacements = {
-              "from typing import Any\n": "from typing import Any, TypeGuard\n",
-              "def _is_int(value: Any) -> bool:\n": "def _is_int(value: Any) -> TypeGuard[int]:\n",
-              "def _is_number(value: Any) -> bool:\n": "def _is_number(value: Any) -> TypeGuard[int | float]:\n",
-          }
-          for old, new in replacements.items():
-              if text.count(old) != 1:
-                  raise SystemExit(f"expected exactly one occurrence: {old!r}")
-              text = text.replace(old, new)
-          path.write_text(text)
-          PY
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Set up Python 3.13
-        run: uv python install 3.13
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Install dependencies
         run: uv sync --locked
 
-      - name: Format and verify narrowing fix
-        run: |
-          uv run ruff format src/blacki/browser_takeover/routes.py
-          uv run ruff check src/blacki/browser_takeover/routes.py
-          uv run mypy src/blacki/browser_takeover/routes.py
+      - name: Run Ruff formatting check
+        run: uv run ruff format --check
 
-      - name: Commit fix
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/blacki/browser_takeover/routes.py
-          git commit -m "fix: type browser protocol validators"
-          git push origin HEAD:${{ github.head_ref }}
+      - name: Run Ruff linting
+        run: uv run ruff check --output-format=github
+
+      - name: Run MyPy type checking
+        run: uv run mypy .
+
+      - name: Run pytest with coverage
+        run: uv run pytest --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          file: ./coverage.xml
+          fail_ci_if_error: false
