@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
@@ -310,11 +310,11 @@ def _private_response(content: Any, *, status_code: int = 200) -> JSONResponse:
     return JSONResponse(content, status_code=status_code, headers=_SECURITY_HEADERS)
 
 
-def _is_int(value: Any) -> bool:
+def _is_int(value: Any) -> TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _is_number(value: Any) -> bool:
+def _is_number(value: Any) -> TypeGuard[int | float]:
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)
