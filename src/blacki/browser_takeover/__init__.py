@@ -1,5 +1,6 @@
 """Private human takeover for Agent Browser sessions."""
 
+# CI formatting probe; removed after the pinned formatter diff is captured.
 from .config import BrowserTakeoverConfig, BrowserTakeoverConfigurationError
 from .service import (
     BrowserTakeoverError,
