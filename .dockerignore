@@ -3,9 +3,6 @@
 
 !Dockerfile
 !entrypoint.sh
-!mcp-bridge/
-!mcp-bridge/package.json
-!mcp-bridge/package-lock.json
 !pyproject.toml
 !uv.lock
 !src/

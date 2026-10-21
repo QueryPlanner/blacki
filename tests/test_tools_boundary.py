@@ -32,7 +32,6 @@ for prefix in (
     "blacki.reminders",
     "blacki.sandbox",
     "blacki.user_files",
-    "blacki.zepto",
 ):
     assert not any(
         module == prefix or module.startswith(prefix + ".")

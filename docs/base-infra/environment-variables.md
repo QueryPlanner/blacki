@@ -245,19 +245,6 @@ If R2 is unavailable, Telegram processing can continue with an explicit
 temporary-storage warning. If the sandbox is unavailable, a successfully
 stored object remains available for a later restore.
 
-## Zepto MCP
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ZEPTO_MCP_ENABLED` | `false` | Enable the root-only Zepto skill after OAuth |
-| `ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS` | unset | Comma-separated positive private chat IDs allowed to use the shared account |
-| `ZEPTO_MCP_CONFIG_DIR` | `data/credentials/zepto-mcp-remote` | Permission-protected bridge credential directory shared by host and container |
-
-The allowlist deliberately rejects Telegram groups, topics, and arbitrary HTTP
-user IDs. All allowed chats share one Zepto account and cart. Complete the
-one-time OAuth flow before enabling the integration; see
-[Zepto MCP](../zepto-mcp.md).
-
 ## Observability
 
 | Variable | Default | Purpose |
@@ -276,9 +263,9 @@ Blacki always exports spans to local JSON. A validated trace-specific or global
 endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
 precedence. See [Observability](observability.md).
 
-When Zepto is enabled, Blacki forces both content-capture variables to `false`
-and disables the OpenInference Google ADK instrumentor because it otherwise
-records raw tool parameters.
+When any private-tool integration is configured, Blacki forces both
+content-capture variables to `false` and disables the OpenInference Google ADK
+instrumentor because it otherwise records raw tool parameters.
 
 ## Precedence
 
