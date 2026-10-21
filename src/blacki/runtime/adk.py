@@ -191,7 +191,7 @@ def _format_confirmation(
             ensure_ascii=False,
         )
         confirmation_text = (
-            f"Confirm Zepto tool `{confirmation.tool_name}` with these arguments?\n\n"
+            f"Confirm tool `{confirmation.tool_name}` with these arguments?\n\n"
             f"```json\n{serialized_args}\n```\n\nReply exactly `yes` or `no`."
         )
     suffix = ""

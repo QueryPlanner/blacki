@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import logging
 import os
 
 from google.adk.tools.base_tool import BaseTool
 
-_ENABLED_VALUES = frozenset({"1", "true", "yes"})
-_ZEPTO_TOOL_PREFIX = "zepto_"
 _GMAIL_TOOL_PREFIX = "gmail_"
+_ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _PRIVATE_TOOL_NAMES = frozenset(
     {
         "log_meal",
@@ -26,11 +24,6 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "delete_user_file",
     }
 )
-
-
-def zepto_mcp_enabled() -> bool:
-    """Return whether secure Zepto mode is explicitly enabled."""
-    return os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower() in _ENABLED_VALUES
 
 
 def gmail_configured() -> bool:
@@ -65,23 +58,11 @@ def google_health_enabled() -> bool:
 def private_tool_privacy_enabled() -> bool:
     """Return whether any configured tool needs content-level redaction."""
     return (
-        zepto_mcp_enabled()
-        or gmail_configured()
+        gmail_configured()
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
     )
-
-
-def configure_zepto_privacy() -> bool:
-    """Disable content-rich tracing and MCP body debug in secure Zepto mode."""
-    if not zepto_mcp_enabled():
-        return False
-    os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] = "false"
-    os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false"
-    logging.getLogger("google_adk.google.adk.tools.mcp_tool").setLevel(logging.INFO)
-    logging.getLogger("google.adk.tools.mcp_tool").setLevel(logging.INFO)
-    return True
 
 
 def configure_private_tool_privacy() -> bool:
@@ -90,15 +71,11 @@ def configure_private_tool_privacy() -> bool:
         return False
     os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] = "false"
     os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "false"
-    if zepto_mcp_enabled():
-        logging.getLogger("google_adk.google.adk.tools.mcp_tool").setLevel(logging.INFO)
-        logging.getLogger("google.adk.tools.mcp_tool").setLevel(logging.INFO)
     return True
 
 
 def is_private_tool(tool: BaseTool) -> bool:
     """Return whether a tool can expose private account or message data."""
-    is_zepto = tool.name.startswith(_ZEPTO_TOOL_PREFIX)
     is_gmail = tool.name.startswith(_GMAIL_TOOL_PREFIX)
     is_named_private = tool.name in _PRIVATE_TOOL_NAMES
-    return is_zepto or is_gmail or is_named_private
+    return is_gmail or is_named_private

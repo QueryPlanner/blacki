@@ -71,7 +71,7 @@ capability boundaries:
   a sandbox.
 
 The root agent may receive private, user-scoped integrations such as Google
-Health, Gmail, Zepto, TTS, and durable user files. Public ADK requests receive
+Health, Gmail, TTS, and durable user files. Public ADK requests receive
 only the tools explicitly allowed for their boundary.
 Shared session-sandbox access does not grant access to another user's accounts.
 

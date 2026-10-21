@@ -47,10 +47,9 @@ Both `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` and
 and legacy ADK content capture. Capturing prompts and responses can expose
 personal data, credentials, and tool results.
 
-When `ZEPTO_MCP_ENABLED=true` or `KOKORO_TTS_BASE_URL` is configured, Blacki
-forces both values to `false` and disables the OpenInference Google ADK
-instrumentor. Zepto additionally prevents MCP body-debug logging. The ADK
-session database still retains tool calls and results so interrupted turns and
+When any private-tool integration is configured, Blacki forces both values to
+`false` and disables the OpenInference Google ADK instrumentor. The ADK session
+database still retains tool calls and results so interrupted turns and
 confirmations can resume correctly.
 
 ## Remote OTLP export

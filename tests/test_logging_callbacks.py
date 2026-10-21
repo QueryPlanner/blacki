@@ -118,13 +118,13 @@ class TestAgentCallbacks:
         assert "*** Starting agent 'test_agent'" in caplog.text
         assert "User Content:" not in caplog.text
 
-    def test_secure_zepto_mode_redacts_all_lifecycle_content(
+    def test_private_tool_mode_redacts_all_lifecycle_content(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Prompts, responses, and all tool payloads stay out of secure logs."""
-        monkeypatch.setenv("ZEPTO_MCP_ENABLED", "true")
+        monkeypatch.setenv("R2_FILES_ENABLED", "true")
         caplog.set_level(logging.DEBUG)
         callbacks = LoggingCallbacks()
         context = MockLoggingCallbackContext(
@@ -396,15 +396,15 @@ class TestToolCallbacks:
         assert "User Content:" not in caplog.text
         assert "Tool response: {'status': 'success'}" in caplog.text
 
-    def test_zepto_tool_payloads_are_redacted(
+    def test_gmail_tool_payloads_are_redacted(
         self,
         mock_tool_context: MockToolContext,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Private Zepto arguments, responses, and user content stay out of logs."""
+        """Private Gmail arguments, responses, and user content stay out of logs."""
         caplog.set_level(logging.DEBUG)
         callbacks = LoggingCallbacks()
-        tool = MockBaseTool(name="zepto_update_cart")
+        tool = MockBaseTool(name="gmail_send_draft")
 
         cast(Any, callbacks.before_tool)(
             tool,
@@ -418,7 +418,7 @@ class TestToolCallbacks:
             {"phone": "private-phone"},
         )
 
-        assert "zepto_update_cart" in caplog.text
+        assert "gmail_send_draft" in caplog.text
         assert "Private tool payload redacted" in caplog.text
         assert "private-address" not in caplog.text
         assert "private-phone" not in caplog.text

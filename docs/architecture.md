@@ -129,7 +129,6 @@ Blacki uses different stores for different responsibilities:
 | Telegram photo parts in ADK history | SQLite-backed session events | Yes |
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
-| Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
 | Google Health refresh tokens and normalized summaries | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
 | Google Health meal export revisions and retry state | SQLite (`tools.db`), payloads account-bound and sent over HTTPS | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
@@ -161,9 +160,7 @@ Optional tools follow the project's cloud-first principle:
   and screenshots remain in the temporary sandbox, and this tool adds no
   saved-login service or durable file retention;
 - speech synthesis can use a private Kokoro API reachable over Tailscale;
-- grocery shopping can use Zepto's hosted MCP server for one allowlisted,
-  shared account;
-- vector memory can use Qdrant Cloud; and
+- vector memory can use Qdrant Cloud;
 - code execution can use an OpenSandbox server; and
 - health summaries can use Google Health API after private Telegram OAuth.
 
@@ -178,16 +175,6 @@ Telegram upload so concurrent chats cannot retain multiple audio payloads. It
 does not retry Telegram delivery automatically. Configuring the tool disables
 content-rich ADK and OpenInference logging, although the local ADK session
 database still retains tool calls and arguments as normal conversation history.
-
-Zepto is registered only on a Telegram-specific root-agent runner. The public
-ADK HTTP runner never receives the Zepto toolset.
-Unauthorized Telegram identities are rejected before Blacki opens an MCP
-connection. ADK confirmation is required only when an order or payment tool
-uses `confirmOrder=true`; other individual Zepto tools run directly. Its OAuth
-files are plaintext protected by a `0700` directory and `0600` file
-permissions; they are not encrypted. Shopping prompts, tool calls, and results
-remain in the local ADK session database and are sent to the configured model
-as part of normal agent execution.
 
 Google Health summaries are a separate read-only boundary. The connector uses
 the current Google Health API, not the legacy Fitbit Web API. It requests the

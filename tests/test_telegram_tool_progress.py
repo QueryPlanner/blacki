@@ -4,14 +4,8 @@ from typing import Any
 
 import pytest
 
-from blacki.security.tool_privacy import is_private_tool
 from blacki.telegram.formatting import MARKDOWN_SPECIAL_CHARS
 from blacki.telegram.progress import describe_tool
-
-
-class _DummyTool:
-    def __init__(self, name: str) -> None:
-        self.name = name
 
 
 def validate_markdown_v2(text: str) -> None:
@@ -437,10 +431,6 @@ def test_describe_tool_unknown_fallback() -> None:
     validate_markdown_v2(result2)
 
     # Dotted and hyphenated MCP tool symbols
-    result_mcp1 = describe_tool("zepto-search-products", {}, private=False)
-    assert result_mcp1 == "Working on zepto search products…"
-    validate_markdown_v2(result_mcp1)
-
     result_mcp2 = describe_tool("some.mcp.tool-v2", {}, private=False)
     assert result_mcp2 == "Working on some mcp tool v2…"
     validate_markdown_v2(result_mcp2)
@@ -530,16 +520,3 @@ def test_all_tools_emit_strictly_valid_markdown_v2(
 def test_elapsed_collapse_text_is_valid_markdown_v2() -> None:
     """Assert final elapsed collapse text is strictly valid MarkdownV2."""
     validate_markdown_v2("✓ Worked for 2m 5s")
-
-
-def test_is_private_tool_helper() -> None:
-    """is_private_tool correctly identifies private tools."""
-    tool_health = _DummyTool("get_health_summary")
-    tool_tts = _DummyTool("send_text_to_speech")
-    tool_zepto = _DummyTool("zepto_create_cart")
-    tool_search = _DummyTool("brave_search")
-
-    assert is_private_tool(tool_health)  # type: ignore[arg-type]
-    assert is_private_tool(tool_tts)  # type: ignore[arg-type]
-    assert is_private_tool(tool_zepto)  # type: ignore[arg-type]
-    assert not is_private_tool(tool_search)  # type: ignore[arg-type]
