@@ -151,21 +151,6 @@ ROOT_ASSISTANT_BEHAVIOR = f"""\
 {NATURAL_CHAT_STYLE}"""
 
 
-TASK_WORKER_BEHAVIOR = f"""\
-{CORE_ASSISTANT_BEHAVIOR}
-
-<delegated_task_worker>
-Complete only the task delegated by the root agent. You have the same non-private
-tools as the root agent, including access to the same session sandbox when sandbox
-tools are enabled. User-scoped account tools such as Zepto and Gmail remain root-only.
-
-Do not create or delegate to another worker. Do not broaden the task, repeat a
-state-changing tool call, or retry a non-idempotent operation without evidence that
-it is safe. Respect the original user's authorization and report a concise result to
-the root agent when the delegated task is complete.
-</delegated_task_worker>"""
-
-
 def return_description_root() -> str:
     """Return the root agent's short capability description."""
     return "A privacy-conscious personal assistant for questions and explicit tracking"
@@ -174,11 +159,6 @@ def return_description_root() -> str:
 def return_instruction_root() -> str:
     """Return the root agent's conversational instruction."""
     return ROOT_ASSISTANT_BEHAVIOR
-
-
-def return_instruction_task_worker() -> str:
-    """Return behavior for the delegated task worker."""
-    return TASK_WORKER_BEHAVIOR
 
 
 def return_global_instruction(ctx: ReadonlyContext) -> str:

@@ -161,8 +161,11 @@ class TestSandboxManager:
         assert "sdk-credential-canary" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_get_or_create_sandbox_never_injects_credentials(self) -> None:
-        """The sandbox creation request must always omit process credentials."""
+    async def test_get_or_create_sandbox_injects_only_jupyter_settings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sandbox request carries only the per-sandbox Jupyter settings."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "host-secret-canary")
         config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
         tool_context = MagicMock()
@@ -182,7 +185,13 @@ class TestSandboxManager:
         assert result["error"] is None
 
         mock_create.assert_called_once()
-        assert mock_create.call_args.kwargs["env"] is None
+        create_kwargs = mock_create.call_args.kwargs
+        assert create_kwargs["entrypoint"] == config.entrypoint
+        sandbox_env = create_kwargs["env"]
+        assert set(sandbox_env) == {"JUPYTER_HOST", "JUPYTER_TOKEN"}
+        assert sandbox_env["JUPYTER_HOST"] == "http://127.0.0.1:44771"
+        assert len(sandbox_env["JUPYTER_TOKEN"]) == 32
+        assert "OPENROUTER_API_KEY" not in sandbox_env
 
     @pytest.mark.asyncio
     async def test_sdk_error_details_are_redacted(

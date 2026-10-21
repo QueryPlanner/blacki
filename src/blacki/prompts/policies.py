@@ -162,6 +162,7 @@ LEGACY_WORKOUT_TOOL_NAMES = frozenset(
 
 SEARCH_CONFLICTING_TOOL_NAMES = frozenset(
     {
+        "agent_browser",
         "sandbox_run_command",
         "sandbox_write_file",
         "sandbox_read_file",

@@ -197,23 +197,6 @@ MEM0_QDRANT_PATH=/app/data/qdrant
 
 If Qdrant Cloud values are present, the provider stores the vectors remotely.
 
-## Delegated task worker
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `TASK_WORKER_ENABLED` | `true` | Register a same-privilege ADK task worker |
-
-By default, the root agent can delegate one complex task at a time to a
-registered ADK task-mode child. Set `TASK_WORKER_ENABLED=false` to opt out. The
-worker receives an independently built copy of the root agent's user-facing
-toolset and shares the same ADK session state, so sandbox tools reconnect to the
-same sandbox ID.
-
-This is not a security boundary or a background worker pool: the worker has the
-root agent's privileges, runs within the request, and cannot delegate
-recursively. Delegation can add another model and tool turn, increasing latency
-and model usage.
-
 ## OpenSandbox
 
 | Variable | Default | Purpose |
@@ -222,9 +205,15 @@ and model usage.
 | `SANDBOX_DOMAIN` | `localhost:9090` | OpenSandbox server address |
 | `SANDBOX_API_KEY` | unset | Optional server credential |
 | `SANDBOX_TIMEOUT_MINUTES` | `30` | Sandbox lifetime |
-| `SANDBOX_MEMORY_LIMIT` | `512Mi` | Per-sandbox memory setting |
+| `SANDBOX_MEMORY_LIMIT` | `1Gi` | Per-sandbox memory; Chromium needs headroom |
 | `SANDBOX_CPU_LIMIT` | `0.5` | Per-sandbox CPU setting |
-| `SANDBOX_IMAGE` | project default | Code-interpreter image |
+| `SANDBOX_IMAGE` | `ghcr.io/queryplanner/athena-sandbox:latest` | Chromium + agent-browser sandbox image |
+
+The default sandbox image provides Chromium, a pinned agent-browser, and the
+bundled agent-browser usage guides. The `agent_browser` tool runs in this
+sandbox only; it never runs on the Blacki host. The published image is
+`linux/amd64`; on arm64 hosts, build an equivalent image or point
+`SANDBOX_IMAGE` at an arm64 build.
 
 Running a local OpenSandbox server adds Docker and resource requirements beyond
 the Blacki golden path.

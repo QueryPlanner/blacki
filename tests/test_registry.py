@@ -117,7 +117,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 15
+        assert len(tools) == 16
 
     def test_sandbox_tool_order_keeps_effective_list_files_registration(self) -> None:
         """Keep the observed single list-files registration explicit.
@@ -163,7 +163,7 @@ class TestBuildTools:
         assert len(tools) > 15
 
     def test_zepto_skill_is_root_only(self) -> None:
-        """Zepto should join the root skill toolset but never the task worker."""
+        """Zepto should join the root skill toolset but never the public agent."""
         skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
         config = ToolConfig(
             skills_dir=skills_dir,
@@ -198,7 +198,7 @@ class TestBuildTools:
         create.assert_called_once()
 
     def test_gmail_skill_is_root_only(self) -> None:
-        """Gmail should join the root skill toolset but never the task worker."""
+        """Gmail should join the root skill toolset but never the public agent."""
         skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
         config = ToolConfig(
             skills_dir=skills_dir,
@@ -291,7 +291,7 @@ class TestBuildTools:
         assert "Durable R2 file tools disabled" in caplog.text
 
     def test_google_health_tool_is_telegram_root_only(self) -> None:
-        """Google Health must never reach the public or delegated worker agent."""
+        """Google Health must never reach the public agent."""
         config = ToolConfig(
             weather_enabled=False,
             google_health_enabled=True,
@@ -720,7 +720,7 @@ class TestBuildSandboxTools:
 
         tools = _build_sandbox_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 8
         assert "sandbox_view_image" in {tool.__name__ for tool in tools}
 
 

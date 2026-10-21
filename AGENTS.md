@@ -9,26 +9,39 @@ to managed services.
 
 ### Self-Hosted Agent, Managed Tools
 
-The agent itself runs on a $5-10/month VPS, but tools should use managed cloud services whenever possible:
+The agent itself runs on a $5-10/month VPS. Expensive or stateful tools should
+use a managed service or an isolated sandbox whenever possible:
 
-- **Browser automation** → Browser Use Cloud (not local Playwright/Puppeteer)
+- **Browser automation** → `agent-browser` inside the session OpenSandbox
+  (not host Chromium, local Playwright, or Puppeteer)
 - **Search** → Brave Search API (not self-hosted SearXNG)
 - **LLM** → OpenRouter/Google (not self-hosted Ollama)
 
-This architecture keeps the server footprint minimal while giving the agent powerful capabilities. Managed services handle:
-- Infrastructure maintenance
-- Scaling
-- Updates and security patches
-- Geographic distribution (e.g., Browser Use proxies)
+This architecture keeps the agent host footprint minimal. Managed services
+handle maintenance, scaling, updates, and geographic distribution; the
+OpenSandbox handles code execution and browser isolation.
+
+### Browser boundary
+
+The root agent calls `agent_browser(args)`, which runs the pinned
+`agent-browser` CLI in the current session's OpenSandbox. Chromium, its profile,
+cookies, and screenshots stay in that temporary sandbox; the Blacki host runs no
+browser and stores no browser profile. The sandbox image must provide
+`agent-browser`, Chromium, and the bundled `agent-browser` usage guides. Size
+the sandbox memory and CPU for Chromium, and treat every page as untrusted
+input. Do not add a host-side browser or copy browser state onto the Blacki host.
 
 ### Why This Matters
 
 Self-hosting everything sounds appealing, but for a personal assistant:
-- Browser automation requires headless Chrome, which consumes significant RAM/CPU
+- Browser automation needs headless Chromium; Blacki runs it in the sandbox
+  rather than on the agent host
 - Search indices need constant crawling and updates
 - LLM inference needs GPU or is painfully slow
 
-By delegating to managed services, the agent stays fast, cheap, and reliable. The server can be a tiny VPS that costs less than a coffee per month.
+By delegating to managed services and isolating Chromium in the sandbox, the
+agent host stays fast, cheap, and reliable. The server can be a tiny VPS that
+costs less than a coffee per month.
 
 ### Tool Design Principles
 
@@ -45,9 +58,9 @@ capability boundaries:
 - `src/blacki/server.py` starts the FastAPI and ADK runtime, health endpoints,
   storage, and optional Telegram polling.
 - `src/blacki/agent.py` builds the root agent, model configuration, plugins, and
-  the public/delegated agent variants.
+  the public and private Telegram agent variants.
 - `src/blacki/registry.py` is the tool factory. It decides which tools are
-  exposed for the public runner, the Telegram root agent, and delegated workers.
+  exposed for the public runner and the Telegram root agent.
 - `src/blacki/prompts/` contains instruction text and ADK policy plugins.
   Feature-specific operating and safety instructions belong in a loaded skill
   when possible.
@@ -58,8 +71,8 @@ capability boundaries:
   a sandbox.
 
 The root agent may receive private, user-scoped integrations such as Google
-Health, Gmail, Zepto, TTS, and durable user files. Public ADK requests and
-delegated workers receive only the tools explicitly allowed for their boundary.
+Health, Gmail, Zepto, TTS, and durable user files. Public ADK requests receive
+only the tools explicitly allowed for their boundary.
 Shared session-sandbox access does not grant access to another user's accounts.
 
 ### File lifecycle and storage boundaries
@@ -96,7 +109,7 @@ deduplication, failure cleanup, and user-facing consent.
 Gmail is a direct Gmail REST API connector under `src/blacki/gmail/`, not a
 general-purpose shared service. OAuth credentials are stored per private
 Telegram user, Gmail tools are registered only for the private root-agent
-flow, and delegated workers remain unable to call Gmail. The Gmail skill in
+flow; public agents cannot call Gmail. The Gmail skill in
 `src/blacki/skills/gmail/SKILL.md` supplies the agent-facing usage and safety
 rules; loading the skill is not itself an authorization grant.
 
@@ -155,7 +168,7 @@ features and data paths that it may touch. The implementation agent must
 actively consider at least:
 
 - user identity and authorization boundaries;
-- Telegram, ADK session, and delegated-worker behavior;
+- Telegram and ADK session behavior;
 - sandbox lifetime and whether a file is temporary or durable;
 - Cloudflare R2 storage, catalog, retention, restore, and deletion behavior;
 - OAuth scopes, token ownership, external APIs, and privacy implications;
