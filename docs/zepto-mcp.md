@@ -11,7 +11,7 @@ clients.
 
 - One private bridge directory represents one Zepto account and shared cart.
 - Only explicitly allowlisted positive private Telegram chat IDs can connect.
-  Groups, topics, task workers, and arbitrary HTTP user IDs are rejected.
+  Groups, topics, and arbitrary HTTP user IDs are rejected.
 - Zepto is loaded into a Telegram-only ADK runner. The unauthenticated ADK HTTP
   runner never receives the Zepto skill or toolset, even if a caller spoofs an
   allowlisted Telegram user ID.

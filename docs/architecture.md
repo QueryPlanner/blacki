@@ -149,7 +149,17 @@ Optional tools follow the project's cloud-first principle:
 
 - models use OpenRouter or Google;
 - search can use Exa with Brave as a fallback;
-- browser automation can use Browser Use Cloud;
+- browser automation uses the dedicated `agent_browser(args)` tool inside the
+  current session's OpenSandbox instance. Its argument array is shell-quoted,
+  and commands time out after 90 seconds. The default
+  `ghcr.io/queryplanner/athena-sandbox:latest` image provides Chromium, a pinned
+  agent-browser, and agent-browser's bundled usage guides; the tool itself does
+  not install dependencies. Run `agent_browser(args=["skills", "get", "core"])`
+  for the usage guide, or `agent_browser(args=["--help"])` for the command list.
+  The tool is available to the root agent when sandbox tools are enabled.
+  Blacki uses one root agent without a delegated task worker. Chromium profiles
+  and screenshots remain in the temporary sandbox, and this tool adds no
+  saved-login service or durable file retention;
 - speech synthesis can use a private Kokoro API reachable over Tailscale;
 - grocery shopping can use Zepto's hosted MCP server for one allowlisted,
   shared account;
@@ -161,7 +171,7 @@ Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
 
 Kokoro speech delivery is registered only on the Telegram-specific root agent.
-The public ADK runner and delegated task worker cannot call it. Blacki sends
+The public ADK runner cannot call it. Blacki sends
 only the requested speech text to the configured Kokoro endpoint, accepts a
 bounded MP3 response, keeps it in memory, and serializes synthesis through
 Telegram upload so concurrent chats cannot retain multiple audio payloads. It
@@ -170,7 +180,7 @@ content-rich ADK and OpenInference logging, although the local ADK session
 database still retains tool calls and arguments as normal conversation history.
 
 Zepto is registered only on a Telegram-specific root-agent runner. The public
-ADK HTTP runner and delegated task worker never receive the Zepto toolset.
+ADK HTTP runner never receives the Zepto toolset.
 Unauthorized Telegram identities are rejected before Blacki opens an MCP
 connection. ADK confirmation is required only when an order or payment tool
 uses `confirmOrder=true`; other individual Zepto tools run directly. Its OAuth

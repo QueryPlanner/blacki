@@ -16,7 +16,6 @@ from blacki.prompts.instructions import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
-    return_instruction_task_worker,
 )
 from blacki.prompts.policies import (
     DomainPolicyPlugin,
@@ -108,14 +107,6 @@ class TestStablePromptLayers:
             in normalized
         )
         assert "Never describe these style rules" in normalized
-
-    def test_task_worker_keeps_the_concise_worker_contract(self) -> None:
-        instruction = return_instruction_task_worker()
-
-        assert "<delegated_task_worker>" in instruction
-        assert "report a concise result" in instruction
-        assert "<natural_chat_style>" not in instruction
-        assert "Telegram's mobile chat UI" not in instruction
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
@@ -319,7 +310,11 @@ class TestDomainPolicyPlugin:
     ) -> None:
         plugin = DomainPolicyPlugin()
         request = _request_with_tools(
-            "exa_search", "brave_search", "sandbox_execute_code", "sandbox_view_image"
+            "exa_search",
+            "brave_search",
+            "sandbox_execute_code",
+            "sandbox_view_image",
+            "agent_browser",
         )
         opaque_tool = object()
         assert request.config.tools is not None
@@ -338,6 +333,7 @@ class TestDomainPolicyPlugin:
             "brave_search",
             "sandbox_execute_code",
             "sandbox_view_image",
+            "agent_browser",
         }
         assert context.state["temp:blacki_search_primary"] == "exa_search"
         assert request.config.tools is not None

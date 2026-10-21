@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
-from google.adk.agents import BaseAgent, LlmAgent
+from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
@@ -28,7 +28,6 @@ from .prompts.instructions import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
-    return_instruction_task_worker,
 )
 from .prompts.policies import (
     DomainPolicyPlugin,
@@ -56,8 +55,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 logging_callbacks = LoggingCallbacks()
-TASK_WORKER_NAME = "task_worker"
-TASK_WORKER_ENABLED_VALUES = frozenset({"1", "true", "yes"})
 AUTO_COMPACTION_TOKEN_THRESHOLD = 200_000
 AUTO_COMPACTION_EVENT_RETENTION_SIZE = 8
 # ADK 2.5.0 requires the sliding-window fields even for token-only
@@ -140,14 +137,6 @@ def _find_and_load_dotenv() -> None:
             break
 
 
-def _task_worker_enabled() -> bool:
-    """Return whether the default-on delegated task worker is enabled."""
-    return (
-        os.getenv("TASK_WORKER_ENABLED", "true").strip().lower()
-        in TASK_WORKER_ENABLED_VALUES
-    )
-
-
 def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
     """Create and configure the root agent.
 
@@ -185,31 +174,6 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         recover_telegram_tool_error if include_user_scoped_tools else None
     )
 
-    sub_agents: list[BaseAgent] = []
-    if _task_worker_enabled():
-        worker_tools = build_tools(tool_config, include_user_scoped_tools=False)
-        worker_tools.append(PreloadMemoryTool())
-        sub_agents.append(
-            LlmAgent(
-                name=TASK_WORKER_NAME,
-                description=(
-                    "Complete one complex delegated task with Blacki's "
-                    "non-private tools and shared session sandbox"
-                ),
-                mode="task",
-                before_agent_callback=logging_callbacks.before_agent,
-                after_agent_callback=after_agent_callbacks.copy(),
-                model=build_model(),
-                instruction=return_instruction_task_worker(),
-                tools=worker_tools,
-                before_model_callback=logging_callbacks.before_model,
-                after_model_callback=after_model_callbacks.copy(),
-                before_tool_callback=before_tool_callbacks.copy(),
-                after_tool_callback=logging_callbacks.after_tool,
-                on_tool_error_callback=telegram_tool_error_callback,
-            )
-        )
-
     return LlmAgent(
         name="blacki",
         description=return_description_root(),
@@ -223,7 +187,6 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         before_tool_callback=before_tool_callbacks,
         after_tool_callback=logging_callbacks.after_tool,
         on_tool_error_callback=telegram_tool_error_callback,
-        sub_agents=sub_agents,
     )
 
 

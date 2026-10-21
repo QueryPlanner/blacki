@@ -24,9 +24,12 @@ class TestSandboxConfig:
         assert config.domain == "localhost:9090"
         assert config.api_key is None
         assert config.timeout_minutes == 30
-        assert config.memory_limit == "512Mi"
+        assert config.memory_limit == "1Gi"
         assert config.cpu_limit == "0.5"
-        assert config.image == "opensandbox/code-interpreter:v1.0.2"
+        assert config.image == "ghcr.io/queryplanner/athena-sandbox:latest"
+        entrypoint = config.entrypoint[-1]
+        assert "athena-sandbox-start" in entrypoint
+        assert "/opt/opensandbox/code-interpreter.sh" in entrypoint
 
     def test_timeout_property(self) -> None:
         """Test timeout property returns timedelta."""

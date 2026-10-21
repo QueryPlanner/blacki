@@ -7,8 +7,7 @@ description: Search Zepto, manage the shared account and cart, and place explici
 
 Use the `zepto_*` tools for Zepto requests only after this skill is loaded.
 
-- This is one shared Zepto account and cart. Never delegate Zepto work to the
-  task worker.
+- This is one shared Zepto account and cart.
 - Use search, account, cart, address, store, history, and payment-status tools
   directly without asking for approval.
 - For an order or payment tool, first call it with `confirmOrder=false` to get

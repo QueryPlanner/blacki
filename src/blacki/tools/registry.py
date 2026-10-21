@@ -228,6 +228,7 @@ def _build_workout_tools(include_legacy: bool = False) -> list[Any]:
 def _build_sandbox_tools() -> list[Any]:
     """Build sandbox tools."""
     try:
+        from blacki.tools.agent_browser import agent_browser
         from blacki.tools.sandbox import (
             sandbox_list_files,
             sandbox_read_file,
@@ -246,6 +247,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_send_file_to_user,
             sandbox_execute_code,
             sandbox_view_image,
+            agent_browser,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)
@@ -266,7 +268,7 @@ def _build_skill_tools(
 
         from blacki.tools.skills import McpSkillToolset, load_skill_from_dir
 
-        skills_to_load = ["explore_repo", "agent_browser"]
+        skills_to_load = ["explore_repo"]
         loaded_skills: list[tuple[Skill, BaseToolset | None]] = []
         for skill_name in skills_to_load:
             skill = load_skill_from_dir(skills_dir / skill_name)
