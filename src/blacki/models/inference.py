@@ -1,11 +1,11 @@
 """Request-scoped model and reasoning controls for ADK turns.
 
 The ADK ``LlmRequest`` does not expose a provider-neutral field for arbitrary
-LiteLLM parameters.  OpenRouter's reasoning object is therefore carried in
-``GenerateContentConfig.http_options.extra_body`` and translated by ADK's
-LiteLLM adapter at the request boundary.  This module keeps the profile
-immutable and request-scoped so concurrent Telegram turns cannot change one
-another's model settings.
+OpenRouter parameters.  OpenRouter's reasoning object is therefore carried in
+``GenerateContentConfig.http_options.extra_body`` and merged into the request
+body by Blacki's OpenRouter adapter.  This module keeps the profile immutable
+and request-scoped so concurrent Telegram turns cannot change one another's
+model settings.
 """
 
 from __future__ import annotations

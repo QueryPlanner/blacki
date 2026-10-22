@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,22 @@ def test_docker_context_is_an_explicit_allowlist() -> None:
         "src/**/.adk/",
     }
     assert "!.env" not in rules
+
+
+def test_litellm_is_absent_from_declared_and_locked_dependencies() -> None:
+    """Keep the removed LiteLLM dependency out of runtime and dev installs."""
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    declared = [
+        dependency.lower()
+        for dependency in (
+            pyproject["project"]["dependencies"] + pyproject["dependency-groups"]["dev"]
+        )
+    ]
+    assert not any("litellm" in dependency for dependency in declared)
+
+    lock = tomllib.loads(_read("uv.lock"))
+    package_names = {package["name"] for package in lock["package"]}
+    assert "litellm" not in package_names
 
 
 def test_minimal_environment_is_safe_and_complete() -> None:

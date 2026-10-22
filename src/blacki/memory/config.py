@@ -7,12 +7,17 @@ import os
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from blacki.models.openrouter_ids import (
+    canonical_openrouter_model_id,
+    is_openrouter_model_id,
+)
+
 if TYPE_CHECKING:
     from mem0 import Memory
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LLM_MODEL = "openrouter/openai/gpt-oss-20b"
+DEFAULT_LLM_MODEL = "openai/gpt-oss-20b"
 DEFAULT_EMBEDDER_PROVIDER = "gemini"
 DEFAULT_EMBEDDER_MODEL = "gemini-embedding-001"
 DEFAULT_EMBEDDER_DIMS = 768
@@ -87,11 +92,30 @@ def _get_llm_config() -> dict[str, Any]:
         else:
             return {}
 
-    llm_provider = _get_env_value("MEM0_LLM_PROVIDER")
-    if not llm_provider:
-        llm_provider = "litellm" if openrouter_key else "openai"
+    llm_provider = _get_env_value("MEM0_LLM_PROVIDER") or "openai"
+    if llm_provider.lower() == "litellm":
+        if not openrouter_key:
+            raise ValueError(
+                "MEM0_LLM_PROVIDER=litellm is no longer supported. "
+                "Set MEM0_LLM_PROVIDER=openai or remove the override."
+            )
+        logger.warning(
+            "Mapping legacy MEM0_LLM_PROVIDER=litellm to openai for OpenRouter"
+        )
+        llm_provider = "openai"
+
+    if llm_provider.lower() == "openai":
+        llm_model = canonical_openrouter_model_id(llm_model)
 
     llm_config: dict[str, Any] = {"model": llm_model}
+
+    if llm_provider.lower() == "openai" and openrouter_key:
+        if not is_openrouter_model_id(llm_model):
+            raise ValueError(
+                "MEM0_LLM_MODEL must be an OpenRouter model ID (author/slug) "
+                "when OPENROUTER_API_KEY is set."
+            )
+        llm_config["openrouter_base_url"] = "https://openrouter.ai/api/v1"
 
     api_key = _get_env_value("MEM0_LLM_API_KEY")
     if not api_key:

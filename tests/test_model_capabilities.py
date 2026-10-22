@@ -65,6 +65,8 @@ def _payload(**overrides: Any) -> dict[str, Any]:
         ("openai/gpt-5.6-luna", True, "openai/gpt-5.6-luna"),
         ("gpt-5.6-luna", True, None),
         ("openrouter/openrouter/openai/gpt-5.6-luna", False, None),
+        ("openrouter/auto", False, "openrouter/auto"),
+        ("openrouter/free", False, "openrouter/free"),
         ("google/gemini-2.5-flash", False, None),
         ("", True, None),
         (123, True, None),

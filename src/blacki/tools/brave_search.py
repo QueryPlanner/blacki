@@ -58,8 +58,8 @@ async def brave_search(
     """Search the web using Brave Search API.
 
     This is a model-agnostic alternative to Google Search that works with
-    any LLM provider via LiteLLM/OpenRouter. Set BRAVE_SEARCH_API_KEY
-    in your environment.
+    Blacki's OpenRouter-routed or native Gemini model. Set
+    BRAVE_SEARCH_API_KEY in your environment.
 
     Args:
         query: The search query string.

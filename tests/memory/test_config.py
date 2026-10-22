@@ -36,19 +36,69 @@ class TestGetLlmConfig:
 
         assert result == {}
 
-    def test_uses_litellm_openrouter_default_when_no_model(
+    def test_uses_openrouter_default_when_no_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Should use LiteLLM and OpenRouter default when no MEM0_LLM_MODEL."""
+        """Should use the OpenAI provider and OpenRouter default."""
         monkeypatch.delenv("MEM0_LLM_MODEL", raising=False)
         monkeypatch.delenv("MEM0_LLM_PROVIDER", raising=False)
         monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
 
         result = _get_llm_config()
 
-        assert result["provider"] == "litellm"
-        assert result["config"]["model"] == "openrouter/openai/gpt-oss-20b"
+        assert result["provider"] == "openai"
+        assert result["config"]["model"] == "openai/gpt-oss-20b"
         assert result["config"]["api_key"] == "test_key"
+        assert result["config"]["openrouter_base_url"] == "https://openrouter.ai/api/v1"
+
+    def test_strips_openrouter_prefix_from_mem0_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should convert historical LiteLLM-style model IDs."""
+        monkeypatch.setenv("MEM0_LLM_MODEL", "openrouter/google/gemini-2.0-flash-001")
+        monkeypatch.delenv("MEM0_LLM_PROVIDER", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+
+        result = _get_llm_config()
+
+        assert result["config"]["model"] == "google/gemini-2.0-flash-001"
+
+    def test_maps_legacy_litellm_provider(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Should map the removed LiteLLM provider to OpenAI for OpenRouter."""
+        monkeypatch.setenv("MEM0_LLM_MODEL", "openai/gpt-oss-20b")
+        monkeypatch.setenv("MEM0_LLM_PROVIDER", "litellm")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+
+        result = _get_llm_config()
+
+        assert result["provider"] == "openai"
+        assert "Mapping legacy MEM0_LLM_PROVIDER" in caplog.text
+
+    def test_rejects_legacy_litellm_provider_without_openrouter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should fail clearly instead of silently switching providers."""
+        monkeypatch.setenv("MEM0_LLM_MODEL", "gpt-4o-mini")
+        monkeypatch.setenv("MEM0_LLM_PROVIDER", "litellm")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+        with pytest.raises(ValueError, match="no longer supported"):
+            _get_llm_config()
+
+    def test_rejects_non_openrouter_model_with_openrouter_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Should reject bare model names that OpenRouter cannot route."""
+        monkeypatch.setenv("MEM0_LLM_MODEL", "gpt-oss-20b")
+        monkeypatch.delenv("MEM0_LLM_PROVIDER", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
+
+        with pytest.raises(ValueError, match="author/slug"):
+            _get_llm_config()
 
     def test_uses_custom_model_and_provider(
         self, monkeypatch: pytest.MonkeyPatch
@@ -65,7 +115,7 @@ class TestGetLlmConfig:
 
     def test_uses_mem0_llm_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should prefer MEM0_LLM_API_KEY over OPENROUTER_API_KEY."""
-        monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
+        monkeypatch.setenv("MEM0_LLM_MODEL", "openai/test-model")
         monkeypatch.setenv("MEM0_LLM_API_KEY", "mem0_key")
         monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter_key")
 
@@ -77,6 +127,7 @@ class TestGetLlmConfig:
         """Should include temperature when set."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
         monkeypatch.setenv("MEM0_LLM_TEMPERATURE", "0.5")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
         result = _get_llm_config()
 
@@ -88,6 +139,7 @@ class TestGetLlmConfig:
         """Should log warning for invalid temperature."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
         monkeypatch.setenv("MEM0_LLM_TEMPERATURE", "invalid")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
         result = _get_llm_config()
 
@@ -98,6 +150,7 @@ class TestGetLlmConfig:
         """Should include max_tokens when set."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
         monkeypatch.setenv("MEM0_LLM_MAX_TOKENS", "2000")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
         result = _get_llm_config()
 
@@ -109,6 +162,7 @@ class TestGetLlmConfig:
         """Should log warning for invalid max_tokens."""
         monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
         monkeypatch.setenv("MEM0_LLM_MAX_TOKENS", "invalid")
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
         result = _get_llm_config()
 
@@ -255,7 +309,7 @@ class TestBuildOssConfig:
 
     def test_builds_full_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Should build full OSS config from environment."""
-        monkeypatch.setenv("MEM0_LLM_MODEL", "test-model")
+        monkeypatch.setenv("MEM0_LLM_MODEL", "openai/test-model")
         monkeypatch.setenv("OPENROUTER_API_KEY", "test_key")
         monkeypatch.setenv("MEM0_COLLECTION_NAME", "test_collection")
         monkeypatch.setenv("MEM0_QDRANT_URL", "https://cluster.qdrant.io")
@@ -263,7 +317,7 @@ class TestBuildOssConfig:
 
         result = _build_oss_config()
 
-        assert result["llm"]["provider"] == "litellm"
+        assert result["llm"]["provider"] == "openai"
         assert result["embedder"]["provider"] == "gemini"
         assert result["vector_store"]["provider"] == "qdrant"
         assert result["vector_store"]["config"]["collection_name"] == "test_collection"
