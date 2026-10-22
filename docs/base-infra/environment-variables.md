@@ -69,8 +69,9 @@ ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
     OPENROUTER_API_KEY=replace-me
     ```
 
-    Blacki builds a LiteLLM model and normalizes common model identifiers to
-    OpenRouter form when this key is present.
+    Blacki builds an OpenRouter adapter and normalizes common model
+    identifiers to OpenRouter form when this key is present. Both
+    `openrouter/author/slug` and `author/slug` are accepted.
 
     Set `ROOT_AGENT_REASONING_EFFORT` to configure the process-wide reasoning
     fallback. Supported values are `max`, `xhigh`, `high`, `medium`, `low`,

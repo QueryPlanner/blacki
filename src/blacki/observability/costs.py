@@ -1,4 +1,4 @@
-"""Capture provider-reported LiteLLM usage before ADK reduces the response."""
+"""Capture provider-reported OpenRouter usage before ADK reduces the response."""
 
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ import math
 import sqlite3
 import time
 import uuid
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.llm_response import LlmResponse
 from opentelemetry import trace
 
-from .ledger import UsageRecord, default_usage_ledger_path, write_usage_record
+from .ledger import UsageRecord, write_usage_record
 
 logger = logging.getLogger("blacki.llm_costs")
 
@@ -74,7 +73,7 @@ def _nonnegative_integer(value: Any) -> int | None:
 
 
 def extract_cost_observation(response: Any, model: str) -> CostObservation | None:
-    """Extract raw provider cost and token fields from a LiteLLM response."""
+    """Extract raw provider cost and token fields from an OpenRouter response."""
     usage = _read_value(response, "usage")
 
     reported_cost = _nonnegative_number(_first_value(usage, ("cost", "total_cost")))
@@ -85,12 +84,6 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
             ("upstream_inference_cost", "upstream_cost"),
         )
     )
-    hidden_params = _read_value(response, "_hidden_params")
-    estimated_cost = _nonnegative_number(
-        _first_value(hidden_params, ("response_cost", "cost"))
-    )
-    if reported_cost is not None:
-        estimated_cost = None
     input_tokens = _nonnegative_integer(
         _first_value(usage, ("prompt_tokens", "input_tokens"))
     )
@@ -101,7 +94,6 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
     if (
         reported_cost is None
         and upstream_cost is None
-        and estimated_cost is None
         and input_tokens is None
         and output_tokens is None
         and total_tokens is None
@@ -114,8 +106,6 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
     cost_kind = (
         "reported"
         if reported_cost is not None
-        else "estimated"
-        if estimated_cost is not None
         else "upstream_only"
         if upstream_cost is not None
         else "unknown"
@@ -123,7 +113,7 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
     cost_source = (
         "provider_usage"
         if reported_cost is not None or upstream_cost is not None
-        else "litellm_response_cost"
+        else "usage_only"
     )
     return {
         "model": str(model)[:256],
@@ -133,7 +123,7 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
         "total_tokens": total_tokens,
         "cost_usd": reported_cost,
         "upstream_cost_usd": upstream_cost,
-        "estimated_cost_usd": estimated_cost,
+        "estimated_cost_usd": None,
         "cost_kind": cost_kind,
         "cost_source": cost_source,
         "currency": "USD",
@@ -199,11 +189,12 @@ def _remember_observation(observation: CostObservation) -> _CostCapture | None:
     return capture
 
 
-async def _observe_response(
+async def observe_response(
     response: Any,
     model: str,
     ledger_path: Path,
 ) -> None:
+    """Record one OpenRouter response payload in the local usage ledger."""
     observation = extract_cost_observation(response, model)
     if observation is None:
         return
@@ -253,41 +244,3 @@ def _attach_cost_metadata(response: LlmResponse) -> CostObservation | None:
     if not bool(getattr(response, "partial", False)):
         _ACTIVE_CAPTURE.set(None)
     return dict(observation) if observation is not None else None
-
-
-class CostAwareLiteLLMClient(LiteLLMClient):
-    """Observe LiteLLM responses while preserving ADK's client contract."""
-
-    def __init__(self, ledger_path: Path | str | None = None) -> None:
-        super().__init__()
-        self.ledger_path = (
-            Path(ledger_path) if ledger_path else default_usage_ledger_path()
-        )
-
-    async def _observed_stream(
-        self,
-        response: Any,
-        model: str,
-    ) -> AsyncIterator[Any]:
-        async for chunk in response:
-            await _observe_response(chunk, model, self.ledger_path)
-            yield chunk
-
-    async def acompletion(
-        self,
-        model: Any,
-        messages: Any,
-        tools: Any,
-        **kwargs: Any,
-    ) -> Any:
-        response = await super().acompletion(
-            model=model,
-            messages=messages,
-            tools=tools,
-            **kwargs,
-        )
-        model_name = str(model)
-        if kwargs.get("stream"):
-            return self._observed_stream(response, model_name)
-        await _observe_response(response, model_name, self.ledger_path)
-        return response

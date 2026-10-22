@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from blacki.utils.exceptions import ConfigurationError
+
+from .openrouter_ids import is_openrouter_model_id
 
 logger = logging.getLogger("blacki.agent")
 
 if TYPE_CHECKING:
-    from google.adk.models.lite_llm import LiteLlm
+    from .openrouter import OpenRouterLlm
 
 
 def normalize_model_for_openrouter(model_name: str) -> str:
-    """Map common model IDs to the OpenRouter/LiteLLM form."""
+    """Map common model IDs to the OpenRouter transport form.
+
+    The ``openrouter/`` prefix is retained for compatibility with stored
+    Telegram preferences and documented deployment samples.  The adapter
+    strips it before calling OpenRouter's API.
+    """
     normalized = model_name.strip()
     lower = normalized.lower()
     if lower.startswith("openrouter/"):
@@ -25,34 +34,37 @@ def normalize_model_for_openrouter(model_name: str) -> str:
     return normalized
 
 
-def build_model() -> str | LiteLlm:
-    """Build the configured native or LiteLLM model."""
-    openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
+def build_model() -> str | OpenRouterLlm:
+    """Build the configured native Gemini or OpenRouter model."""
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    model_name = os.getenv("ROOT_AGENT_MODEL", "gemini-2.5-flash").strip()
 
-    model_name = os.getenv("ROOT_AGENT_MODEL", "gemini-2.5-flash")
-    model: str | LiteLlm = model_name
-
-    use_litellm = openrouter_api_key is not None or "/" in model_name.lower()
     if openrouter_api_key:
-        model_name = normalize_model_for_openrouter(model_name)
-
-    if use_litellm:
-        try:
-            from google.adk.models import LiteLlm
-
-            litellm_kwargs: dict[str, Any] = {}
-            if model_name.lower().startswith("openrouter/") and openrouter_api_key:
-                litellm_kwargs["api_key"] = openrouter_api_key
-            from blacki.observability.costs import CostAwareLiteLLMClient
-
-            litellm_kwargs["llm_client"] = CostAwareLiteLLMClient()
-
-            logger.info("Using LiteLlm for model: %s", model_name)
-            return LiteLlm(model=model_name, **litellm_kwargs)
-        except ImportError:
-            logger.warning(
-                "LiteLlm not available, falling back to string model name. "
-                "OpenRouter models may not work."
+        normalized = normalize_model_for_openrouter(model_name)
+        if not is_openrouter_model_id(normalized):
+            raise ConfigurationError(
+                f"ROOT_AGENT_MODEL={model_name!r} is not a valid OpenRouter "
+                "model ID. Use an author/slug identifier such as "
+                "google/gemini-2.5-flash."
             )
+        from .openrouter import OpenRouterLlm
 
-    return model
+        logger.info("Using OpenRouter model: %s", normalized)
+        return OpenRouterLlm(model=normalized, api_key=openrouter_api_key)
+
+    if model_name.lower().startswith("openrouter/") or (
+        "/" in model_name and not model_name.startswith("models/")
+    ):
+        raise ConfigurationError(
+            f"OPENROUTER_API_KEY is required for model {model_name!r}. "
+            "Set the key or use a native Gemini model such as "
+            "gemini-2.5-flash."
+        )
+
+    if not model_name.lower().startswith(("gemini-", "gemma-", "models/")):
+        raise ConfigurationError(
+            f"ROOT_AGENT_MODEL={model_name!r} is not a native Gemini model. "
+            "Set OPENROUTER_API_KEY for OpenRouter models."
+        )
+
+    return model_name

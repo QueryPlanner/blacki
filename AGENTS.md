@@ -122,7 +122,7 @@ observable foundation that can run on bare metal, a VPS, or a private cloud.
 ### Key Technologies
 *   **Language:** Python 3.13+
 *   **Framework:** Google ADK (`google-adk`)
-*   **Model Interface:** LiteLLM (supports Google, OpenRouter, etc.)
+*   **Model Interface:** OpenRouter (OpenAI-compatible HTTP) with native Google ADK Gemini fallback
 *   **Server:** FastAPI
 *   **Database:** PostgreSQL (via `asyncpg`)
 *   **Observability:** OpenTelemetry (OTel) with vendor-neutral OTLP configuration
@@ -219,7 +219,7 @@ When asked to write or modify tests, you **MUST** adhere to the following strict
 
 1.  **Real Code Over Mocks**:
     *   **Do not mock** internal logic (e.g., `LlmAgent`, `Prompt`, `Tool`). Use the real classes.
-    *   **Only mock** external boundaries (e.g., `LiteLLM`, `asyncpg`, `Network APIs`).
+    *   **Only mock** external boundaries (e.g., `OpenAI SDK`, `asyncpg`, `Network APIs`).
     *   **Why?** This ensures we test the integration of components, not just isolated units.
 
 2.  **Pytest Best Practices**:

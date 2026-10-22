@@ -219,9 +219,9 @@
     setText("metric-cost-coverage", formatPercent(costCoverage));
     const costKind = first(metrics, ["cost_kind"], first(cost, ["kind"]));
     if (costKind === "estimated") {
-      setText("performance-note", "Some costs are LiteLLM estimates; provider-reported OpenRouter costs are preferred when available.");
+      setText("performance-note", "Some historical costs are gateway estimates; provider-reported OpenRouter costs are preferred when available.");
     } else if (costKind === "unavailable" || (monthlyCost === undefined && cumulativeCost === undefined)) {
-      setText("performance-note", "Exact cost is unavailable for records without provider cost metadata. New LiteLLM responses are recorded going forward.");
+      setText("performance-note", "Exact cost is unavailable for records without provider cost metadata. New OpenRouter responses are recorded going forward.");
     } else if (costCoverage !== undefined && Number(costCoverage) < 1) {
       setText("performance-note", `Provider-reported cost coverage: ${formatPercent(costCoverage)}. Older or incomplete records remain unavailable.`);
     }

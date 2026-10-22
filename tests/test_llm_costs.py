@@ -1,22 +1,18 @@
-"""Tests for provider cost capture at the LiteLLM boundary."""
+"""Tests for provider cost capture at the OpenRouter boundary."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from google.adk.models.lite_llm import LiteLLMClient
 from google.adk.models.llm_response import LlmResponse
-from google.genai import types
 
 from blacki.observability.costs import (
-    CostAwareLiteLLMClient,
-    _observe_response,
     _remember_observation,
     _set_span_cost_attributes,
     extract_cost_observation,
+    observe_response,
 )
 from blacki.observability.ledger import read_usage_ledger
 from blacki.observability.lifecycle import attach_cost_metadata, begin_cost_capture
@@ -45,19 +41,25 @@ def test_extract_cost_observation_preserves_provider_and_upstream_costs() -> Non
     assert observation["upstream_cost_usd"] == 0.0022
     assert observation["estimated_cost_usd"] is None
     assert observation["cost_kind"] == "reported"
+    assert observation["cost_source"] == "provider_usage"
 
 
-def test_extract_cost_observation_distinguishes_estimated_unknown_and_invalid() -> None:
-    estimated = extract_cost_observation(
+def test_extract_cost_observation_distinguishes_upstream_unknown_and_invalid() -> None:
+    upstream = extract_cost_observation(
         {
-            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
-            "_hidden_params": {"response_cost": 0.0004},
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "cost_details": {"upstream_inference_cost": 0.0004},
+            },
         },
         "openai/test",
     )
-    assert estimated is not None
-    assert estimated["estimated_cost_usd"] == 0.0004
-    assert estimated["cost_kind"] == "estimated"
+    assert upstream is not None
+    assert upstream["cost_usd"] is None
+    assert upstream["upstream_cost_usd"] == 0.0004
+    assert upstream["cost_kind"] == "upstream_only"
+    assert upstream["cost_source"] == "provider_usage"
 
     unknown = extract_cost_observation(
         {"id": "unknown", "usage": {"total_tokens": 5}},
@@ -66,6 +68,7 @@ def test_extract_cost_observation_distinguishes_estimated_unknown_and_invalid() 
     assert unknown is not None
     assert unknown["cost_usd"] is None
     assert unknown["cost_kind"] == "unknown"
+    assert unknown["cost_source"] == "usage_only"
 
     invalid = extract_cost_observation(
         {"usage": {"cost": "not-a-number", "total_tokens": 5}},
@@ -124,8 +127,8 @@ def test_remember_observation_preserves_reported_cost_and_handles_no_capture() -
 async def test_observe_response_handles_missing_capture_and_write_errors(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    await _observe_response({}, "openrouter/test", tmp_path / "costs.db")
-    await _observe_response(
+    await observe_response({}, "openrouter/test", tmp_path / "costs.db")
+    await observe_response(
         {"usage": {"total_tokens": 1}}, "openrouter/test", tmp_path / "costs.db"
     )
 
@@ -135,7 +138,7 @@ async def test_observe_response_handles_missing_capture_and_write_errors(
         "blacki.observability.costs.write_usage_record",
         side_effect=OSError("read-only"),
     ):
-        await _observe_response(
+        await observe_response(
             {"usage": {"total_tokens": 1, "cost": 0.001}},
             "openrouter/test",
             tmp_path / "costs.db",
@@ -164,46 +167,31 @@ def test_partial_response_keeps_capture_until_final_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_non_stream_response_is_ledgered_and_attached_to_adk_event(
-    tmp_path: Path,
-) -> None:
-    raw_response = {
-        "id": "generation-1",
-        "usage": {
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "cost": 0.01,
-            "cost_details": {"upstream_inference_cost": 0.009},
-        },
-    }
+async def test_observe_response_persists_reported_cost(tmp_path: Path) -> None:
     begin_cost_capture(
         user_id="user-1",
         session_id="session-1",
         invocation_id="inv-1",
     )
-    client = CostAwareLiteLLMClient(tmp_path / "costs.db")
-    with patch.object(
-        LiteLLMClient,
-        "acompletion",
-        new=AsyncMock(return_value=raw_response),
-    ):
-        returned = await client.acompletion(
-            model="openrouter/test",
-            messages=[],
-            tools=[],
-            stream=False,
-        )
-
-    assert returned is raw_response
-    response = LlmResponse(
-        content=types.Content(role="model", parts=[types.Part.from_text(text="ok")])
+    await observe_response(
+        {
+            "id": "generation-1",
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "cost": 0.01,
+                "cost_details": {"upstream_inference_cost": 0.009},
+            },
+        },
+        "openrouter/test",
+        tmp_path / "costs.db",
     )
-    metadata = attach_cost_metadata(response)
+
+    metadata = attach_cost_metadata(LlmResponse())
     assert metadata is not None
     assert metadata["cost_usd"] == 0.01
-    assert response.custom_metadata is not None
-    assert response.custom_metadata["blacki.cost"]["dedupe_key"].startswith("provider:")
+    assert metadata["dedupe_key"].startswith("provider:")
 
     ledger = read_usage_ledger(
         tmp_path / "costs.db",
@@ -218,12 +206,21 @@ async def test_non_stream_response_is_ledgered_and_attached_to_adk_event(
 
 
 @pytest.mark.asyncio
-async def test_streaming_final_usage_updates_one_idempotent_ledger_row(
+async def test_repeated_stream_usage_updates_one_idempotent_ledger_row(
     tmp_path: Path,
 ) -> None:
-    async def response_stream() -> AsyncIterator[dict[str, object]]:
-        yield {"id": "generation-stream", "usage": {"total_tokens": 4}}
-        yield {
+    begin_cost_capture(
+        user_id="user-stream",
+        session_id="session-stream",
+        invocation_id="inv-stream",
+    )
+    await observe_response(
+        {"id": "generation-stream", "usage": {"total_tokens": 4}},
+        "openrouter/test",
+        tmp_path / "costs.db",
+    )
+    await observe_response(
+        {
             "id": "generation-stream",
             "usage": {
                 "prompt_tokens": 3,
@@ -231,28 +228,11 @@ async def test_streaming_final_usage_updates_one_idempotent_ledger_row(
                 "total_tokens": 4,
                 "cost": 0.004,
             },
-        }
-
-    begin_cost_capture(
-        user_id="user-stream",
-        session_id="session-stream",
-        invocation_id="inv-stream",
+        },
+        "openrouter/test",
+        tmp_path / "costs.db",
     )
-    client = CostAwareLiteLLMClient(tmp_path / "costs.db")
-    with patch.object(
-        LiteLLMClient,
-        "acompletion",
-        new=AsyncMock(return_value=response_stream()),
-    ):
-        returned = await client.acompletion(
-            model="openrouter/test",
-            messages=[],
-            tools=[],
-            stream=True,
-        )
-        chunks = [chunk async for chunk in returned]
 
-    assert len(chunks) == 2
     response = LlmResponse()
     assert attach_cost_metadata(response)["cost_usd"] == 0.004  # type: ignore[index]
     ledger = read_usage_ledger(

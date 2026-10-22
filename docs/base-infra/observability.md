@@ -120,12 +120,13 @@ Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
-For LiteLLM-backed requests, Blacki also writes a content-free SQLite usage
+For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with
 `BLACKI_COST_LEDGER_PATH`). The ledger stores identity, model, token, provider
 response, and fixed-point cost fields, but never prompts, responses, or tool
 arguments. Provider-reported OpenRouter account cost and upstream inference
-cost are kept separately; a LiteLLM catalog calculation is labelled estimated.
+cost are kept separately; historical gateway estimates remain labelled
+estimated, while new OpenRouter rows use provider-reported costs only.
 The dashboard uses UTC calendar months for monthly totals and averages. The
 average is across users with an exact or estimated cost in the current month;
 users with unavailable cost are excluded and the reported coverage is shown.
