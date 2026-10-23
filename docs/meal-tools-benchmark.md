@@ -12,9 +12,11 @@ The compact `meals` tool plus `describe_action` use 188 or 190 tokens,
 respectively. This is a 77.1–77.6% reduction in the initial meals schema.
 
 An all-listed-capabilities configuration has 50 tools before the pilot and
-45 afterward. It enables both search providers, sandbox, canonical training,
-weather, skills, memory, custom data, reminders, Google Health, durable files,
-and speech. Gmail remains unloaded. Its complete schema decreases from
+45 afterward. The benchmark payload exercises `build_tools` directly, so it
+measures 49 and 44; the running agent adds `PreloadMemoryTool`. It enables
+both search providers, sandbox, canonical training, weather, skills, memory,
+custom data, reminders, Google Health, durable files, and speech. Gmail
+remains unloaded. Its complete schema decreases from
 6,885–7,009 tokens to 6,253–6,349 tokens, about 9.2–9.4%. This constructed
 configuration is not a measurement of a running deployment.
 

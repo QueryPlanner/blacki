@@ -7,7 +7,14 @@ from typing import Any, cast, get_type_hints
 
 from google.adk.tools import BaseTool, FunctionTool, ToolContext
 from google.genai import types
-from pydantic import BaseModel, ConfigDict, ValidationError, create_model
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    create_model,
+    model_validator,
+)
 
 from blacki.tools import calories
 from blacki.tools.action_identity import MEAL_ACTION_NAMES
@@ -19,7 +26,15 @@ class _MealCall(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     action: str
-    arguments: dict[str, Any]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _empty_arguments_for_null(cls, data: Any) -> Any:
+        """Treat an explicit null as no arguments for zero-argument actions."""
+        if isinstance(data, dict) and data.get("arguments") is None:
+            return {**data, "arguments": {}}
+        return data
 
 
 class _DescribeCall(BaseModel):

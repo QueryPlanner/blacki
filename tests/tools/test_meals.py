@@ -232,6 +232,29 @@ async def test_invalid_payloads_cannot_write_or_echo_private_values(
         assert row is not None and row[0] == 0
 
 
+@pytest.mark.parametrize(
+    ("action", "arguments"),
+    [
+        ("get_meal_sync_status", None),
+        ("get_meal_sync_status", {}),
+        ("retry_meal_sync", None),
+        ("retry_meal_sync", {}),
+    ],
+)
+async def test_zero_argument_actions_accept_omitted_arguments(
+    action: str,
+    arguments: dict[str, Any] | None,
+    meal_container: AppContainer,
+    meal_context: ToolContext,
+    meals: MealsTool,
+) -> None:
+    payload: dict[str, Any] = {"action": action}
+    if arguments is not None:
+        payload["arguments"] = arguments
+    result = await meals.run_async(args=payload, tool_context=meal_context)
+    assert result["status"] != "error", result
+
+
 async def test_dispatch_keeps_user_and_private_chat_boundaries(
     meal_container: AppContainer,
     meal_context: ToolContext,
