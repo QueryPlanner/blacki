@@ -573,7 +573,7 @@ class TestBuildCalorieTools:
 
         tools = _build_calorie_tools()
 
-        assert len(tools) == 7
+        assert {tool.name for tool in tools} == {"meals", "describe_action"}
 
 
 class TestBuildWorkoutTools:

@@ -10,6 +10,8 @@ _GMAIL_TOOL_PREFIX = "gmail_"
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _PRIVATE_TOOL_NAMES = frozenset(
     {
+        "meals",
+        "describe_action",
         "log_meal",
         "edit_meal",
         "delete_meal",

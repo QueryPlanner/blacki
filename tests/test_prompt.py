@@ -26,6 +26,7 @@ from blacki.prompts.policies import (
 
 ALL_DOMAIN_TOOLS = frozenset(
     {
+        "meals",
         "log_meal",
         "get_calorie_summary",
         "set_training_program",
@@ -157,6 +158,12 @@ def test_select_domain_policy_names(user_text: str, expected: tuple[str, ...]) -
 def test_router_does_not_describe_disabled_tools() -> None:
     assert select_domain_policy_names("Log my lunch", frozenset()) == ()
     assert build_domain_instruction("Log my lunch", frozenset()) == ""
+
+
+def test_nutrition_policy_is_enabled_for_compact_meals_tool() -> None:
+    assert select_domain_policy_names("Log my lunch", {"meals"}) == ("nutrition",)
+    instruction = build_domain_instruction("Log my lunch", {"meals"})
+    assert "meals(action=..., arguments={...})" in instruction
 
 
 def test_health_policy_is_enabled_only_for_health_tool() -> None:
