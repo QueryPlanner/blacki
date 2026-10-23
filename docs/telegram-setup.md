@@ -170,7 +170,9 @@ Open the bot in Telegram and send:
 | --- | --- |
 | `/start` | Show the welcome message |
 | `/help` | Show the supported command summary |
-| `/model` | Open the model and thinking settings panel |
+| `/model <author/model-id>` | Use an exact OpenRouter model ID for the next turn |
+| `/model default` | Restore the configured deployment model |
+| `/model` or `/models` | Show the active model, command usage, and thinking settings |
 | `/thinking` | Open the supported reasoning-effort choices for the active model |
 | `/reset` | Start a fresh conversation session |
 | `/connect_health` | Send a Google Health authorization link and consent for optional meal sync |
@@ -185,8 +187,26 @@ If Kokoro speech is configured, ask the bot to “send that as audio” and conf
 Telegram receives an MP3 in its native audio player. Kokoro failures return a
 text error and do not create a local audio file.
 
-The `/model` panel stores one profile for the Telegram chat. Choose a model,
-then select a thinking effort supported by that model. `Default` uses
+Send `/model author/model-id` with the exact ID from
+[OpenRouter](https://openrouter.ai/docs/api_reference/overview), for example
+`/model openai/gpt-5.2`. The optional `openrouter/` transport prefix is also
+accepted, as in `/model openrouter/openai/gpt-5.2`. Variant suffixes such as
+`:free` are preserved. There is no preset model list. `/model` and `/models`
+show the complete active ID and the thinking and reset controls.
+
+Blacki checks the ID's syntax and saves the selection; OpenRouter checks model
+availability and account access when the next message runs. Custom selections
+require `OPENROUTER_API_KEY` on the Blacki host. They reuse that configured
+account and may change model costs, context limits, and tool or image support.
+
+`/model default` clears the chat override. The default remains `ROOT_AGENT_MODEL`,
+which the deployment workflow takes from the GitHub Actions secret of the same
+name. Reset settings also clears the model and explicit thinking choice.
+Neither command writes a new deployment default.
+
+Blacki stores one profile for the Telegram chat, shared across its topics.
+After selecting a model, choose a thinking effort supported by that model.
+The thinking option `Default` uses
 `ROOT_AGENT_REASONING_EFFORT` when configured and otherwise leaves the
 provider's reasoning setting unchanged. `Off` is shown only when the model
 advertises that it can disable reasoning. Changes apply to the next turn and

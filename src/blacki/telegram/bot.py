@@ -1422,10 +1422,16 @@ class TelegramBot:
             await self._send_help_message(chat_id)
         elif command == "/reset":
             await self._handle_reset(chat_id, message.message_thread_id)
-        elif command == "/model":
-            await self._settings_menu.send_model_menu(
-                chat_id, message.message_thread_id
-            )
+        elif command.split(maxsplit=1)[0].split("@", 1)[0] in {"/model", "/models"}:
+            parts = command.split(maxsplit=1)
+            if len(parts) == 2:
+                await self._settings_menu.set_model(
+                    chat_id, message.message_thread_id, parts[1].strip()
+                )
+            else:
+                await self._settings_menu.send_model_menu(
+                    chat_id, message.message_thread_id
+                )
         elif command == "/thinking":
             await self._settings_menu.send_thinking_menu(
                 chat_id, message.message_thread_id
@@ -1897,7 +1903,9 @@ class TelegramBot:
             "Commands:\n"
             "/help - Show available commands\n"
             "/reset - Start a fresh conversation session\n"
-            "/model - Choose the model and thinking settings\n"
+            "/model <author/model-id> - Use an OpenRouter model\n"
+            "/model default - Restore the configured default\n"
+            "/models - Show model and thinking settings\n"
             "/thinking - Choose supported reasoning effort"
             f"{gmail_commands}"
             f"{health_commands}"
@@ -1932,7 +1940,9 @@ class TelegramBot:
             "• /start \\- Start a conversation\n"
             "• /help \\- Show this help message\n"
             "• /reset \\- Start a fresh conversation session\n"
-            "• /model \\- Choose the model and thinking settings\n"
+            "• /model author/model\\-id \\- Use an OpenRouter model\n"
+            "• /model default \\- Restore the configured default\n"
+            "• /models \\- Show model and thinking settings\n"
             "• /thinking \\- Choose supported reasoning effort\n"
             f"{gmail_commands}"
             f"{health_commands}\n"
