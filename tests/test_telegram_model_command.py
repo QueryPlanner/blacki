@@ -287,3 +287,71 @@ async def test_similar_command_does_not_select_model(command_harness) -> None:
     await send(bot, "/modelx acme/selected")
     assert await storage.get("123", INFERENCE_PROFILE_PREFERENCE_KEY) is None
     bot.api.send_message.assert_not_awaited()
+
+
+@pytest.mark.parametrize("prompt_count", [1, 2])
+@pytest.mark.parametrize(
+    ("command", "expected_model"),
+    [
+        ("/model acme/new-model", "acme/new-model"),
+        ("/models@blacki_bot acme/new-model", "acme/new-model"),
+        ("/model default", "acme/deployment-default"),
+    ],
+)
+async def test_rapid_prompt_waits_for_model_save(
+    command_harness, command: str, expected_model: str, prompt_count: int
+) -> None:
+    bot, storage, records = command_harness
+    await send(bot, "Remember apricot")
+    await send(bot, "/model acme/previous")
+    bot.api.send_message.reset_mock()
+
+    def update(seq: int, text: str) -> Update:
+        return Update(
+            update_id=seq,
+            message=Message(
+                message_id=seq,
+                date="2026-10-23T00:00:00Z",
+                chat=Chat(id=123, type="private"),
+                message_thread_id=7,
+                text=text,
+            ),
+        )
+
+    # Hold the real transaction lock so the command pauses before its write.
+    tasks = []
+    try:
+        async with storage._lock:
+            command_task = asyncio.create_task(
+                bot._safe_handle_update(update(10, command))
+            )
+            tasks.append(command_task)
+            await asyncio.sleep(0)
+            for seq in range(11, 11 + prompt_count):
+                tasks.append(
+                    asyncio.create_task(
+                        bot._safe_handle_update(update(seq, "Recall apricot"))
+                    )
+                )
+                await asyncio.sleep(0)
+            assert records[-1]["model"] == "acme/deployment-default"
+
+        results = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=5
+        )
+        assert results[0] is None
+        assert results[-1] is None
+        assert records[-1]["model"] == expected_model
+        assert any(
+            message["role"] == "user" and "Remember apricot" in str(message["content"])
+            for message in records[-1]["messages"]
+        )
+        assert any(
+            "Model saved for the next turn" in call.kwargs["text"]
+            for call in bot.api.send_message.await_args_list
+        )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
