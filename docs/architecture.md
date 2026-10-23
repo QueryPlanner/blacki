@@ -3,6 +3,38 @@
 Blacki keeps the agent process small and delegates expensive capabilities to
 managed APIs when they are enabled.
 
+## Meal tool interface
+
+When database-backed tools are enabled, the model receives `meals` and
+`describe_action` instead of seven separate meal functions. For example:
+
+```json
+{
+  "action": "log_meal",
+  "arguments": {"description": "apple", "estimated_calories": 95}
+}
+```
+
+`describe_action(domain="meals", action="log_meal")` returns the callable's
+description and parameter schema without accessing user records or changing
+permissions. Use discovery when the action parameters are unknown. The
+dispatcher validates types strictly, rejects unknown fields and injected
+context, and passes the original ADK user/session context to the existing
+handler. Integer parameters require integers, rather than numeric strings or
+floating-point values. Local storage, account ownership, private-chat export
+checks, and Google Health synchronization remain owned by the existing meal
+handlers. The nutrition policy supplies operating and consent rules.
+
+Privacy redaction covers both new tools. Telegram progress and failure retry
+guards resolve the selected action, so a failed summary does not block a
+different meal action. Completed historical leaf-tool calls can remain in
+conversation history. Resuming suspended calls to removed leaf-tool names is
+not established by the continuation test.
+
+This is a meals-only pilot. Training, sandbox/browser, and other domains retain
+their current interfaces. See [the pilot measurement](meal-tools-benchmark.md)
+for schema savings and the additional cost of discovery on short workflows.
+
 ## Runtime
 
 The container runs:

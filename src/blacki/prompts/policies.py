@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 NUTRITION_POLICY = """\
 <nutrition_policy>
+Use meals(action=..., arguments={...}) for meal and calorie operations. Action
+names below identify meals actions, not separate tools. Use describe_action
+with domain="meals" to read an unfamiliar action's parameters before calling it.
 Use nutrition tracking only when the user explicitly logs, edits, deletes, or
 summarizes intake, or clearly describes something they consumed. A food name
 by itself is ambiguous: ask whether they want information or a log. General
@@ -127,6 +130,7 @@ DOMAIN_PATTERNS = {
 DOMAIN_TOOL_NAMES = {
     "nutrition": frozenset(
         {
+            "meals",
             "log_meal",
             "get_calorie_summary",
             "edit_meal",

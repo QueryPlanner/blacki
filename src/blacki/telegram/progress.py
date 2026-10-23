@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from blacki.telegram.formatting import escape_markdown_plain
+from blacki.tools.action_identity import meal_action_name
 
 _MAX_ARG_LENGTH = 60
 
@@ -56,6 +57,7 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
     Returns:
         A MarkdownV2-ready status description ending in '…'.
     """
+    tool_name = meal_action_name(tool_name, args)
     can_interpolate = not private and bool(args)
 
     # 1. Search tools
