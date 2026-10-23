@@ -8,11 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Select an exact OpenRouter model with Telegram `/model <author/model-id>`
 - Add a tested Material for MkDocs documentation site
 - Add a safe first-VPS deployment and operations contract
 - Add private Kokoro speech delivery for Telegram replies
 
 ### Changed
+- Replace Telegram model presets with current settings and command usage
 - Make Docker Compose private, persistent, and health-checked by default
 - Enable the same-privilege ADK task worker by default
 - Restrict owner infrastructure deployment to the QueryPlanner repository
