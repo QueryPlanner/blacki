@@ -9,6 +9,8 @@ from typing import Final
 
 from pydantic import BaseModel, Field, field_validator
 
+DEFAULT_SANDBOX_IMAGE: Final[str] = "ghcr.io/queryplanner/blacki-sandbox:latest"
+
 
 class SandboxConfig(BaseModel):
     """Configuration for OpenSandbox sandbox operations.
@@ -36,14 +38,16 @@ class SandboxConfig(BaseModel):
     memory_limit: str = Field(default="1Gi", description="Memory limit per sandbox")
     cpu_limit: str = Field(default="0.5", description="CPU limit per sandbox")
     image: str = Field(
-        default="ghcr.io/queryplanner/athena-sandbox:latest",
+        default=DEFAULT_SANDBOX_IMAGE,
         description="Docker image for sandboxes",
     )
     entrypoint: list[str] = Field(
         default=[
             "/bin/sh",
             "-c",
-            "if command -v athena-sandbox-start >/dev/null 2>&1; then "
+            "if command -v blacki-sandbox-start >/dev/null 2>&1; then "
+            "exec blacki-sandbox-start; "
+            "elif command -v athena-sandbox-start >/dev/null 2>&1; then "
             "exec athena-sandbox-start; "
             "elif [ -x /opt/opensandbox/code-interpreter.sh ]; then "
             "exec /opt/opensandbox/code-interpreter.sh; "
@@ -89,7 +93,7 @@ def load_sandbox_config() -> SandboxConfig:
         SANDBOX_TIMEOUT_MINUTES: Sandbox TTL in minutes (default: 30)
         SANDBOX_MEMORY_LIMIT: Memory limit per sandbox (default: 1Gi)
         SANDBOX_CPU_LIMIT: CPU limit per sandbox (default: 0.5)
-        SANDBOX_IMAGE: Docker image for sandboxes (default: the shared
+        SANDBOX_IMAGE: Docker image for sandboxes (default: the Blacki
             Chromium/agent-browser image)
 
     Returns:
@@ -105,9 +109,7 @@ def load_sandbox_config() -> SandboxConfig:
         timeout_minutes=int(os.getenv("SANDBOX_TIMEOUT_MINUTES", "30").strip()),
         memory_limit=os.getenv("SANDBOX_MEMORY_LIMIT", "1Gi").strip(),
         cpu_limit=os.getenv("SANDBOX_CPU_LIMIT", "0.5").strip(),
-        image=os.getenv(
-            "SANDBOX_IMAGE", "ghcr.io/queryplanner/athena-sandbox:latest"
-        ).strip(),
+        image=os.getenv("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE).strip(),
     )
 
 

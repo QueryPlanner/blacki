@@ -26,8 +26,9 @@ class TestSandboxConfig:
         assert config.timeout_minutes == 30
         assert config.memory_limit == "1Gi"
         assert config.cpu_limit == "0.5"
-        assert config.image == "ghcr.io/queryplanner/athena-sandbox:latest"
+        assert config.image == "ghcr.io/queryplanner/blacki-sandbox:latest"
         entrypoint = config.entrypoint[-1]
+        assert "blacki-sandbox-start" in entrypoint
         assert "athena-sandbox-start" in entrypoint
         assert "/opt/opensandbox/code-interpreter.sh" in entrypoint
 
@@ -88,6 +89,14 @@ class TestSandboxConfig:
 
 class TestLoadSandboxConfig:
     """Tests for load_sandbox_config."""
+
+    def test_default_image_without_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SANDBOX_IMAGE", raising=False)
+        assert (
+            load_sandbox_config().image == "ghcr.io/queryplanner/blacki-sandbox:latest"
+        )
 
     def test_load_from_environment(self) -> None:
         """Test loading config from environment variables."""
