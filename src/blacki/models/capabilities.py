@@ -18,6 +18,8 @@ from urllib.parse import quote
 
 import httpx
 
+from .openrouter_ids import OPENROUTER_PREFIX, canonical_openrouter_model_id
+
 logger = logging.getLogger(__name__)
 
 OPENROUTER_MODELS_BASE_URL = "https://openrouter.ai/api/v1/model"
@@ -71,24 +73,27 @@ def normalize_openrouter_model_id(
 ) -> str | None:
     """Return the OpenRouter API identifier for a model reference.
 
-    LiteLLM model strings use ``openrouter/<author>/<slug>`` while the
-    OpenRouter Models API uses ``<author>/<slug>``.  Exactly one transport
-    prefix is removed.  Bare provider IDs are accepted only when the caller
-    explicitly states that the model is routed through OpenRouter; this avoids
-    making a native Google or future provider lookup by accident.
+    Blacki model references historically use ``openrouter/<author>/<slug>``
+    while the OpenRouter Models API uses ``<author>/<slug>``.  Exactly one
+    transport prefix is removed.  Dynamic router identifiers such as
+    ``openrouter/auto`` are already valid API IDs and are preserved.  Bare
+    provider IDs are accepted only when the caller explicitly states that the
+    model is routed through OpenRouter; this avoids making a native Google or
+    future provider lookup by accident.
     """
 
     if not isinstance(model_id, str):
         return None
 
-    normalized = model_id.strip()
-    if not normalized:
+    stripped = model_id.strip()
+    if not stripped:
         return None
 
-    prefix = "openrouter/"
-    if normalized.lower().startswith(prefix):
-        normalized = normalized[len(prefix) :]
-    elif not openrouter_routed:
+    if stripped.lower().startswith(OPENROUTER_PREFIX):
+        normalized = canonical_openrouter_model_id(stripped)
+    elif openrouter_routed:
+        normalized = stripped
+    else:
         return None
 
     # OpenRouter model IDs are author/slug.  Keep variant suffixes (for

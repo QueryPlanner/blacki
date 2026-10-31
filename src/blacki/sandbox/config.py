@@ -9,6 +9,8 @@ from typing import Final
 
 from pydantic import BaseModel, Field, field_validator
 
+DEFAULT_SANDBOX_IMAGE: Final[str] = "ghcr.io/queryplanner/blacki-sandbox:latest"
+
 
 class SandboxConfig(BaseModel):
     """Configuration for OpenSandbox sandbox operations.
@@ -20,7 +22,7 @@ class SandboxConfig(BaseModel):
         domain: OpenSandbox server domain (e.g., localhost:9090).
         api_key: API key for authentication (optional for local dev).
         timeout_minutes: Sandbox TTL in minutes.
-        memory_limit: Memory limit per sandbox (e.g., 512Mi).
+        memory_limit: Memory limit per sandbox (e.g., 1Gi).
         cpu_limit: CPU limit per sandbox (e.g., 0.5).
         image: Docker image to use for sandboxes.
     """
@@ -33,22 +35,32 @@ class SandboxConfig(BaseModel):
     timeout_minutes: int = Field(
         default=30, description="Sandbox TTL in minutes", ge=1, le=1440
     )
-    memory_limit: str = Field(default="512Mi", description="Memory limit per sandbox")
+    memory_limit: str = Field(default="1Gi", description="Memory limit per sandbox")
     cpu_limit: str = Field(default="0.5", description="CPU limit per sandbox")
     image: str = Field(
-        default="opensandbox/code-interpreter:v1.0.2",
+        default=DEFAULT_SANDBOX_IMAGE,
         description="Docker image for sandboxes",
     )
     entrypoint: list[str] = Field(
-        default=["/opt/opensandbox/code-interpreter.sh"],
-        description="Entrypoint command for code interpreter sandbox",
+        default=[
+            "/bin/sh",
+            "-c",
+            "if command -v blacki-sandbox-start >/dev/null 2>&1; then "
+            "exec blacki-sandbox-start; "
+            "elif command -v athena-sandbox-start >/dev/null 2>&1; then "
+            "exec athena-sandbox-start; "
+            "elif [ -x /opt/opensandbox/code-interpreter.sh ]; then "
+            "exec /opt/opensandbox/code-interpreter.sh; "
+            "else exec tail -f /dev/null; fi",
+        ],
+        description="Entrypoint command for the sandbox image",
     )
 
     @field_validator("memory_limit")
     @classmethod
     def validate_memory_limit(cls, v: str) -> str:
         if not re.match(r"^\d+(Mi|Gi|M|G)$", v):
-            raise ValueError("memory_limit must be like 512Mi, 1Gi, 256M, or 1G")
+            raise ValueError("memory_limit must be like 1Gi, 512Mi, 256M, or 2G")
         return v
 
     @field_validator("cpu_limit")
@@ -79,9 +91,10 @@ def load_sandbox_config() -> SandboxConfig:
         SANDBOX_DOMAIN: OpenSandbox server domain (default: localhost:9090)
         SANDBOX_API_KEY: API key for authentication
         SANDBOX_TIMEOUT_MINUTES: Sandbox TTL in minutes (default: 30)
-        SANDBOX_MEMORY_LIMIT: Memory limit per sandbox (default: 512Mi)
+        SANDBOX_MEMORY_LIMIT: Memory limit per sandbox (default: 1Gi)
         SANDBOX_CPU_LIMIT: CPU limit per sandbox (default: 0.5)
-        SANDBOX_IMAGE: Docker image for sandboxes
+        SANDBOX_IMAGE: Docker image for sandboxes (default: the Blacki
+            Chromium/agent-browser image)
 
     Returns:
         SandboxConfig instance with values from environment.
@@ -94,9 +107,9 @@ def load_sandbox_config() -> SandboxConfig:
         domain=os.getenv("SANDBOX_DOMAIN", "localhost:9090").strip(),
         api_key=os.getenv("SANDBOX_API_KEY", "").strip() or None,
         timeout_minutes=int(os.getenv("SANDBOX_TIMEOUT_MINUTES", "30").strip()),
-        memory_limit=os.getenv("SANDBOX_MEMORY_LIMIT", "512Mi").strip(),
+        memory_limit=os.getenv("SANDBOX_MEMORY_LIMIT", "1Gi").strip(),
         cpu_limit=os.getenv("SANDBOX_CPU_LIMIT", "0.5").strip(),
-        image=os.getenv("SANDBOX_IMAGE", "opensandbox/code-interpreter:v1.0.2").strip(),
+        image=os.getenv("SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE).strip(),
     )
 
 

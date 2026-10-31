@@ -5,8 +5,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
-def test_importing_tools_does_not_import_runtime_or_domain_barrels() -> None:
+
+@pytest.mark.parametrize("module", ["blacki.tools", "blacki.telegram.progress"])
+def test_importing_tools_does_not_import_runtime_or_domain_barrels(module: str) -> None:
     """The tool package must not eagerly load application runtime modules."""
     source_root = Path(__file__).parents[1] / "src"
     child_environment = os.environ.copy()
@@ -16,10 +19,12 @@ def test_importing_tools_does_not_import_runtime_or_domain_barrels() -> None:
         if not existing_pythonpath
         else f"{source_root}{os.pathsep}{existing_pythonpath}"
     )
-    script = """
+    script = f"""
 import sys
 
-import blacki.tools
+import importlib
+
+importlib.import_module({module!r})
 
 for prefix in (
     "blacki.agent",
@@ -32,8 +37,9 @@ for prefix in (
     "blacki.reminders",
     "blacki.sandbox",
     "blacki.user_files",
-    "blacki.zepto",
 ):
+    if prefix == "blacki.telegram" and {module!r} == "blacki.telegram.progress":
+        continue
     assert not any(
         module == prefix or module.startswith(prefix + ".")
         for module in sys.modules

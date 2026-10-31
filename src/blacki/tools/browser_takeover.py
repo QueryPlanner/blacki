@@ -48,7 +48,7 @@ async def start_browser_takeover(
             }
         return {
             "status": "success",
-            "message": "The user returned control of the authenticated browser.",
+            "message": "The user returned control of the browser.",
         }
     except Exception:
         return {

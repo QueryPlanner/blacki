@@ -52,6 +52,7 @@ async def test_tool_returns_status_without_leaking_link() -> None:
         )
 
     assert result["status"] == "success"
+    assert result["message"] == "The user returned control of the browser."
     assert "secret-link-token" not in repr(result)
     send.assert_awaited_once_with(lease.takeover_url, 300, _context().state)
     service.close.assert_awaited_once_with(lease)

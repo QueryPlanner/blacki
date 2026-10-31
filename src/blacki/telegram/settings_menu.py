@@ -3,8 +3,8 @@
 import contextlib
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Sequence
-from typing import cast
 
 from blacki.models.capabilities import (
     ModelCapabilities,
@@ -16,6 +16,7 @@ from blacki.models.inference import (
     ReasoningEffort,
     update_inference_profile,
 )
+from blacki.models.openrouter_ids import canonical_openrouter_model_id
 from blacki.utils.preferences import get_preferences_storage
 
 from .api import TelegramApiClient
@@ -24,20 +25,10 @@ from .types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Pa
 
 logger = logging.getLogger(__name__)
 
-MODEL_CHOICES = {
-    "m1": ("openrouter/openai/gpt-oss-120b", "GPT-OSS 120B"),
-    "m2": ("openrouter/x-ai/grok-4.3", "Grok 4.3"),
-    "m3": ("google/gemini-flash-latest", "Gemini Flash"),
-    "m4": ("openrouter/deepseek/deepseek-v4-pro", "DeepSeek v4 Pro"),
-    "m5": ("openrouter/deepseek/deepseek-v4-flash", "DeepSeek v4 Flash"),
-    "m6": ("google/gemini-pro-latest", "Gemini Pro"),
-    "m7": ("moonshotai/kimi-latest", "Kimi Latest"),
-    "m8": ("openrouter/minimax/minimax-m2.7", "MiniMax m2.7"),
-    "m9": ("openrouter/nvidia/nemotron-3-super-120b-a12b", "Nemotron 3 Super"),
-    "m10": ("openrouter/z-ai/glm-5", "GLM 5"),
-    "m11": ("openrouter/openai/gpt-5.6-luna", "GPT-5.6 Luna"),
-    "m_default": ("default", "System Default"),
-}
+_OPENROUTER_MODEL_ID = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*"
+)
+_MODEL_USAGE = "Use /model <author/model-id> or /model default."
 
 _SETTINGS_MODEL_PREFIX = "s:m:"
 _SETTINGS_REASONING_PREFIX = "s:r:"
@@ -122,6 +113,55 @@ class SettingsMenu:
         except Exception:
             logger.exception("Failed to send thinking menu")
 
+    async def set_model(
+        self, chat_id: int, message_thread_id: int | None, model_id: str
+    ) -> None:
+        """Save an exact OpenRouter ID for subsequent turns in this chat."""
+        selected: str | None = None
+        if model_id != "default":
+            canonical = canonical_openrouter_model_id(model_id)
+            if _OPENROUTER_MODEL_ID.fullmatch(canonical) is None:
+                await self._send_model_result(chat_id, message_thread_id, _MODEL_USAGE)
+                return
+            if not os.getenv("OPENROUTER_API_KEY", "").strip():
+                await self._send_model_result(
+                    chat_id,
+                    message_thread_id,
+                    "OpenRouter is not configured. Set OPENROUTER_API_KEY "
+                    "before selecting an OpenRouter model.",
+                )
+                return
+            selected = f"openrouter/{canonical}"
+
+        try:
+            await update_inference_profile(
+                get_preferences_storage(),
+                str(chat_id),
+                {"model": selected, "reasoning": None},
+            )
+        except Exception:
+            logger.exception("Failed to save Telegram model selection")
+            text = "Could not save settings. Please try again."
+        else:
+            effective = self._effective_model(InferenceProfile(model=selected))
+            display_name = self._model_display_name(effective)
+            text = (
+                f"Model saved for the next turn: {display_name}\n"
+                "Conversation history is preserved. Thinking uses the default setting."
+            )
+        await self._send_model_result(chat_id, message_thread_id, text)
+
+    async def _send_model_result(
+        self, chat_id: int, message_thread_id: int | None, text: str
+    ) -> None:
+        """Report command results without confusing delivery and save failures."""
+        try:
+            await self._api.send_message(
+                chat_id=chat_id, text=text, message_thread_id=message_thread_id
+            )
+        except Exception:
+            logger.exception("Failed to send model selection result")
+
     @staticmethod
     def _chunk_buttons(
         buttons: Sequence[InlineKeyboardButton], per_row: int = 2
@@ -137,14 +177,7 @@ class SettingsMenu:
         current_display_name = self._model_display_name(effective_model)
         current_thinking = self._reasoning_display(profile)
 
-        model_buttons = [
-            InlineKeyboardButton(
-                text=display_name,
-                callback_data=f"{_SETTINGS_MODEL_PREFIX}{key}",
-            )
-            for key, (_, display_name) in MODEL_CHOICES.items()
-        ]
-        buttons = self._chunk_buttons(model_buttons)
+        buttons: list[list[InlineKeyboardButton]] = []
 
         buttons.append(
             [
@@ -166,7 +199,8 @@ class SettingsMenu:
             "⚙️ **Inference settings**\n\n"
             f"Model: **{current_display_name}**\n"
             f"Thinking: **{current_thinking}**\n\n"
-            "Choose a model or adjust Thinking. Changes apply to the next turn."
+            f"{_MODEL_USAGE}\n"
+            "Copy the exact ID from OpenRouter. Changes apply to the next turn."
         )
         return text, InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -220,8 +254,10 @@ class SettingsMenu:
             await self._api.answer_callback_query(query.id, text="Unknown action")
             return
 
-        if action == "model" and (value is None or value not in MODEL_CHOICES):
-            await self._api.answer_callback_query(query.id, text="Unknown model")
+        if action == "model" and value != "m_default":
+            await self._api.answer_callback_query(
+                query.id, text="Model preset expired. Use /model <author/model-id>."
+            )
             return
         if action == "reasoning" and value not in {
             _INHERIT_REASONING,
@@ -241,19 +277,6 @@ class SettingsMenu:
 
         try:
             storage = get_preferences_storage()
-            if action == "model":
-                model_id, _ = MODEL_CHOICES[cast(str, value)]
-                await update_inference_profile(
-                    storage,
-                    str(chat_id),
-                    {
-                        "model": None if model_id == "default" else model_id,
-                        "reasoning": None,
-                    },
-                )
-                await self._edit_model_menu(query, chat_id)
-                return
-
             if action == "reasoning":
                 profile = await self._load_profile(chat_id)
                 capability = await self._resolve_capabilities(
@@ -279,7 +302,7 @@ class SettingsMenu:
                 await self._edit_model_menu(query, chat_id)
                 return
 
-            if action == "reset":
+            if action in {"reset", "model"}:
                 await update_inference_profile(
                     storage,
                     str(chat_id),
@@ -389,13 +412,10 @@ class SettingsMenu:
 
     @staticmethod
     def _model_display_name(model_id: str) -> str:
-        """Return a friendly label while preserving unknown model IDs."""
-        for configured_id, display_name in MODEL_CHOICES.values():
-            if configured_id == model_id:
-                return display_name
+        """Show the exact API ID, including its provider and variant."""
         if model_id == "default":
             return "System Default"
-        return model_id.rsplit("/", 1)[-1]
+        return canonical_openrouter_model_id(model_id)
 
     @staticmethod
     def _effort_value(value: object) -> str | None:

@@ -33,7 +33,7 @@ from blacki.utils.preferences import SqlitePreferencesStorage
 
 @pytest.fixture
 def mock_api() -> MagicMock:
-    return create_autospec(TelegramApiClient, instance=True)
+    return create_autospec(TelegramApiClient, instance=True, spec_set=True)
 
 
 @pytest.fixture
@@ -72,19 +72,6 @@ async def test_send_model_menu_exception(
 
 
 @pytest.mark.asyncio
-@patch(
-    "blacki.telegram.settings_menu.MODEL_CHOICES",
-    {"m1": ("m1", "M1"), "m2": ("m2", "M2")},
-)
-async def test_send_model_menu_even_choices(
-    menu: SettingsMenu, mock_api: MagicMock
-) -> None:
-    await menu.send_model_menu(chat_id=123, message_thread_id=None)
-    mock_api.send_message.assert_called_once()
-
-
-@pytest.mark.asyncio
-@patch("blacki.telegram.settings_menu.MODEL_CHOICES", {"m1": ("m1", "M1")})
 async def test_send_model_menu_unknown_current_model(
     menu: SettingsMenu, mock_api: MagicMock, load_profile: AsyncMock
 ) -> None:
@@ -131,34 +118,9 @@ async def test_handle_callback_query_unknown_model(
         id="cq1", from_user=user, chat_instance="inst", data="mod:unknown"
     )
     await menu.handle_callback(cq)
-    mock_api.answer_callback_query.assert_called_once_with("cq1", text="Unknown model")
-
-
-@pytest.mark.asyncio
-@patch("blacki.telegram.settings_menu.get_preferences_storage")
-async def test_handle_callback_query_valid_model(
-    mock_get_prefs, menu: SettingsMenu, mock_api: MagicMock
-) -> None:
-    mock_storage = AsyncMock()
-    mock_get_prefs.return_value = mock_storage
-    user = User(id=1, is_bot=False, first_name="Test")
-    chat = Chat(id=123, type="private")
-    msg = Message(message_id=42, date="2024-01-01T00:00:00Z", chat=chat)
-    cq = CallbackQuery(
-        id="cq1", from_user=user, chat_instance="inst", data="mod:m1", message=msg
+    mock_api.answer_callback_query.assert_called_once_with(
+        "cq1", text="Model preset expired. Use /model <author/model-id>."
     )
-
-    with patch(
-        "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
-    ) as mock_update:
-        await menu.handle_callback(cq)
-    mock_update.assert_awaited_once_with(
-        mock_storage,
-        "123",
-        {"model": "openrouter/openai/gpt-oss-120b", "reasoning": None},
-    )
-    mock_api.answer_callback_query.assert_called_once()
-    mock_api.edit_message_text.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -201,7 +163,11 @@ async def test_handle_callback_query_edit_msg_exception(
     chat = Chat(id=123, type="private")
     msg = Message(message_id=42, date="2024-01-01T00:00:00Z", chat=chat)
     cq = CallbackQuery(
-        id="cq1", from_user=user, chat_instance="inst", data="mod:m1", message=msg
+        id="cq1",
+        from_user=user,
+        chat_instance="inst",
+        data="mod:m_default",
+        message=msg,
     )
 
     mock_api.edit_message_text.side_effect = Exception("fail")
@@ -231,7 +197,11 @@ async def test_message_less_settings_mutation_does_not_write(
 ) -> None:
     user = User(id=1, is_bot=False, first_name="Test")
     cq = CallbackQuery(
-        id="cq1", from_user=user, chat_instance="inst", data="s:m:m1", message=None
+        id="cq1",
+        from_user=user,
+        chat_instance="inst",
+        data="s:m:m_default",
+        message=None,
     )
 
     with patch(
@@ -593,7 +563,7 @@ async def test_callback_model_none_value_is_rejected_without_write(
 
     update.assert_not_awaited()
     assert mock_api.answer_callback_query.await_args_list[-1].kwargs["text"] == (
-        "Unknown model"
+        "Model preset expired. Use /model <author/model-id>."
     )
 
 
@@ -803,12 +773,13 @@ async def test_resolve_capabilities_uses_cached_resolver(menu: SettingsMenu) -> 
 
 
 def test_model_display_name_handles_unknown_future_model(menu: SettingsMenu) -> None:
-    assert menu._model_display_name("openrouter/acme/future-model") == "future-model"
+    assert (
+        menu._model_display_name("openrouter/acme/future-model") == "acme/future-model"
+    )
 
 
 def test_model_display_name_handles_system_default(menu: SettingsMenu) -> None:
-    with patch("blacki.telegram.settings_menu.MODEL_CHOICES", {}):
-        assert menu._model_display_name("default") == "System Default"
+    assert menu._model_display_name("default") == "System Default"
 
 
 def test_reasoning_display_inherits_when_only_token_budget_is_set(

@@ -956,7 +956,7 @@ def _confirmation_event(
     *,
     interrupt_id: str = "confirm-1",
     original_id: str = "tool-1",
-    tool_name: str = "zepto_update_cart",
+    tool_name: str = "sample_update_cart",
     tool_args: dict[str, object] | None = None,
 ) -> Event:
     original = types.FunctionCall(
@@ -1094,7 +1094,7 @@ def test_pending_confirmation_ignores_malformed_calls() -> None:
         types.FunctionCall(
             id="bad-args",
             name="adk_request_confirmation",
-            args={"originalFunctionCall": {"name": "zepto_tool", "args": "bad"}},
+            args={"originalFunctionCall": {"name": "sample_tool", "args": "bad"}},
         ),
     ]
     event = Event(
@@ -1143,7 +1143,7 @@ def test_confirmation_prompt_shows_exact_first_call_and_multiple_warning() -> No
                 _confirmation_event(
                     interrupt_id="confirm-2",
                     original_id="tool-2",
-                    tool_name="zepto_place_order",
+                    tool_name="sample_place_order",
                     tool_args={"total": 999},
                 ),
             ]
@@ -1152,10 +1152,11 @@ def test_confirmation_prompt_shows_exact_first_call_and_multiple_warning() -> No
 
     prompt = _format_confirmation(pending[0], pending_count=len(pending))
 
-    assert "zepto_update_cart" in prompt
+    assert "Confirm tool `sample_update_cart` with these arguments?" in prompt
+    assert "sample_update_cart" in prompt
     assert '"quantity": 1' in prompt
     assert "2 pending calls" in prompt
-    assert "zepto_place_order" not in prompt
+    assert "sample_place_order" not in prompt
 
 
 def test_gmail_confirmation_shows_only_confirmed_send_metadata() -> None:
@@ -1178,8 +1179,6 @@ def test_gmail_confirmation_shows_only_confirmed_send_metadata() -> None:
     assert "person@example.com" in prompt
     assert "Quarterly update" in prompt
     assert "private body must not be shown" not in prompt
-    assert "Zepto" not in prompt
-
     without_optional_recipients = PendingConfirmation(
         interrupt_id="confirm-gmail-minimal",
         tool_name="gmail_send_draft",
@@ -1220,7 +1219,7 @@ async def test_run_user_turn_surfaces_confirmation_instead_of_empty_response() -
             message_text="Add milk",
         )
 
-    assert "zepto_update_cart" in response.content
+    assert "sample_update_cart" in response.content
     assert "Reply exactly `yes` or `no`" in response.content
 
 
@@ -1285,7 +1284,7 @@ async def test_pending_confirmation_reprompts_or_resumes_same_call() -> None:
             ),
         )
 
-    assert "zepto_update_cart" in response.content
+    assert "sample_update_cart" in response.content
     run_async.assert_not_called()
 
     async def resumed_run(**kwargs: object) -> AsyncIterator[Event]:

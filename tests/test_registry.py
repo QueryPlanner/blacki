@@ -37,8 +37,6 @@ class TestToolConfig:
         assert config.legacy_workout_tools_enabled is False
         assert config.kokoro_tts_base_url is None
         assert config.kokoro_tts_voice == "af_heart"
-        assert config.zepto_mcp_enabled is False
-        assert config.zepto_mcp_allowed_chat_ids == frozenset()
         assert config.gmail_config is None
         assert config.browser_takeover_enabled is False
 
@@ -54,9 +52,6 @@ class TestToolConfig:
             legacy_workout_tools_enabled=True,
             kokoro_tts_base_url="http://kokoro.internal:8880",
             kokoro_tts_voice="hf_alpha",
-            zepto_mcp_enabled=True,
-            zepto_mcp_config_dir=Path("/tmp/zepto"),
-            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
             gmail_config=_gmail_config(),
         )
 
@@ -68,9 +63,6 @@ class TestToolConfig:
         assert config.legacy_workout_tools_enabled is True
         assert config.kokoro_tts_base_url == "http://kokoro.internal:8880"
         assert config.kokoro_tts_voice == "hf_alpha"
-        assert config.zepto_mcp_enabled is True
-        assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
-        assert config.zepto_mcp_allowed_chat_ids == frozenset({"123"})
         assert config.gmail_config is not None
 
 
@@ -118,7 +110,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 15
+        assert len(tools) == 16
 
     def test_sandbox_tool_order_keeps_effective_list_files_registration(self) -> None:
         """Keep the observed single list-files registration explicit.
@@ -163,43 +155,8 @@ class TestBuildTools:
 
         assert len(tools) > 15
 
-    def test_zepto_skill_is_root_only(self) -> None:
-        """Zepto should join the root skill toolset but never the task worker."""
-        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
-        config = ToolConfig(
-            skills_dir=skills_dir,
-            weather_enabled=False,
-            zepto_mcp_enabled=True,
-            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
-        )
-        zepto_toolset = patch(
-            "blacki.tools.zepto.create_zepto_toolset",
-            autospec=True,
-        )
-        with zepto_toolset as create:
-            create.return_value = create_autospec(
-                McpToolset, spec_set=True, instance=True
-            )
-            root_tools = build_tools(config, include_user_scoped_tools=True)
-            worker_tools = build_tools(config, include_user_scoped_tools=False)
-            default_tools = build_tools(config)
-
-        root_skills = next(
-            tool for tool in root_tools if isinstance(tool, McpSkillToolset)
-        )
-        worker_skills = next(
-            tool for tool in worker_tools if isinstance(tool, McpSkillToolset)
-        )
-        default_skills = next(
-            tool for tool in default_tools if isinstance(tool, McpSkillToolset)
-        )
-        assert "zepto" in root_skills._skills
-        assert "zepto" not in worker_skills._skills
-        assert "zepto" not in default_skills._skills
-        create.assert_called_once()
-
     def test_gmail_skill_is_root_only(self) -> None:
-        """Gmail should join the root skill toolset but never the task worker."""
+        """Gmail should join the root skill toolset but never the public agent."""
         skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
         config = ToolConfig(
             skills_dir=skills_dir,
@@ -314,7 +271,7 @@ class TestBuildTools:
         }
 
     def test_google_health_tool_is_telegram_root_only(self) -> None:
-        """Google Health must never reach the public or delegated worker agent."""
+        """Google Health must never reach the public agent."""
         config = ToolConfig(
             weather_enabled=False,
             google_health_enabled=True,
@@ -342,30 +299,6 @@ class TestBuildTools:
         assert len(tools) == 6
         assert "Kokoro TTS disabled" in caplog.text
 
-    def test_invalid_zepto_credentials_disable_only_zepto(
-        self,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Invalid private credentials should fail closed without losing skills."""
-        from blacki.zepto import ZeptoCredentialError
-
-        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
-        config = ToolConfig(
-            skills_dir=skills_dir,
-            weather_enabled=False,
-            zepto_mcp_enabled=True,
-            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
-        )
-        with patch(
-            "blacki.tools.zepto.create_zepto_toolset",
-            side_effect=ZeptoCredentialError("authenticate first"),
-        ):
-            tools = build_tools(config, include_user_scoped_tools=True)
-
-        skills = next(tool for tool in tools if isinstance(tool, McpSkillToolset))
-        assert "zepto" not in skills._skills
-        assert "Zepto MCP disabled" in caplog.text
-
     def test_invalid_gmail_credentials_disable_only_gmail(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -387,30 +320,6 @@ class TestBuildTools:
         skills = next(tool for tool in tools if isinstance(tool, McpSkillToolset))
         assert "gmail" not in skills._skills
         assert "Gmail API disabled" in caplog.text
-
-    def test_missing_zepto_skill_file_does_not_register_toolset(self) -> None:
-        """A missing packaged skill should not expose an orphan MCP toolset."""
-        config = ToolConfig(
-            skills_dir=Path("src/blacki/skills"),
-            weather_enabled=False,
-            zepto_mcp_enabled=True,
-            zepto_mcp_allowed_chat_ids=frozenset({"123"}),
-        )
-        with (
-            patch("blacki.tools.skills.load_skill_from_dir", return_value=None),
-            patch(
-                "blacki.tools.zepto.create_zepto_toolset",
-                return_value=create_autospec(
-                    McpToolset,
-                    spec_set=True,
-                    instance=True,
-                ),
-            ) as create,
-        ):
-            tools = build_tools(config, include_user_scoped_tools=True)
-
-        assert not any(isinstance(tool, McpSkillToolset) for tool in tools)
-        create.assert_called_once()
 
     def test_missing_gmail_skill_file_does_not_register_toolset(self) -> None:
         """A missing packaged skill should not expose an orphan MCP toolset."""
@@ -467,13 +376,9 @@ class TestBuildToolConfigFromEnv:
             assert config.sqlite_path.endswith(".adk/tools.db")
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
-            assert config.zepto_mcp_enabled is False
             assert config.browser_takeover_enabled is False
             assert config.kokoro_tts_base_url is None
             assert config.kokoro_tts_voice == "af_heart"
-            assert config.zepto_mcp_config_dir == Path(
-                "data/credentials/zepto-mcp-remote"
-            )
 
     def test_brave_search_api_key_from_env(self) -> None:
         """Should read BRAVE_SEARCH_API_KEY from env."""
@@ -569,23 +474,6 @@ class TestBuildToolConfigFromEnv:
             "os.environ", {"LEGACY_WORKOUT_TOOLS_ENABLED": "false"}, clear=False
         ):
             assert build_tool_config_from_env().legacy_workout_tools_enabled is False
-
-    def test_zepto_settings_from_env(self) -> None:
-        """Should parse the explicit Zepto flag, path, and private chat allowlist."""
-        with patch.dict(
-            "os.environ",
-            {
-                "ZEPTO_MCP_ENABLED": "true",
-                "ZEPTO_MCP_CONFIG_DIR": "/tmp/zepto",
-                "ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS": " 123,456, ",
-            },
-            clear=False,
-        ):
-            config = build_tool_config_from_env()
-
-        assert config.zepto_mcp_enabled is True
-        assert config.zepto_mcp_config_dir == Path("/tmp/zepto")
-        assert config.zepto_mcp_allowed_chat_ids == frozenset({"123", "456"})
 
     def test_invalid_gmail_settings_from_env_disable_only_gmail(self) -> None:
         """Invalid shared Gmail settings should disable only Gmail."""
@@ -724,7 +612,7 @@ class TestBuildCalorieTools:
 
         tools = _build_calorie_tools()
 
-        assert len(tools) == 7
+        assert {tool.name for tool in tools} == {"meals", "describe_action"}
 
 
 class TestBuildWorkoutTools:
@@ -759,7 +647,7 @@ class TestBuildSandboxTools:
 
         tools = _build_sandbox_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 8
         assert "sandbox_view_image" in {tool.__name__ for tool in tools}
 
 

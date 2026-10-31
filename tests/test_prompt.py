@@ -16,7 +16,6 @@ from blacki.prompts.instructions import (
     return_description_root,
     return_global_instruction,
     return_instruction_root,
-    return_instruction_task_worker,
 )
 from blacki.prompts.policies import (
     DomainPolicyPlugin,
@@ -27,6 +26,7 @@ from blacki.prompts.policies import (
 
 ALL_DOMAIN_TOOLS = frozenset(
     {
+        "meals",
         "log_meal",
         "get_calorie_summary",
         "set_training_program",
@@ -109,14 +109,6 @@ class TestStablePromptLayers:
         )
         assert "Never describe these style rules" in normalized
 
-    def test_task_worker_keeps_the_concise_worker_contract(self) -> None:
-        instruction = return_instruction_task_worker()
-
-        assert "<delegated_task_worker>" in instruction
-        assert "report a concise result" in instruction
-        assert "<natural_chat_style>" not in instruction
-        assert "Telegram's mobile chat UI" not in instruction
-
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
     ) -> None:
@@ -166,6 +158,12 @@ def test_select_domain_policy_names(user_text: str, expected: tuple[str, ...]) -
 def test_router_does_not_describe_disabled_tools() -> None:
     assert select_domain_policy_names("Log my lunch", frozenset()) == ()
     assert build_domain_instruction("Log my lunch", frozenset()) == ""
+
+
+def test_nutrition_policy_is_enabled_for_compact_meals_tool() -> None:
+    assert select_domain_policy_names("Log my lunch", {"meals"}) == ("nutrition",)
+    instruction = build_domain_instruction("Log my lunch", {"meals"})
+    assert "meals(action=..., arguments={...})" in instruction
 
 
 def test_health_policy_is_enabled_only_for_health_tool() -> None:
@@ -319,7 +317,11 @@ class TestDomainPolicyPlugin:
     ) -> None:
         plugin = DomainPolicyPlugin()
         request = _request_with_tools(
-            "exa_search", "brave_search", "sandbox_execute_code", "sandbox_view_image"
+            "exa_search",
+            "brave_search",
+            "sandbox_execute_code",
+            "sandbox_view_image",
+            "agent_browser",
         )
         opaque_tool = object()
         assert request.config.tools is not None
@@ -338,6 +340,7 @@ class TestDomainPolicyPlugin:
             "brave_search",
             "sandbox_execute_code",
             "sandbox_view_image",
+            "agent_browser",
         }
         assert context.state["temp:blacki_search_primary"] == "exa_search"
         assert request.config.tools is not None

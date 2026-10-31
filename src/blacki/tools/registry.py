@@ -47,9 +47,6 @@ class ToolConfig:
     kokoro_tts_base_url: str | None = None
     kokoro_tts_voice: str = "af_heart"
     google_health_enabled: bool = False
-    zepto_mcp_enabled: bool = False
-    zepto_mcp_config_dir: Path = Path("data/credentials/zepto-mcp-remote")
-    zepto_mcp_allowed_chat_ids: frozenset[str] = frozenset()
     gmail_config: GmailConfig | None = field(default=None, repr=False)
     r2_files_enabled: bool = False
     browser_takeover_enabled: bool = False
@@ -166,25 +163,9 @@ def _build_reminder_tools() -> list[Any]:
 def _build_calorie_tools() -> list[Any]:
     """Build calorie tracking tools."""
     try:
-        from blacki.tools.calories import (
-            delete_meal,
-            edit_meal,
-            get_calorie_summary,
-            get_meal_sync_status,
-            log_meal,
-            retry_meal_sync,
-            set_calorie_goal,
-        )
+        from blacki.tools.meals import create_meal_tools
 
-        return [
-            log_meal,
-            get_calorie_summary,
-            edit_meal,
-            delete_meal,
-            set_calorie_goal,
-            get_meal_sync_status,
-            retry_meal_sync,
-        ]
+        return create_meal_tools()
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Calorie tools: %s", e)
         return []
@@ -236,6 +217,7 @@ def _build_workout_tools(include_legacy: bool = False) -> list[Any]:
 def _build_sandbox_tools() -> list[Any]:
     """Build sandbox tools."""
     try:
+        from blacki.tools.agent_browser import agent_browser
         from blacki.tools.sandbox import (
             sandbox_list_files,
             sandbox_read_file,
@@ -254,6 +236,7 @@ def _build_sandbox_tools() -> list[Any]:
             sandbox_send_file_to_user,
             sandbox_execute_code,
             sandbox_view_image,
+            agent_browser,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Sandbox tools: %s", e)
@@ -274,29 +257,13 @@ def _build_skill_tools(
 
         from blacki.tools.skills import McpSkillToolset, load_skill_from_dir
 
-        skills_to_load = ["explore_repo", "agent_browser"]
+        skills_to_load = ["explore_repo"]
         loaded_skills: list[tuple[Skill, BaseToolset | None]] = []
         for skill_name in skills_to_load:
             skill = load_skill_from_dir(skills_dir / skill_name)
             if skill:
                 logger.info("%s skill enabled", skill_name)
                 loaded_skills.append((skill, None))
-
-        if include_user_scoped_tools and config.zepto_mcp_enabled:
-            from blacki.tools.zepto import create_zepto_toolset
-            from blacki.zepto import ZeptoCredentialError
-
-            try:
-                zepto_toolset = create_zepto_toolset(
-                    config_dir=config.zepto_mcp_config_dir,
-                    allowed_chat_ids=config.zepto_mcp_allowed_chat_ids,
-                )
-                zepto_skill = load_skill_from_dir(skills_dir / "zepto")
-                if zepto_skill:
-                    logger.info("Zepto MCP skill enabled for the root agent")
-                    loaded_skills.append((zepto_skill, zepto_toolset))
-            except ZeptoCredentialError as exc:
-                logger.warning("Zepto MCP disabled: %s", exc)
 
         if include_user_scoped_tools and config.gmail_config is not None:
             from blacki.gmail import GmailCredentialError
@@ -442,11 +409,6 @@ def build_tool_config_from_env() -> ToolConfig:
     default_sqlite_path = str(application_data_directory() / "tools.db")
 
     sqlite_path = os.getenv("SQLITE_PATH", "").strip() or default_sqlite_path
-    allowed_zepto_chat_ids = frozenset(
-        item.strip()
-        for item in os.getenv("ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS", "").split(",")
-        if item.strip()
-    )
     gmail_config = None
     try:
         gmail_config = GmailConfig.from_environment()
@@ -471,15 +433,6 @@ def build_tool_config_from_env() -> ToolConfig:
         kokoro_tts_voice=os.getenv("KOKORO_TTS_VOICE", "af_heart").strip()
         or "af_heart",
         google_health_enabled=_google_health_configured(),
-        zepto_mcp_enabled=os.getenv("ZEPTO_MCP_ENABLED", "false").strip().lower()
-        in ("true", "1", "yes"),
-        zepto_mcp_config_dir=Path(
-            os.getenv(
-                "ZEPTO_MCP_CONFIG_DIR",
-                "data/credentials/zepto-mcp-remote",
-            ).strip()
-        ),
-        zepto_mcp_allowed_chat_ids=allowed_zepto_chat_ids,
         gmail_config=gmail_config,
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),

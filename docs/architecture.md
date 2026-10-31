@@ -3,6 +3,38 @@
 Blacki keeps the agent process small and delegates expensive capabilities to
 managed APIs when they are enabled.
 
+## Meal tool interface
+
+When database-backed tools are enabled, the model receives `meals` and
+`describe_action` instead of seven separate meal functions. For example:
+
+```json
+{
+  "action": "log_meal",
+  "arguments": {"description": "apple", "estimated_calories": 95}
+}
+```
+
+`describe_action(domain="meals", action="log_meal")` returns the callable's
+description and parameter schema without accessing user records or changing
+permissions. Use discovery when the action parameters are unknown. The
+dispatcher validates types strictly, rejects unknown fields and injected
+context, and passes the original ADK user/session context to the existing
+handler. Integer parameters require integers, rather than numeric strings or
+floating-point values. Local storage, account ownership, private-chat export
+checks, and Google Health synchronization remain owned by the existing meal
+handlers. The nutrition policy supplies operating and consent rules.
+
+Privacy redaction covers both new tools. Telegram progress and failure retry
+guards resolve the selected action, so a failed summary does not block a
+different meal action. Completed historical leaf-tool calls can remain in
+conversation history. Resuming suspended calls to removed leaf-tool names is
+not established by the continuation test.
+
+This is a meals-only pilot. Training, sandbox/browser, and other domains retain
+their current interfaces. See [the pilot measurement](meal-tools-benchmark.md)
+for schema savings and the additional cost of discovery on short workflows.
+
 ## Runtime
 
 The container runs:
@@ -16,12 +48,12 @@ python -m blacki.server
 Telegram long polling, and exposes `/live`, `/ready`, and `/health`.
 It also mounts the package-backed private observability dashboard at
 `/dashboard` with APIs for aggregate statistics, users, sessions, local logs,
-and local traces. LiteLLM-backed requests additionally write content-free
+and local traces. OpenRouter-backed requests additionally write content-free
 usage and cost records to the local SQLite ledger so the dashboard can show
 per-user and per-session spend without parsing prompts or responses.
 
-`src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or a
-LiteLLM/OpenRouter model from the environment, registers tools, and assembles
+`src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or an
+OpenRouter-routed model from the environment, registers tools, and assembles
 the ADK application plugins.
 
 ## Application composition
@@ -129,7 +161,6 @@ Blacki uses different stores for different responsibilities:
 | Telegram photo parts in ADK history | SQLite-backed session events | Yes |
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
-| Zepto OAuth credentials | `/app/data/credentials/zepto-mcp-remote/` | Yes with the Compose volume |
 | Google Health refresh tokens and normalized summaries | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
 | Google Health meal export revisions and retry state | SQLite (`tools.db`), payloads account-bound and sent over HTTPS | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
@@ -149,11 +180,19 @@ Optional tools follow the project's cloud-first principle:
 
 - models use OpenRouter or Google;
 - search can use Exa with Brave as a fallback;
-- browser automation can use Browser Use Cloud;
+- browser automation uses the dedicated `agent_browser(args)` tool inside the
+  current session's OpenSandbox instance. Its argument array is shell-quoted,
+  and commands time out after 90 seconds. The default
+  `ghcr.io/queryplanner/blacki-sandbox:latest` image provides Chromium, a pinned
+  agent-browser, and agent-browser's bundled usage guides; the tool itself does
+  not install dependencies. Run `agent_browser(args=["skills", "get", "core"])`
+  for the usage guide, or `agent_browser(args=["--help"])` for the command list.
+  The tool is available to the root agent when sandbox tools are enabled.
+  Blacki uses one root agent without a delegated task worker. Chromium profiles
+  and screenshots remain in the temporary sandbox, and this tool adds no
+  saved-login service or durable file retention;
 - speech synthesis can use a private Kokoro API reachable over Tailscale;
-- grocery shopping can use Zepto's hosted MCP server for one allowlisted,
-  shared account;
-- vector memory can use Qdrant Cloud; and
+- vector memory can use Qdrant Cloud;
 - code execution can use an OpenSandbox server; and
 - health summaries can use Google Health API after private Telegram OAuth.
 
@@ -161,23 +200,13 @@ Each integration degrades independently when its credentials are absent.
 Startup still requires at least one model API key.
 
 Kokoro speech delivery is registered only on the Telegram-specific root agent.
-The public ADK runner and delegated task worker cannot call it. Blacki sends
+The public ADK runner cannot call it. Blacki sends
 only the requested speech text to the configured Kokoro endpoint, accepts a
 bounded MP3 response, keeps it in memory, and serializes synthesis through
 Telegram upload so concurrent chats cannot retain multiple audio payloads. It
 does not retry Telegram delivery automatically. Configuring the tool disables
 content-rich ADK and OpenInference logging, although the local ADK session
 database still retains tool calls and arguments as normal conversation history.
-
-Zepto is registered only on a Telegram-specific root-agent runner. The public
-ADK HTTP runner and delegated task worker never receive the Zepto toolset.
-Unauthorized Telegram identities are rejected before Blacki opens an MCP
-connection. ADK confirmation is required only when an order or payment tool
-uses `confirmOrder=true`; other individual Zepto tools run directly. Its OAuth
-files are plaintext protected by a `0700` directory and `0600` file
-permissions; they are not encrypted. Shopping prompts, tool calls, and results
-remain in the local ADK session database and are sent to the configured model
-as part of normal agent execution.
 
 Google Health summaries are a separate read-only boundary. The connector uses
 the current Google Health API, not the legacy Fitbit Web API. It requests the

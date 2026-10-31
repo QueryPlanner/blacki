@@ -134,7 +134,7 @@ class ServerEnv(BaseModel):
     openrouter_api_key: str | None = Field(
         default=None,
         alias="OPENROUTER_API_KEY",
-        description="OpenRouter API key for LiteLLM integration",
+        description="OpenRouter API key for model access",
     )
 
     allow_origins: str = Field(

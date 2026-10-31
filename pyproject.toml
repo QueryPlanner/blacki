@@ -20,7 +20,7 @@ dependencies = [
     "opentelemetry-instrumentation-logging>=0.63b0,<0.64",
     "pydantic>=2.11.0,<3.0.0",
     "python-dotenv>=1.0.0,<2.0.0",
-    "litellm>=1.60.0",
+    "openai>=2.20,<3",
     "aiosqlite>=0.20.0",
     "greenlet>=3.0.0",
     "openinference-instrumentation-google-adk==0.1.17",
@@ -41,7 +41,8 @@ server = "blacki.server:main"
 
 [dependency-groups]
 dev = [
-    "google-adk[eval]==2.5.0",
+    # `google-adk[eval]` is intentionally omitted: it pulls LiteLLM through
+    # google-cloud-aiplatform[evaluation]. Install it explicitly for `adk eval`.
     "ruff>=0.12.7,<1.0.0",
     "mypy>=1.17.1,<2.0.0",
     "pytest>=8.3.4,<9.0.0",

@@ -47,10 +47,9 @@ Both `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` and
 and legacy ADK content capture. Capturing prompts and responses can expose
 personal data, credentials, and tool results.
 
-When `ZEPTO_MCP_ENABLED=true` or `KOKORO_TTS_BASE_URL` is configured, Blacki
-forces both values to `false` and disables the OpenInference Google ADK
-instrumentor. Zepto additionally prevents MCP body-debug logging. The ADK
-session database still retains tool calls and results so interrupted turns and
+When any private-tool integration is configured, Blacki forces both values to
+`false` and disables the OpenInference Google ADK instrumentor. The ADK session
+database still retains tool calls and results so interrupted turns and
 confirmations can resume correctly.
 
 ## Remote OTLP export
@@ -121,12 +120,13 @@ Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
-For LiteLLM-backed requests, Blacki also writes a content-free SQLite usage
+For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with
 `BLACKI_COST_LEDGER_PATH`). The ledger stores identity, model, token, provider
 response, and fixed-point cost fields, but never prompts, responses, or tool
 arguments. Provider-reported OpenRouter account cost and upstream inference
-cost are kept separately; a LiteLLM catalog calculation is labelled estimated.
+cost are kept separately; historical gateway estimates remain labelled
+estimated, while new OpenRouter rows use provider-reported costs only.
 The dashboard uses UTC calendar months for monthly totals and averages. The
 average is across users with an exact or estimated cost in the current month;
 users with unavailable cost are excluded and the reported coverage is shown.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import TYPE_CHECKING, Any
 
 from opensandbox import Sandbox
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+_JUPYTER_HOST = "http://127.0.0.1:44771"
 
 _manager: SandboxManager | None = None
 
@@ -99,7 +102,10 @@ class SandboxManager:
                 entrypoint=self._config.entrypoint,
                 timeout=self._config.timeout,
                 resource=self._config.resource,
-                env=None,
+                env={
+                    "JUPYTER_HOST": _JUPYTER_HOST,
+                    "JUPYTER_TOKEN": secrets.token_hex(16),
+                },
             )
             state[SANDBOX_STATE_KEY] = sandbox.id
             logger.info("Created new sandbox: %s", sandbox.id)

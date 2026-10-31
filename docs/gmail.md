@@ -39,7 +39,7 @@ and can be consumed only once.
 4. Send `/disconnect_gmail` and confirm when access should be revoked.
 
 Each private Telegram chat has its own connection. Group chats, public agents,
-delegated workers, local test identities, and unconnected users receive no
+local test identities, and unconnected users receive no
 Gmail tools.
 
 ## Supported operations

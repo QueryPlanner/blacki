@@ -228,18 +228,12 @@ def _has_route(app: FastAPI, path: str) -> bool:
     return False
 
 
-@pytest.mark.parametrize(
-    "setting",
-    ["ZEPTO_MCP_ENABLED", "KOKORO_TTS_BASE_URL"],
-)
 def test_server_skips_openinference_in_private_tool_mode(
     mock_dependencies: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
-    setting: str,
 ) -> None:
     """Private tools must take the no-content-instrumentation startup branch."""
-    value = "true" if setting == "ZEPTO_MCP_ENABLED" else "http://kokoro.internal"
-    monkeypatch.setenv(setting, value)
+    monkeypatch.setenv("KOKORO_TTS_BASE_URL", "http://kokoro.internal")
     if "blacki.server" in sys.modules:
         del sys.modules["blacki.server"]
 

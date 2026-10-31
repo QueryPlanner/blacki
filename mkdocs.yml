@@ -49,7 +49,6 @@ nav:
   - Get started:
       - First VPS deployment: DEPLOYMENT.md
       - Telegram setup: telegram-setup.md
-      - Zepto MCP: zepto-mcp.md
       - Gmail API: gmail.md
       - Private browser takeover: browser-takeover.md
       - Local development: development.md

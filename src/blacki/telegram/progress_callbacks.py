@@ -19,6 +19,8 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
+from blacki.tools.action_identity import meal_action_name
+
 from ..security.tool_privacy import is_private_tool
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import format_for_telegram
@@ -41,7 +43,7 @@ def block_telegram_tool_retry(
     tool_context: ToolContext,
 ) -> dict[str, Any] | None:
     """Prevent a failed Telegram tool from running again in this turn."""
-    del args
+    action_name = meal_action_name(tool.name, args)
     if not _is_telegram_session(tool_context.state):
         return None
 
@@ -49,15 +51,15 @@ def block_telegram_tool_retry(
     if not (
         isinstance(failed_tool, dict)
         and failed_tool.get("invocation_id") == tool_context.invocation_id
-        and failed_tool.get("tool_name") == tool.name
+        and failed_tool.get("tool_name") == action_name
     ):
         return None
 
-    logger.warning("Blocked repeated Telegram tool failure: tool=%s", tool.name)
+    logger.warning("Blocked repeated Telegram tool failure: tool=%s", action_name)
     return {
         "status": "error",
         "error": (
-            f"The {tool.name} tool already failed in this turn. "
+            f"The {action_name} tool already failed in this turn. "
             "Do not call it again. Continue without it when possible "
             "and explain the limitation to the user."
         ),
@@ -71,23 +73,23 @@ def recover_telegram_tool_error(
     error: Exception,
 ) -> dict[str, Any] | None:
     """Return a structured error so a Telegram turn can continue."""
-    del args
+    action_name = meal_action_name(tool.name, args)
     if not _is_telegram_session(tool_context.state):
         return None
 
     tool_context.state[_TELEGRAM_TOOL_FAILURE_STATE_KEY] = {
         "invocation_id": tool_context.invocation_id,
-        "tool_name": tool.name,
+        "tool_name": action_name,
     }
     logger.warning(
         "Handled Telegram tool failure: tool=%s error_type=%s",
-        tool.name,
+        action_name,
         type(error).__name__,
     )
     return {
         "status": "error",
         "error": (
-            f"The {tool.name} tool is unavailable right now. "
+            f"The {action_name} tool is unavailable right now. "
             "Do not retry it in this turn. Continue without it when possible "
             "and explain the limitation to the user."
         ),

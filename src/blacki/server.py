@@ -610,7 +610,7 @@ def main() -> None:
         RELOAD_AGENTS: Whether to reload agents on file changes (true/false)
         AGENT_ENGINE: Agent Engine instance for session and memory
         SQLITE_PATH: Path to SQLite database (default: {AGENT_DIR}/.adk/tools.db)
-        OPENROUTER_API_KEY: Key for LiteLLM/OpenRouter
+        OPENROUTER_API_KEY: Key for OpenRouter model access
         ALLOW_ORIGINS: JSON array string of allowed CORS origins
         HOST: Server host (default: 127.0.0.1, set to 0.0.0.0 for containers)
         PORT: Server port (default: 8080)

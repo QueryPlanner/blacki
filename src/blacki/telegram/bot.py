@@ -90,6 +90,14 @@ def _is_image_document(mime_type: str | None) -> bool:
     return (mime_type or "").strip().lower().startswith("image/")
 
 
+def _model_command_argument(text: str) -> str | None:
+    """Parse model commands consistently for dispatch and turn ordering."""
+    parts = text.split(maxsplit=1)
+    if parts and parts[0].split("@", 1)[0] in {"/model", "/models"}:
+        return parts[1].strip() if len(parts) == 2 else ""
+    return None
+
+
 def _format_google_health_sync_counts(value: object) -> str:
     """Render safe durable meal-sync counts without provider details."""
     if not isinstance(value, Mapping):
@@ -402,6 +410,8 @@ class TelegramBot:
             )
             else "text"
         )
+        if _model_command_argument(update.message.text or ""):
+            turn_kind = "settings"
 
         for active_album in self._album_buffer.get_active(chat_id, message_thread_id):
             if active_album.future is not None:
@@ -607,6 +617,7 @@ class TelegramBot:
             existing_task is not None
             and not existing_task.done()
             and seq >= existing_seq
+            and existing_kind != "settings"
             and not (turn_kind == "media" and existing_kind == "media")
         )
         if supersedes_existing and existing_task is not None:
@@ -636,6 +647,8 @@ class TelegramBot:
             logger.info("Message turn superseded for conversation %s", conversation_key)
             raise
         finally:
+            # A queued turn may be cancelled before the lock lets us await it.
+            turn.close()
             if self._conversation_tasks.get(conversation_key) is current_task:
                 self._conversation_tasks.pop(conversation_key, None)
                 self._conversation_task_seqs.pop(conversation_key, None)
@@ -1415,6 +1428,7 @@ class TelegramBot:
     async def _handle_command(self, message: Message, command: str) -> None:
         """Handle a command message."""
         chat_id = message.chat.id
+        model_argument = _model_command_argument(command)
 
         if command == "/start":
             await self._send_start_message(chat_id)
@@ -1422,10 +1436,15 @@ class TelegramBot:
             await self._send_help_message(chat_id)
         elif command == "/reset":
             await self._handle_reset(chat_id, message.message_thread_id)
-        elif command == "/model":
-            await self._settings_menu.send_model_menu(
-                chat_id, message.message_thread_id
-            )
+        elif model_argument is not None:
+            if model_argument:
+                await self._settings_menu.set_model(
+                    chat_id, message.message_thread_id, model_argument
+                )
+            else:
+                await self._settings_menu.send_model_menu(
+                    chat_id, message.message_thread_id
+                )
         elif command == "/thinking":
             await self._settings_menu.send_thinking_menu(
                 chat_id, message.message_thread_id
@@ -1897,7 +1916,9 @@ class TelegramBot:
             "Commands:\n"
             "/help - Show available commands\n"
             "/reset - Start a fresh conversation session\n"
-            "/model - Choose the model and thinking settings\n"
+            "/model <author/model-id> - Use an OpenRouter model\n"
+            "/model default - Restore the configured default\n"
+            "/models - Show model and thinking settings\n"
             "/thinking - Choose supported reasoning effort"
             f"{gmail_commands}"
             f"{health_commands}"
@@ -1932,7 +1953,9 @@ class TelegramBot:
             "• /start \\- Start a conversation\n"
             "• /help \\- Show this help message\n"
             "• /reset \\- Start a fresh conversation session\n"
-            "• /model \\- Choose the model and thinking settings\n"
+            "• /model author/model\\-id \\- Use an OpenRouter model\n"
+            "• /model default \\- Restore the configured default\n"
+            "• /models \\- Show model and thinking settings\n"
             "• /thinking \\- Choose supported reasoning effort\n"
             f"{gmail_commands}"
             f"{health_commands}\n"

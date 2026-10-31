@@ -69,8 +69,9 @@ ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
     OPENROUTER_API_KEY=replace-me
     ```
 
-    Blacki builds a LiteLLM model and normalizes common model identifiers to
-    OpenRouter form when this key is present.
+    Blacki builds an OpenRouter adapter and normalizes common model
+    identifiers to OpenRouter form when this key is present. Both
+    `openrouter/author/slug` and `author/slug` are accepted.
 
     Set `ROOT_AGENT_REASONING_EFFORT` to configure the process-wide reasoning
     fallback. Supported values are `max`, `xhigh`, `high`, `medium`, `low`,
@@ -206,23 +207,6 @@ MEM0_QDRANT_PATH=/app/data/qdrant
 
 If Qdrant Cloud values are present, the provider stores the vectors remotely.
 
-## Delegated task worker
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `TASK_WORKER_ENABLED` | `true` | Register a same-privilege ADK task worker |
-
-By default, the root agent can delegate one complex task at a time to a
-registered ADK task-mode child. Set `TASK_WORKER_ENABLED=false` to opt out. The
-worker receives an independently built copy of the root agent's user-facing
-toolset and shares the same ADK session state, so sandbox tools reconnect to the
-same sandbox ID.
-
-This is not a security boundary or a background worker pool: the worker has the
-root agent's privileges, runs within the request, and cannot delegate
-recursively. Delegation can add another model and tool turn, increasing latency
-and model usage.
-
 ## OpenSandbox
 
 | Variable | Default | Purpose |
@@ -231,9 +215,14 @@ and model usage.
 | `SANDBOX_DOMAIN` | `localhost:9090` | OpenSandbox server address |
 | `SANDBOX_API_KEY` | unset | Optional server credential |
 | `SANDBOX_TIMEOUT_MINUTES` | `30` | Sandbox lifetime |
-| `SANDBOX_MEMORY_LIMIT` | `512Mi` | Per-sandbox memory setting |
+| `SANDBOX_MEMORY_LIMIT` | `1Gi` | Per-sandbox memory; Chromium needs headroom |
 | `SANDBOX_CPU_LIMIT` | `0.5` | Per-sandbox CPU setting |
-| `SANDBOX_IMAGE` | project default | Code-interpreter image |
+| `SANDBOX_IMAGE` | `ghcr.io/queryplanner/blacki-sandbox:latest` | Chromium + agent-browser sandbox image |
+
+The default Blacki sandbox image provides Chromium, a pinned agent-browser,
+and the bundled agent-browser usage guides. The `agent_browser` tool runs in
+this sandbox only; it never runs on the Blacki host. The Blacki package includes
+a published Linux ARM64 manifest.
 
 Running a local OpenSandbox server adds Docker and resource requirements beyond
 the Blacki golden path.
@@ -265,19 +254,6 @@ If R2 is unavailable, Telegram processing can continue with an explicit
 temporary-storage warning. If the sandbox is unavailable, a successfully
 stored object remains available for a later restore.
 
-## Zepto MCP
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `ZEPTO_MCP_ENABLED` | `false` | Enable the root-only Zepto skill after OAuth |
-| `ZEPTO_MCP_ALLOWED_TELEGRAM_CHAT_IDS` | unset | Comma-separated positive private chat IDs allowed to use the shared account |
-| `ZEPTO_MCP_CONFIG_DIR` | `data/credentials/zepto-mcp-remote` | Permission-protected bridge credential directory shared by host and container |
-
-The allowlist deliberately rejects Telegram groups, topics, and arbitrary HTTP
-user IDs. All allowed chats share one Zepto account and cart. Complete the
-one-time OAuth flow before enabling the integration; see
-[Zepto MCP](../zepto-mcp.md).
-
 ## Observability
 
 | Variable | Default | Purpose |
@@ -296,9 +272,9 @@ Blacki always exports spans to local JSON. A validated trace-specific or global
 endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
 precedence. See [Observability](observability.md).
 
-When Zepto is enabled, Blacki forces both content-capture variables to `false`
-and disables the OpenInference Google ADK instrumentor because it otherwise
-records raw tool parameters.
+When any private-tool integration is configured, Blacki forces both
+content-capture variables to `false` and disables the OpenInference Google ADK
+instrumentor because it otherwise records raw tool parameters.
 
 ## Precedence
 
