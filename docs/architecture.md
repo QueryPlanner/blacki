@@ -183,7 +183,7 @@ Optional tools follow the project's cloud-first principle:
 - browser automation uses the dedicated `agent_browser(args)` tool inside the
   current session's OpenSandbox instance. Its argument array is shell-quoted,
   and commands time out after 90 seconds. The default
-  `ghcr.io/queryplanner/athena-sandbox:latest` image provides Chromium, a pinned
+  `ghcr.io/queryplanner/blacki-sandbox:latest` image provides Chromium, a pinned
   agent-browser, and agent-browser's bundled usage guides; the tool itself does
   not install dependencies. Run `agent_browser(args=["skills", "get", "core"])`
   for the usage guide, or `agent_browser(args=["--help"])` for the command list.

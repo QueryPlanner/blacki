@@ -510,6 +510,31 @@ def test_production_deployment_serializes_host_bind_secret() -> None:
     assert 'HOST_BIND_IP="$DEPLOY_HOST_BIND_IP"' in deploy_script
 
 
+def test_production_deployment_uses_published_sandbox_digest() -> None:
+    """Deployments must use the image digest produced by their own run."""
+    jobs = _load_yaml(".github/workflows/docker-publish.yml")["jobs"]
+    assert "sandbox-test" in jobs["sandbox-image"]["needs"]
+    assert "sandbox-image" in jobs["deploy"]["needs"]
+    assert jobs["sandbox-image"]["outputs"]["image-digest"] == (
+        "${{ steps.sandbox-build.outputs.digest }}"
+    )
+    steps = jobs["deploy"]["steps"]
+    verify = next(
+        s for s in steps if s["name"] == "Verify public sandbox image platforms"
+    )
+    deploy = next(s for s in steps if s["name"] == "Deploy to Server via Tailscale")
+    assert steps.index(verify) < steps.index(deploy)
+    assert verify["env"]["SANDBOX_IMAGE_DIGEST"] == (
+        "${{ needs.sandbox-image.outputs.image-digest }}"
+    )
+    assert deploy["env"]["SANDBOX_IMAGE"] == (
+        "ghcr.io/queryplanner/blacki-sandbox@"
+        "${{ needs.sandbox-image.outputs.image-digest }}"
+    )
+    writer = deploy["run"].split("python3 scripts/write_compose_env.py", 1)[1]
+    assert "SANDBOX_IMAGE" in writer.split("printf '%s' \"$GH_TOKEN\"", 1)[0].split()
+
+
 def test_production_deployment_serializes_telegram_access_code() -> None:
     """The Telegram access-control secret must reach the remote Compose environment."""
     workflow = _load_yaml(".github/workflows/docker-publish.yml")

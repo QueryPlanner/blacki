@@ -1,0 +1,20 @@
+#!/bin/sh
+# Blacki's sandbox entrypoint runs this when the image has it.
+#
+# Starts a Jupyter server on loopback for execd's code interpreter
+# (Blacki's run_code tool), then keeps the sandbox alive. Blacki passes
+# JUPYTER_HOST and a fresh JUPYTER_TOKEN per sandbox in its environment;
+# without a token no server is started, rather than one anyone inside the
+# sandbox could use unauthenticated.
+set -eu
+
+if [ -n "${JUPYTER_TOKEN:-}" ]; then
+    host="${JUPYTER_HOST:-http://127.0.0.1:44771}"
+    port="${host##*:}"
+    /opt/jupyter/bin/jupyter-server \
+        --ip=127.0.0.1 --port="${port:-44771}" --allow-root --no-browser \
+        --ServerApp.root_dir=/workspace \
+        >/tmp/jupyter.log 2>&1 &
+fi
+
+exec tail -f /dev/null
