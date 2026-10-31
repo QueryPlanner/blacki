@@ -535,6 +535,16 @@ def test_production_deployment_uses_published_sandbox_digest() -> None:
     assert "SANDBOX_IMAGE" in writer.split("printf '%s' \"$GH_TOKEN\"", 1)[0].split()
 
 
+def test_sandbox_image_checks_run_only_when_called() -> None:
+    """Image checks must not start separately for pull requests."""
+    image_workflow = _load_yaml(".github/workflows/sandbox-image.yml")
+    assert set(image_workflow["on"]) == {"workflow_call"}
+    publish_jobs = _load_yaml(".github/workflows/docker-publish.yml")["jobs"]
+    assert publish_jobs["sandbox-test"]["uses"] == (
+        "./.github/workflows/sandbox-image.yml"
+    )
+
+
 def test_production_deployment_serializes_telegram_access_code() -> None:
     """The Telegram access-control secret must reach the remote Compose environment."""
     workflow = _load_yaml(".github/workflows/docker-publish.yml")

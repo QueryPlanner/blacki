@@ -1,12 +1,6 @@
 name: Sandbox Image
 
-on:
-  pull_request:
-    paths:
-      - 'deploy/sandbox-image/**'
-      - 'scripts/sandbox-image-check.sh'
-      - '.github/workflows/sandbox-image.yml'
-      - '.github/workflows/docker-publish.yml'
+"on":
   workflow_call:
 
 permissions:
