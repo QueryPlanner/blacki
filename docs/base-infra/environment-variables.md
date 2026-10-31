@@ -208,16 +208,13 @@ If Qdrant Cloud values are present, the provider stores the vectors remotely.
 | `SANDBOX_TIMEOUT_MINUTES` | `30` | Sandbox lifetime |
 | `SANDBOX_MEMORY_LIMIT` | `1Gi` | Per-sandbox memory; Chromium needs headroom |
 | `SANDBOX_CPU_LIMIT` | `0.5` | Per-sandbox CPU setting |
-| `SANDBOX_IMAGE` | `ghcr.io/queryplanner/blacki-sandbox:latest` | Chromium + agent-browser sandbox image |
+| `SANDBOX_IMAGE` | `ghcr.io/queryplanner/athena-sandbox:latest` | Chromium + agent-browser sandbox image |
 
 The default sandbox image provides Chromium, a pinned agent-browser, and the
 bundled agent-browser usage guides. The `agent_browser` tool runs in this
-sandbox only; it never runs on the Blacki host. The image is built for
-`linux/amd64` and `linux/arm64`. The OpenSandbox server must be able to pull
-the image from GHCR. Image changes apply when a new sandbox is created;
-existing session sandboxes continue using their original image until replaced.
-The production deployment pins the sandbox image to the digest built by that
-deployment, while local installations use the default tag unless overridden.
+sandbox only; it never runs on the Blacki host. The published image is
+`linux/amd64`; on arm64 hosts, build an equivalent image or point
+`SANDBOX_IMAGE` at an arm64 build.
 
 Running a local OpenSandbox server adds Docker and resource requirements beyond
 the Blacki golden path.
