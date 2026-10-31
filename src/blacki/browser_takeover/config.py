@@ -45,7 +45,14 @@ class BrowserTakeoverConfig:
     def validate(self) -> None:
         """Reject public URLs and limits that could expose a browser session."""
         parsed = urlsplit(self.public_url)
-        is_loopback_http = parsed.scheme == "http" and parsed.hostname in {
+        try:
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError as exc:
+            raise BrowserTakeoverConfigurationError(
+                "BROWSER_TAKEOVER_PUBLIC_URL must contain a valid host and port"
+            ) from exc
+        is_loopback_http = parsed.scheme == "http" and hostname in {
             "127.0.0.1",
             "localhost",
         }
@@ -53,10 +60,14 @@ class BrowserTakeoverConfig:
             raise BrowserTakeoverConfigurationError(
                 "BROWSER_TAKEOVER_PUBLIC_URL must use HTTPS"
             )
-        if not parsed.netloc or parsed.username or parsed.password:
+        if not parsed.netloc or hostname is None or parsed.username or parsed.password:
             raise BrowserTakeoverConfigurationError(
                 "BROWSER_TAKEOVER_PUBLIC_URL must be an absolute URL "
                 "without credentials"
+            )
+        if port == 0:
+            raise BrowserTakeoverConfigurationError(
+                "BROWSER_TAKEOVER_PUBLIC_URL must use a valid port"
             )
         if parsed.query or parsed.fragment:
             raise BrowserTakeoverConfigurationError(
@@ -79,7 +90,19 @@ class BrowserTakeoverConfig:
     def public_origin(self) -> str:
         """Return the exact origin allowed to redeem takeover tokens."""
         parsed = urlsplit(self.public_url)
-        return f"{parsed.scheme}://{parsed.netloc}"
+        host = parsed.hostname
+        if host is None:
+            raise BrowserTakeoverConfigurationError(
+                "BROWSER_TAKEOVER_PUBLIC_URL must contain a host"
+            )
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        default_port = (parsed.scheme == "https" and port == 443) or (
+            parsed.scheme == "http" and port == 80
+        )
+        port_suffix = "" if port is None or default_port else f":{port}"
+        return f"{parsed.scheme}://{host}{port_suffix}"
 
     @property
     def secure_cookie(self) -> bool:

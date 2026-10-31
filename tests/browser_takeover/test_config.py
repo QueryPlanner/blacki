@@ -32,6 +32,42 @@ def test_valid_https_config(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.stream_port == 9323
 
 
+@pytest.mark.parametrize(
+    ("url", "expected_origin"),
+    [
+        (
+            "https://example.test:443/browser-takeover",
+            "https://example.test",
+        ),
+        (
+            "https://example.test:8443/browser-takeover",
+            "https://example.test:8443",
+        ),
+        (
+            "https://[2001:db8::1]:443/browser-takeover",
+            "https://[2001:db8::1]",
+        ),
+        (
+            "http://localhost:80/browser-takeover",
+            "http://localhost",
+        ),
+    ],
+)
+def test_public_origin_omits_only_default_ports(url: str, expected_origin: str) -> None:
+    config = BrowserTakeoverConfig(url)
+
+    config.validate()
+
+    assert config.public_origin == expected_origin
+
+
+def test_public_origin_rejects_a_missing_host() -> None:
+    config = BrowserTakeoverConfig("https:///browser-takeover")
+
+    with pytest.raises(BrowserTakeoverConfigurationError, match="must contain a host"):
+        _ = config.public_origin
+
+
 def test_loopback_http_is_allowed() -> None:
     config = BrowserTakeoverConfig("http://127.0.0.1:8080/browser-takeover")
 
@@ -45,6 +81,15 @@ def test_loopback_http_is_allowed() -> None:
     [
         ("http://example.test/browser-takeover", "must use HTTPS"),
         ("https:///browser-takeover", "absolute URL"),
+        ("https://:443/browser-takeover", "absolute URL"),
+        (
+            "https://example.test:notaport/browser-takeover",
+            "valid host and port",
+        ),
+        (
+            "https://example.test:0/browser-takeover",
+            "valid port",
+        ),
         (
             "https://user:pass@example.test/browser-takeover",
             "without credentials",
