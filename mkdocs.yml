@@ -50,6 +50,7 @@ nav:
       - First VPS deployment: DEPLOYMENT.md
       - Telegram setup: telegram-setup.md
       - Gmail API: gmail.md
+      - Private browser takeover: browser-takeover.md
       - Local development: development.md
   - Operate:
       - Configuration: base-infra/environment-variables.md

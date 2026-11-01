@@ -38,6 +38,7 @@ class TestToolConfig:
         assert config.kokoro_tts_base_url is None
         assert config.kokoro_tts_voice == "af_heart"
         assert config.gmail_config is None
+        assert config.browser_takeover_enabled is False
 
     def test_custom_values(self) -> None:
         """Should accept custom values."""
@@ -247,6 +248,28 @@ class TestBuildTools:
         }
         assert "Durable R2 file tools disabled" in caplog.text
 
+    def test_browser_takeover_is_private_root_only(self) -> None:
+        """Browser takeover must never reach public or worker agents."""
+        config = ToolConfig(
+            weather_enabled=False,
+            sandbox_enabled=True,
+            browser_takeover_enabled=True,
+        )
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+        default_tools = build_tools(config)
+
+        assert "start_browser_takeover" in {
+            getattr(tool, "__name__", "") for tool in root_tools
+        }
+        assert "start_browser_takeover" not in {
+            getattr(tool, "__name__", "") for tool in worker_tools
+        }
+        assert "start_browser_takeover" not in {
+            getattr(tool, "__name__", "") for tool in default_tools
+        }
+
     def test_google_health_tool_is_telegram_root_only(self) -> None:
         """Google Health must never reach the public agent."""
         config = ToolConfig(
@@ -353,6 +376,7 @@ class TestBuildToolConfigFromEnv:
             assert config.sqlite_path.endswith(".adk/tools.db")
             assert config.sandbox_enabled is False
             assert config.skills_dir is not None
+            assert config.browser_takeover_enabled is False
             assert config.kokoro_tts_base_url is None
             assert config.kokoro_tts_voice == "af_heart"
 
@@ -415,6 +439,21 @@ class TestBuildToolConfigFromEnv:
             with patch.dict("os.environ", {"SANDBOX_ENABLED": value}, clear=False):
                 config = build_tool_config_from_env()
                 assert config.sandbox_enabled is False, f"Failed for value: {value}"
+
+    def test_browser_takeover_enabled_from_valid_public_url(self) -> None:
+        """A validated public URL should register the private handoff tool."""
+        with patch.dict(
+            "os.environ",
+            {
+                "BROWSER_TAKEOVER_PUBLIC_URL": (
+                    "https://blacki.example.ts.net/browser-takeover"
+                )
+            },
+            clear=True,
+        ):
+            config = build_tool_config_from_env()
+
+        assert config.browser_takeover_enabled is True
 
     def test_skills_dir_always_set(self) -> None:
         """Should always set skills_dir to package skills directory."""
