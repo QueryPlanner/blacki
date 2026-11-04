@@ -22,6 +22,7 @@ from .browser_takeover.routes import create_browser_takeover_router
 from .config.paths import agent_root
 from .container import AppContainer, close_container, init_container
 from .dashboard.routes import create_dashboard_router
+from .miniapp.routes import create_miniapp_router
 from .observability.setup import (
     configure_otel_resource,
     setup_logging,
@@ -402,6 +403,7 @@ app: FastAPI = get_fast_api_app(
 
 app.include_router(create_dashboard_router(env))
 app.include_router(create_browser_takeover_router())
+app.include_router(create_miniapp_router(env))
 
 
 @app.get(

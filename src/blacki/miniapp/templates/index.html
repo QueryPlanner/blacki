@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="blacki-playroom">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#fff8ec" />
+    <meta name="miniapp-mode" content="demo" />
+    <meta name="description" content="A playful, hands-on preview of Blacki in Telegram." />
+    <title>Blacki, your little wins club</title>
+    <link rel="stylesheet" href="/dashboard/assets/dashboard.css" />
+    <link rel="stylesheet" href="/miniapp/static/miniapp.css" />
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script type="module" src="/miniapp/static/app.js"></script>
+  </head>
+  <body class="miniapp-body">
+    <div class="playroom-shell">
+      <header class="topbar">
+        <a class="brand" href="#home" aria-label="Blacki home">
+          <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+          <span class="brand-copy"><strong>blacki</strong><small>little wins club</small></span>
+        </a>
+        <div class="topbar-actions">
+          <span class="demo-pill"><span class="demo-dot"></span>Demo mode</span>
+          <button class="theme-button" id="theme-toggle" type="button" aria-label="Switch colour theme">
+            <span class="theme-icon" aria-hidden="true">◐</span>
+          </button>
+          <button class="avatar-button" id="profile-button" type="button" aria-label="Open profile and preferences">C</button>
+        </div>
+      </header>
+
+      <div class="app-layout">
+        <aside class="side-rail" aria-label="Main navigation">
+          <div class="mode-card">
+            <div class="eyebrow">YOUR PLAYGROUND</div>
+            <h2>Pick a way in</h2>
+            <p>Same Blacki, same records. Try both and see what feels right.</p>
+            <div class="mode-switch" role="group" aria-label="Choose a conversation experience">
+              <button type="button" class="mode-choice" data-mode-choice="companion" aria-pressed="true">
+                <span class="mode-choice-icon" aria-hidden="true">↗</span>
+                <span><strong>Telegram</strong><small>Chat stays here</small></span>
+              </button>
+              <button type="button" class="mode-choice" data-mode-choice="assistant" aria-pressed="false">
+                <span class="mode-choice-icon" aria-hidden="true">✳</span>
+                <span><strong>In this app</strong><small>Chat beside tools</small></span>
+              </button>
+            </div>
+            <button class="text-button" id="compare-button" type="button">How the comparison works <span aria-hidden="true">→</span></button>
+          </div>
+
+          <nav class="desktop-nav" id="desktop-nav" aria-label="Sections"></nav>
+
+          <div class="rail-footer">
+            <div class="mascot-mark" aria-hidden="true"><span class="mascot-eye"></span><span class="mascot-eye"></span><span class="mascot-smile"></span></div>
+            <p><strong>Little steps count.</strong><br />This is a resettable demo.</p>
+            <button class="reset-button" id="reset-button" type="button"><span aria-hidden="true">↻</span> Reset demo</button>
+          </div>
+        </aside>
+
+        <main id="main-content" class="main-content" tabindex="-1"></main>
+      </div>
+
+      <nav class="mobile-nav" id="mobile-nav" aria-label="Sections"></nav>
+      <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
+    </div>
+
+    <dialog class="playroom-dialog" id="decision-dialog" aria-labelledby="decision-title"></dialog>
+    <dialog class="playroom-dialog" id="action-dialog" aria-labelledby="action-title"></dialog>
+  </body>
+</html>
