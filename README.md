@@ -15,6 +15,7 @@ optional service providers may still charge for API usage.
 | --- | --- |
 | Put Blacki on an Ubuntu or Debian VPS | [First VPS deployment](docs/DEPLOYMENT.md) |
 | Create and connect a Telegram bot | [Telegram setup](docs/telegram-setup.md) |
+| Preview the Telegram Mini App UI | [Mini App demo](docs/telegram-mini-app.md) |
 | Work on Blacki locally | [Development](docs/development.md) |
 | Understand every setting | [Configuration](docs/base-infra/environment-variables.md) |
 | Run upgrades and backups | [Day-two operations](docs/operations.md) |

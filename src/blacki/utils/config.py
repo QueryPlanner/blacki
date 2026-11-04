@@ -173,6 +173,18 @@ class ServerEnv(BaseModel):
         description="Shared access code required for new private Telegram users",
     )
 
+    miniapp_enabled: bool = Field(
+        default=False,
+        alias="MINIAPP_ENABLED",
+        description="Whether the authenticated Telegram Mini App is enabled",
+    )
+
+    miniapp_demo_enabled: bool = Field(
+        default=False,
+        alias="MINIAPP_DEMO_ENABLED",
+        description="Whether the local fixture-only Mini App demo is served",
+    )
+
     model_config = ConfigDict(
         populate_by_name=True,  # Allow both field names and aliases
         extra="ignore",  # Ignore extra env vars (system vars, etc.)
@@ -198,6 +210,8 @@ class ServerEnv(BaseModel):
         print(f"TELEGRAM_BOT_TOKEN:    {masked_token}")
         masked_access_code = "********" if self.telegram_access_code else "[not set]"
         print(f"TELEGRAM_ACCESS_CODE:  {masked_access_code}")
+        print(f"MINIAPP_ENABLED:       {self.miniapp_enabled}")
+        print(f"MINIAPP_DEMO_ENABLED:  {self.miniapp_demo_enabled}")
         print()
 
     @property

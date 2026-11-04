@@ -96,6 +96,8 @@ its presence changes model routing.
 | `TELEGRAM_ENABLED` | `false` | Start Telegram long polling |
 | `TELEGRAM_BOT_TOKEN` | unset | Token from BotFather |
 | `TELEGRAM_ACCESS_CODE` | unset | Shared code required for new private Telegram chats |
+| `MINIAPP_ENABLED` | `false` | Reserved for the future authenticated Telegram Mini App |
+| `MINIAPP_DEMO_ENABLED` | `false` | Serve the local fixture-only comparison at `/miniapp` |
 | `CLOUDFLARE_ACCOUNT_ID` | unset | Cloudflare account ID for Telegram voice transcription |
 | `CLOUDFLARE_API_TOKEN` | unset | Cloudflare Workers AI API token for Telegram voice transcription |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
@@ -109,6 +111,10 @@ The token is required and format-validated when Telegram is enabled. When
 historical private chats with existing Blacki sessions remain authorized, while
 groups and topics are rejected. Rotating the code requires code-authorized
 users to authenticate again without deleting their stored Blacki data.
+
+The Mini App demo uses fixture records only. `MINIAPP_DEMO_ENABLED` does not
+connect to Blacki accounts or providers. Keep both Mini App flags disabled in
+production until the authenticated live routes and HTTPS deployment are ready.
 
 Browser takeover is enabled only when `BROWSER_TAKEOVER_PUBLIC_URL` is set.
 Put that route behind an authenticated HTTPS reverse proxy on Tailscale. The

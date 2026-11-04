@@ -29,6 +29,15 @@ Docker Compose plugin.
 
     [Telegram setup](telegram-setup.md)
 
+-   **Preview the Telegram Mini App**
+
+    ---
+
+    Run a local fixture-only UI comparison for the Telegram companion and the
+    in-app assistant.
+
+    [Mini App demo](telegram-mini-app.md)
+
 -   **Develop locally**
 
     ---
