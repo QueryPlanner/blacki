@@ -281,7 +281,9 @@ class TestBuildTools:
         worker_tools = build_tools(config, include_user_scoped_tools=False)
 
         assert "get_health_summary" in {tool.__name__ for tool in root_tools}
+        assert "query_health_data" in {tool.__name__ for tool in root_tools}
         assert "get_health_summary" not in {tool.__name__ for tool in worker_tools}
+        assert "query_health_data" not in {tool.__name__ for tool in worker_tools}
 
     def test_invalid_kokoro_tts_config_disables_only_tts(
         self,

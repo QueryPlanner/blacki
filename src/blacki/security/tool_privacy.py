@@ -20,6 +20,7 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "retry_meal_sync",
         "set_calorie_goal",
         "get_health_summary",
+        "query_health_data",
         "send_text_to_speech",
         "list_user_files",
         "restore_user_file",

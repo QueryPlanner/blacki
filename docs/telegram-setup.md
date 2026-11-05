@@ -301,3 +301,32 @@ previous Google grants. A shared OAuth client must not pull Gmail or YouTube
 permissions into a Health token. If Google reports `DISALLOWED_OAUTH_SCOPES`,
 start a fresh connection with the updated link and verify the OAuth client's
 configured Health scopes.
+
+### Query archived Health data
+
+The private Telegram agent can call `query_health_data` for actual archived
+records, even when recent normalized summaries are empty. Questions such as
+"Show yesterday's sleep and resting heart rate" use the archive directly.
+Historical backfill does not need to finish before available records can be read.
+
+Each structured query selects one readable data type and an inclusive date range
+of at most 31 days. The default is the latest seven days. The agent can select
+fields, paginate through records, or use count, sum, average, minimum, and maximum
+for documented numeric metrics. Physical timestamp dates use UTC. Daily and
+civil-only records retain their provider calendar date. Sleep uses its end date;
+other intervals use their start date. Profile and catalog queries accept no dates.
+
+The query runs against an owner- and account-scoped read-only host connection.
+The full archive stays on the host. Only selected results, up to 100 records and
+32 KiB per call, enter the model and private conversation history. The tool does
+not execute model-written SQL or Python, copy files into a sandbox, upload to R2,
+or send a file through Telegram. Private logging filters redact query payloads.
+
+Queries select the latest observed version per provider record ID. Anonymous
+payloads remain separate observations. Sums and averages over anonymous inputs
+require the explicit `observations` basis because sources or versions can overlap.
+Responses report this limitation and acquisition status. Missing values and
+booleans do not become zero. Provider-side deletion does not remove archived
+observations. Pagination is a live view, so new ingestion can change later pages.
+Queries have a two-second execution budget; large archives can hit that limit
+even for narrow dates because version selection precedes date filtering.

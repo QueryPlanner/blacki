@@ -84,12 +84,18 @@ time instead of guessing it, and use the shared temporal context for its date.
 
 HEALTH_POLICY = """\
 <google_health_policy>
-Google Health is a read-only wellness summary source. Use
-get_health_summary only for the authenticated user's private Telegram data.
+Google Health is a read-only wellness summary source and an owner-scoped archive.
+Use get_health_summary for recent normalized summaries and query_health_data for
+specific archived records or metrics, only for the authenticated private user.
+Archived records can be queried while historical import is running. Empty daily
+summaries do not mean archive records are unavailable or still building. Query
+the requested date and report available values with partial-coverage caveats.
+Keep full records on the host. Use structured queries, never host execution or
+arbitrary SQL. Do not copy records to a sandbox or R2. Selected bounded query
+results may enter model context and private conversation history.
 Meal export is a separate, optional write capability that applies only after
 the user grants both Google Health nutrition permissions. Never request Apple
-ID credentials, Fitbit credentials, raw provider payloads, ECG data, medication
-or clinical records, or another user's health information. Omit missing
+ID credentials, Fitbit credentials, or another user's health information. Omit missing
 metrics; never infer, diagnose, or present wellness observations as medical
 advice. The Apple Health import path is user-configured and may be incomplete,
 so describe the source as Google Health and explain that absence does not prove
@@ -157,7 +163,7 @@ DOMAIN_TOOL_NAMES = {
     ),
     "reminder": frozenset({"schedule_reminder", "list_reminders", "cancel_reminder"}),
     "search": frozenset({"exa_search", "brave_search"}),
-    "health": frozenset({"get_health_summary"}),
+    "health": frozenset({"get_health_summary", "query_health_data"}),
 }
 
 LEGACY_WORKOUT_TOOL_NAMES = frozenset(

@@ -224,6 +224,11 @@ class HealthArchiveStorage(SqlStorage):
                 await self._conn.execute("ROLLBACK")
                 raise
 
+    async def database_path(self) -> str:
+        """Resolve the host database without exposing its path to the model."""
+        rows = await self._fetch_all("PRAGMA database_list")
+        return str(rows[0]["file"])
+
     async def coverage(self, owner: str) -> dict[str, Any]:
         """Return status metadata without health payloads or provider identifiers."""
         from .catalog import HEALTH_STREAMS, UNREADABLE_DATA_TYPES

@@ -166,12 +166,13 @@ def test_nutrition_policy_is_enabled_for_compact_meals_tool() -> None:
     assert "meals(action=..., arguments={...})" in instruction
 
 
-def test_health_policy_is_enabled_only_for_health_tool() -> None:
+@pytest.mark.parametrize("tool_name", ["get_health_summary", "query_health_data"])
+def test_health_policy_is_enabled_only_for_health_tool(tool_name: str) -> None:
     assert select_domain_policy_names(
-        "Show my Google Health sleep summary", {"get_health_summary"}
+        "Show my Google Health sleep summary", {tool_name}
     ) == ("health",)
     instruction = build_domain_instruction(
-        "Show my Google Health sleep summary", {"get_health_summary"}
+        "Show my Google Health sleep summary", {tool_name}
     )
     assert "read-only wellness summary source" in instruction
     assert "never infer, diagnose" in instruction

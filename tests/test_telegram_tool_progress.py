@@ -348,6 +348,10 @@ def test_describe_tool_private_never_interpolates_args() -> None:
     }
     # Private tools
     assert (
+        describe_tool("query_health_data", args, private=True)
+        == "Querying stored health records…"
+    )
+    assert (
         describe_tool("get_health_summary", {"days": 7}, private=True)
         == "Fetching health summary…"
     )
