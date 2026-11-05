@@ -7,6 +7,7 @@ import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from .archive_worker import HealthArchiveWorker
 from .service import GoogleHealthService
 
 logger = logging.getLogger(__name__)
@@ -18,6 +19,7 @@ class GoogleHealthScheduler:
     def __init__(self, service: GoogleHealthService) -> None:
         self.service = service
         self.scheduler = AsyncIOScheduler()
+        self.archive_worker = HealthArchiveWorker(service)
         self._running = False
 
     async def start(self) -> None:
@@ -33,6 +35,14 @@ class GoogleHealthScheduler:
             coalesce=True,
             max_instances=1,
             misfire_grace_time=3600,
+        )
+        self.scheduler.add_job(
+            self.archive_worker.run_once,
+            trigger=IntervalTrigger(minutes=1),
+            id="google_health_archive",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
         )
         self.scheduler.start()
         self._running = True

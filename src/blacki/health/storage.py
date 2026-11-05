@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ import aiosqlite
 from blacki.storage.base import SqlStorage
 from blacki.utils.timezone import now_utc
 
+from .archive import HealthArchiveStorage
 from .config import GOOGLE_HEALTH_NUTRITION_SCOPES
 from .nutrition_storage import NutritionStorage
 
@@ -32,6 +34,8 @@ class HealthConnection:
     last_synced_at: str | None
     last_refresh_requested_at: str | None
     last_sync_error: str | None
+    generation: str = ""
+    archive_consent_version: int = 0
 
 
 class SqliteGoogleHealthStorage(SqlStorage):
@@ -40,6 +44,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
     def __init__(self, conn: aiosqlite.Connection, lock: asyncio.Lock) -> None:
         super().__init__(conn, lock)
         self._nutrition = NutritionStorage(conn, lock)
+        self.archive = HealthArchiveStorage(conn, lock)
 
     async def _create_tables(self) -> None:
         await self._conn.execute("""
@@ -56,6 +61,15 @@ class SqliteGoogleHealthStorage(SqlStorage):
                 last_sync_error TEXT
             )
         """)
+        async with self._conn.execute(
+            "PRAGMA table_info(google_health_connections)"
+        ) as cursor:
+            columns = await cursor.fetchall()
+        if not any(row[1] == "generation" for row in columns):
+            await self._conn.execute(
+                "ALTER TABLE google_health_connections "
+                "ADD COLUMN generation TEXT NOT NULL DEFAULT ''"
+            )
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS google_health_oauth_states (
                 state_hash TEXT PRIMARY KEY,
@@ -64,6 +78,14 @@ class SqliteGoogleHealthStorage(SqlStorage):
                 created_at TEXT NOT NULL
             )
         """)
+        for table in ("google_health_connections", "google_health_oauth_states"):
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cursor:
+                consent_columns = await cursor.fetchall()
+            if not any(row[1] == "archive_consent_version" for row in consent_columns):
+                await self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN "
+                    "archive_consent_version INTEGER NOT NULL DEFAULT 0"
+                )
         await self._conn.execute("""
             CREATE TABLE IF NOT EXISTS google_health_daily_summaries (
                 telegram_user_id TEXT NOT NULL,
@@ -81,6 +103,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
         )
         # This is called while the health storage owns the shared write lock.
         # Calling NutritionStorage.initialize() here would deadlock on that lock.
+        await self.archive._create_tables()
         await self._nutrition._create_tables()
         self._nutrition._schema_ready = True
 
@@ -101,6 +124,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
         telegram_user_id: str,
         *,
         expires_at: datetime,
+        archive_consent_version: int = 0,
     ) -> None:
         """Store a hashed, short-lived, single-use OAuth state value."""
         now = now_utc()
@@ -112,21 +136,28 @@ class SqliteGoogleHealthStorage(SqlStorage):
             await self._conn.execute(
                 """
                 INSERT INTO google_health_oauth_states
-                    (state_hash, telegram_user_id, expires_at, created_at)
-                VALUES (?, ?, ?, ?)
+                    (state_hash, telegram_user_id, expires_at, created_at,
+                     archive_consent_version)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (state_hash, telegram_user_id, _iso(expires_at), _iso(now)),
+                (
+                    state_hash,
+                    telegram_user_id,
+                    _iso(expires_at),
+                    _iso(now),
+                    archive_consent_version,
+                ),
             )
 
     async def consume_oauth_state(
         self, state_hash: str, *, now: datetime | None = None
-    ) -> str | None:
-        """Consume one valid state and return its bound Telegram identity."""
+    ) -> tuple[str, int] | None:
+        """Consume the bound identity and the disclosure version shown to it."""
         reference_time = now or now_utc()
         async with self._lock:
             row = await self._fetch_one(
                 """
-                SELECT telegram_user_id, expires_at
+                SELECT telegram_user_id, expires_at, archive_consent_version
                 FROM google_health_oauth_states
                 WHERE state_hash = ?
                 """,
@@ -141,7 +172,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
             expires_at = _parse_timestamp(row["expires_at"])
             if expires_at <= reference_time.astimezone(UTC):
                 return None
-            return str(row["telegram_user_id"])
+            return str(row["telegram_user_id"]), int(row["archive_consent_version"])
 
     async def upsert_connection(
         self,
@@ -151,6 +182,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
         health_user_id: str,
         legacy_fitbit_user_id: str | None,
         scopes: tuple[str, ...],
+        archive_consent_version: int = 0,
     ) -> None:
         """Create or replace a connected account without storing plaintext tokens."""
         connected_at = _iso(now_utc())
@@ -171,6 +203,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
                 ) or await self._nutrition.has_other_account(
                     telegram_user_id, health_user_id
                 )
+                await self.archive.clear(telegram_user_id, records=identity_changed)
                 if identity_changed:
                     await self._conn.execute(
                         "DELETE FROM google_health_daily_summaries "
@@ -186,8 +219,9 @@ class SqliteGoogleHealthStorage(SqlStorage):
                     INSERT INTO google_health_connections (
                         telegram_user_id, encrypted_refresh_token, health_user_id,
                         legacy_fitbit_user_id, scopes_json, status, connected_at,
-                        last_synced_at, last_refresh_requested_at, last_sync_error
-                    ) VALUES (?, ?, ?, ?, ?, 'connected', ?, NULL, NULL, NULL)
+                        last_synced_at, last_refresh_requested_at,
+                   last_sync_error, generation, archive_consent_version
+                    ) VALUES (?, ?, ?, ?, ?, 'connected', ?, NULL, NULL, NULL, ?, ?)
                     ON CONFLICT (telegram_user_id) DO UPDATE SET
                         encrypted_refresh_token = excluded.encrypted_refresh_token,
                         health_user_id = excluded.health_user_id,
@@ -195,6 +229,8 @@ class SqliteGoogleHealthStorage(SqlStorage):
                         scopes_json = excluded.scopes_json,
                         status = 'connected',
                         connected_at = excluded.connected_at,
+                        generation = excluded.generation,
+                        archive_consent_version = excluded.archive_consent_version,
                         last_synced_at = CASE
                             WHEN google_health_connections.health_user_id
                                 != excluded.health_user_id
@@ -216,6 +252,8 @@ class SqliteGoogleHealthStorage(SqlStorage):
                         legacy_fitbit_user_id,
                         json.dumps(sorted(scopes)),
                         connected_at,
+                        uuid.uuid4().hex,
+                        archive_consent_version,
                     ),
                 )
                 if not identity_changed and set(GOOGLE_HEALTH_NUTRITION_SCOPES) <= set(
@@ -233,7 +271,8 @@ class SqliteGoogleHealthStorage(SqlStorage):
             """
             SELECT telegram_user_id, encrypted_refresh_token, health_user_id,
                    legacy_fitbit_user_id, scopes_json, status, connected_at,
-                   last_synced_at, last_refresh_requested_at, last_sync_error
+                   last_synced_at, last_refresh_requested_at,
+                   last_sync_error, generation, archive_consent_version
             FROM google_health_connections
             WHERE telegram_user_id = ?
             """,
@@ -247,7 +286,8 @@ class SqliteGoogleHealthStorage(SqlStorage):
             """
             SELECT telegram_user_id, encrypted_refresh_token, health_user_id,
                    legacy_fitbit_user_id, scopes_json, status, connected_at,
-                   last_synced_at, last_refresh_requested_at, last_sync_error
+                   last_synced_at, last_refresh_requested_at,
+                   last_sync_error, generation, archive_consent_version
             FROM google_health_connections
             WHERE encrypted_refresh_token IS NOT NULL AND status = 'connected'
             """
@@ -446,6 +486,7 @@ class SqliteGoogleHealthStorage(SqlStorage):
             await self._conn.execute("BEGIN")
             try:
                 await self._nutrition.cancel(telegram_user_id)
+                await self.archive.clear(telegram_user_id)
                 cursor = await self._conn.execute(
                     "DELETE FROM google_health_connections WHERE telegram_user_id = ?",
                     (telegram_user_id,),
@@ -492,6 +533,8 @@ def _connection_from_row(row: Mapping[str, Any]) -> HealthConnection:
         scopes=scopes,
         status=str(row["status"]),
         connected_at=str(row["connected_at"]),
+        generation=str(row["generation"]),
+        archive_consent_version=int(row["archive_consent_version"]),
         last_synced_at=(
             str(row["last_synced_at"]) if row["last_synced_at"] is not None else None
         ),

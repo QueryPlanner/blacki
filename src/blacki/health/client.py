@@ -189,6 +189,86 @@ class GoogleHealthClient:
                 return points
             page_token = next_page_token
 
+    async def read_archive_page(
+        self,
+        access_token: str,
+        *,
+        path: str,
+        method: str = "GET",
+        params: Mapping[str, Any] | None = None,
+        body: Mapping[str, Any] | None = None,
+        media: bool = False,
+    ) -> dict[str, Any]:
+        """Read one bounded archive page, without logging payloads or URLs.
+
+        Streaming caps both JSON pages and TCX media before parsing or storage.
+        Only the internal catalog constructs paths; no agent tool exposes this.
+        """
+        client = await self._ensure_client()
+        try:
+            async with client.stream(
+                method,
+                f"{GOOGLE_HEALTH_API_BASE_URL}{path}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+                json=body,
+                timeout=30.0,
+            ) as response:
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > 8 * 1024 * 1024:
+                        raise GoogleHealthApiError(
+                            "Health archive page exceeds size limit",
+                            error_code="page_too_large",
+                        )
+                # aiter_bytes() already decoded Content-Encoding. Preserve safe
+                # response metadata without asking HTTPX to decode it a second time.
+                headers = dict(response.headers)
+                headers.pop("content-encoding", None)
+                headers.pop("content-length", None)
+                buffered = httpx.Response(
+                    response.status_code, headers=headers, content=bytes(data)
+                )
+                if response.status_code >= 400:
+                    payload = _json_object(buffered)
+                    _raise_provider_error(
+                        payload,
+                        response.status_code,
+                        token_endpoint=False,
+                        retry_after_seconds=_retry_after_seconds(buffered),
+                    )
+                if media:
+                    content_type = response.headers.get("content-type", "").split(
+                        ";", 1
+                    )[0]
+                    if content_type not in {
+                        "application/vnd.garmin.tcx+xml",
+                        "application/xml",
+                        "text/xml",
+                        "application/octet-stream",
+                    }:
+                        raise GoogleHealthApiError(
+                            "Unexpected health media type",
+                            error_code="invalid_media_type",
+                        )
+                    try:
+                        return {
+                            "tcx": data.decode("utf-8"),
+                            "contentType": content_type,
+                        }
+                    except UnicodeError as exc:
+                        raise GoogleHealthApiError(
+                            "Invalid health media encoding", error_code="invalid_media"
+                        ) from exc
+                return _json_object(buffered)
+        except httpx.RequestError as exc:
+            raise GoogleHealthApiError(
+                "Health archive transport failed",
+                error_code="transport_error",
+                transport=True,
+            ) from exc
+
     async def create_nutrition_log(
         self,
         access_token: str,

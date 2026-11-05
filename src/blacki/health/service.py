@@ -17,6 +17,7 @@ from .client import (
     GoogleHealthClient,
 )
 from .config import (
+    GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION,
     GOOGLE_HEALTH_SCOPES,
     GoogleHealthConfig,
     TokenEncryptionError,
@@ -95,6 +96,7 @@ class GoogleHealthService:
             health_user_id,
             expires_at=now_utc()
             + timedelta(seconds=self.config.oauth_state_ttl_seconds),
+            archive_consent_version=GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION,
         )
         return self.config.authorization_url(state)
 
@@ -108,11 +110,12 @@ class GoogleHealthService:
         """Validate state, exchange code, resolve identity, and store credentials."""
         if not state:
             raise GoogleHealthOAuthError("OAuth state is missing")
-        user_id = await self.storage.consume_oauth_state(
+        authorization = await self.storage.consume_oauth_state(
             hashlib.sha256(state.encode("utf-8")).hexdigest()
         )
-        if user_id is None:
+        if authorization is None:
             raise GoogleHealthOAuthError("OAuth state is invalid or expired")
+        user_id, consent_version = authorization
         if error:
             return OAuthCompletion(telegram_user_id=user_id, connected=False)
         if not code:
@@ -137,6 +140,7 @@ class GoogleHealthService:
             health_user_id=identity.health_user_id,
             legacy_fitbit_user_id=identity.legacy_fitbit_user_id,
             scopes=token_response.scopes or GOOGLE_HEALTH_SCOPES,
+            archive_consent_version=consent_version,
         )
         return OAuthCompletion(telegram_user_id=user_id, connected=True)
 
@@ -394,6 +398,7 @@ async def summarize_stored_health(
     return {
         "status": "success",
         "source": "google_health",
+        "archive": await storage.archive.coverage(user_id),
         "days": summaries,
         "trends": _build_trends(summaries),
     }
@@ -415,11 +420,36 @@ def format_health_summary(summary: dict[str, Any]) -> str:
             "I couldn't read your Google Health data right now. Please try again later."
         )
 
+    archive = summary.get("archive", {})
+    streams = archive.get("streams", {}) if isinstance(archive, dict) else {}
+    archive_text = ""
+    if isinstance(streams, dict) and streams:
+        completed = sum(item.get("status") == "complete" for item in streams.values())
+        gaps = sum(
+            item.get("status")
+            in {
+                "permission_required",
+                "reauthorization_required",
+                "archive_consent_required",
+            }
+            for item in streams.values()
+        )
+        failed = sum(
+            item.get("status")
+            in {"failed", "blocked_membership_date", "record_too_large"}
+            or item.get("mediaStatus") in {"unavailable", "permission_required"}
+            for item in streams.values()
+        )
+        archive_text = (
+            f"\nFull-history archive: {completed}/{len(streams)} streams scanned; "
+            f"{gaps} need authorization; {failed} have acquisition gaps."
+        )
     days = summary.get("days")
     if not isinstance(days, list) or not days:
         return (
             "Google Health is connected, but no imported records were available for "
             "the selected period. Missing values are omitted; nothing is guessed."
+            + archive_text
         )
 
     lines = ["📊 Google Health summary"]
@@ -461,7 +491,7 @@ def format_health_summary(summary: dict[str, Any]) -> str:
             "what Google Health retained from connected sources.",
         ]
     )
-    return "\n".join(lines)
+    return "\n".join(lines) + archive_text
 
 
 def _canonical_user_id(user_id: str) -> str:

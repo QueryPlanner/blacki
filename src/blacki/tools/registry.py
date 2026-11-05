@@ -361,10 +361,10 @@ def _build_browser_takeover_tools() -> list[Any]:
 def _build_health_tools() -> list[Any]:
     """Build the private, read-only Google Health tool."""
     try:
-        from blacki.tools.health import get_health_summary
+        from blacki.tools.health import get_health_summary, query_health_data
 
         logger.info("Google Health summary tool enabled for the Telegram root agent")
-        return [get_health_summary]
+        return [get_health_summary, query_health_data]
     except ImportError as exc:  # pragma: no cover
         logger.warning("Google Health tool disabled: %s", exc)
         return []

@@ -10,6 +10,8 @@ from urllib.parse import urlencode, urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 
+GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION = 1
+
 GOOGLE_HEALTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_HEALTH_TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105
 GOOGLE_HEALTH_REVOCATION_URL = "https://oauth2.googleapis.com/revoke"
@@ -21,6 +23,11 @@ GOOGLE_HEALTH_READ_SCOPES = (
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
     "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+    "https://www.googleapis.com/auth/googlehealth.ecg.readonly",
+    "https://www.googleapis.com/auth/googlehealth.irn.readonly",
+    "https://www.googleapis.com/auth/googlehealth.profile.readonly",
+    "https://www.googleapis.com/auth/googlehealth.settings.readonly",
+    "https://www.googleapis.com/auth/googlehealth.location.readonly",
 )
 GOOGLE_HEALTH_NUTRITION_SCOPES = (
     "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
@@ -75,6 +82,7 @@ class GoogleHealthConfig:
     client_secret: str
     redirect_uri: str
     token_encryption_key: str
+    archive_start_date: str | None = None
     sync_interval_hours: int = 12
     manual_refresh_cooldown_seconds: int = 3600
     oauth_state_ttl_seconds: int = 600
@@ -121,7 +129,20 @@ class GoogleHealthConfig:
             TokenCipher(encryption_key)
         except TokenEncryptionError as exc:
             raise GoogleHealthConfigurationError(str(exc)) from exc
+        archive_start_date = (
+            values.get("GOOGLE_HEALTH_ARCHIVE_START_DATE", "").strip() or None
+        )
+        if archive_start_date:
+            from datetime import date
+
+            try:
+                date.fromisoformat(archive_start_date)
+            except ValueError as exc:
+                raise GoogleHealthConfigurationError(
+                    "GOOGLE_HEALTH_ARCHIVE_START_DATE must be YYYY-MM-DD"
+                ) from exc
         return cls(
+            archive_start_date=archive_start_date,
             client_id=client_id,
             client_secret=client_secret,
             redirect_uri=redirect_uri,
@@ -152,7 +173,7 @@ class GoogleHealthConfig:
             "redirect_uri": self.redirect_uri,
             "response_type": "code",
             "access_type": "offline",
-            "include_granted_scopes": "true",
+            "include_granted_scopes": "false",
             "prompt": "consent",
             "scope": " ".join(GOOGLE_HEALTH_SCOPES),
             "state": state,

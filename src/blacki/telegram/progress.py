@@ -206,6 +206,8 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
         return "Fetching weather forecast…"
 
     # 8. Health (Private)
+    if tool_name == "query_health_data":
+        return "Querying stored health records…"
     if tool_name == "get_health_summary":
         return "Fetching health summary…"
 
