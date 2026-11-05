@@ -1050,9 +1050,9 @@ async def test_health_storage_lifecycle(
     await health_storage.store_oauth_state(
         "valid-state", "telegram-chat-42", expires_at=now + timedelta(minutes=5)
     )
-    assert (
-        await health_storage.consume_oauth_state("valid-state", now=now)
-        == "telegram-chat-42"
+    assert await health_storage.consume_oauth_state("valid-state", now=now) == (
+        "telegram-chat-42",
+        0,
     )
     assert await health_storage.consume_oauth_state("valid-state", now=now) is None
     await health_storage.store_oauth_state(

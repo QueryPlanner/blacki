@@ -14,7 +14,7 @@ from blacki.utils.timezone import now_utc
 
 from .catalog import HEALTH_STREAMS, SCOPE_PREFIX, HealthStream
 from .client import GoogleHealthApiError, GoogleHealthClient
-from .config import TokenEncryptionError
+from .config import GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION, TokenEncryptionError
 from .normalize import _date_from_value
 from .service import GoogleHealthService
 from .storage import HealthConnection
@@ -124,7 +124,15 @@ class HealthArchiveWorker:
         records: list[dict[str, Any]] = []
         output_stream = spec.key
         try:
-            if SCOPE_PREFIX + spec.scope not in connection.scopes:
+            if (
+                connection.archive_consent_version
+                < GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION
+            ):
+                state.update(
+                    status="archive_consent_required",
+                    due=(now + timedelta(hours=24)).isoformat(),
+                )
+            elif SCOPE_PREFIX + spec.scope not in connection.scopes:
                 state.update(
                     status="permission_required",
                     due=(now + timedelta(hours=24)).isoformat(),

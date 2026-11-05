@@ -46,6 +46,7 @@ class ArchiveHarness:
             encrypted_refresh_token=self.config.cipher.encrypt("refresh"),
             legacy_fitbit_user_id=None,
             scopes=scopes,
+            archive_consent_version=1,
         )
 
     async def records(self, owner: str = "telegram-chat-42") -> list[dict[str, Any]]:
@@ -825,3 +826,60 @@ async def test_aggregate_pagination_keeps_window_when_older_data_arrives(
     assert (await archive.storage.archive.progress("telegram-chat-42"))[
         "total-calories"
     ]["historyStart"] == "2026-11-01"
+
+
+async def test_legacy_connection_never_imports_without_archival_consent(
+    archive: ArchiveHarness,
+) -> None:
+    await archive.conn.execute(
+        "UPDATE google_health_connections SET archive_consent_version=0"
+    )
+    await archive.run(6)
+    assert archive.requests == []
+    assert await archive.records() == []
+    progress = await archive.storage.archive.progress("telegram-chat-42")
+    assert all(
+        state["status"] == "archive_consent_required" for state in progress.values()
+    )
+    from blacki.health.service import format_health_summary
+
+    text = format_health_summary(
+        await archive.worker.service.summary("telegram-chat-42")
+    )
+    assert "44 need authorization" in text
+
+
+@pytest.mark.parametrize("legacy_flow", [True, False])
+async def test_pending_oauth_preserves_the_disclosure_version(
+    archive: ArchiveHarness, legacy_flow: bool
+) -> None:
+    import hashlib
+    from urllib.parse import parse_qs, urlsplit
+
+    if legacy_flow:
+        state = "legacy-state"
+        await archive.storage.store_oauth_state(
+            hashlib.sha256(state.encode()).hexdigest(),
+            "telegram-chat-42",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    else:
+        url = await archive.worker.service.begin_authorization("telegram-chat-42")
+        state = parse_qs(urlsplit(url).query)["state"][0]
+    archive.responses["/v4/users/me/identity"] = [{"healthUserId": "account"}]
+    completion = await archive.worker.service.complete_authorization(
+        state=state, code="test-code", error=None
+    )
+    assert completion.connected
+    connection = await archive.storage.get_connection("telegram-chat-42")
+    assert connection is not None and connection.archive_consent_version == (
+        0 if legacy_flow else 1
+    )
+    before = len(archive.requests)
+    await archive.worker.run_once(page_budget=1)
+    if legacy_flow:
+        assert len(archive.requests) == before
+        assert await archive.records() == []
+    else:
+        assert len(archive.requests) > before
+        assert await archive.records()

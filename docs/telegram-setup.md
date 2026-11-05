@@ -128,6 +128,11 @@ are omitted rather than guessed. A separate archive worker runs every minute,
 committing at most eight bounded pages across accounts and data types per run.
 It imports all readable catalog types, including beta skin-temperature sensors,
 profile/settings, paired devices, nutrition catalogs, and exercise TCX media.
+Existing connections must reconnect after seeing the archival retention
+disclosure. A persisted consent version gates the importer independently of
+OAuth scopes; authorization flows started before this disclosure keep the old
+version and do not enable archival ingestion.
+
 Full JSON payloads, provider identifiers, and unknown fields stay in private
 host SQLite. Each response is capped at 8 MiB; oversized pages or media are
 reported as incomplete rather than silently truncated. Large or malformed TCX

@@ -10,6 +10,8 @@ from urllib.parse import urlencode, urlsplit
 
 from cryptography.fernet import Fernet, InvalidToken
 
+GOOGLE_HEALTH_ARCHIVE_CONSENT_VERSION = 1
+
 GOOGLE_HEALTH_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_HEALTH_TOKEN_URL = "https://oauth2.googleapis.com/token"  # noqa: S105
 GOOGLE_HEALTH_REVOCATION_URL = "https://oauth2.googleapis.com/revoke"
