@@ -105,8 +105,9 @@ to the exact public HTTPS URL. In Telegram:
    for summaries. Grant both `googlehealth.nutrition.readonly` and
    `googlehealth.nutrition.writeonly` if you want future meal export. Existing
    connections must reconnect to add these nutrition permissions. The nutrition
-   read permission lets Blacki verify records it created by exact data point
-   ID; it does not import unrelated food logs.
+   read permission also imports nutrition and hydration history. Reconnect
+   existing accounts to grant profile, settings, ECG, irregular rhythm, and
+   location read permissions for complete archival ingestion.
 3. Return to Telegram and use `/health_refresh` for an on-demand sync or
    `/health_summary` for the latest stored records.
 4. Log meals normally. Existing eligible meals are queued once after the
@@ -116,20 +117,42 @@ to the exact public HTTPS URL. In Telegram:
    status when you want to check the queue, or ask it to retry failed exports.
 5. Use `/disconnect_health`, then confirm the button, to revoke the token
    best-effort, cancel pending meal sync, and remove Blacki's stored token and
-   normalized health summaries. Local calorie logs remain. Blacki does not
+   normalized health summaries, imported records, and import checkpoints.
+   Local calorie logs remain. Blacki does not
    delete records already sent to Google Health, and requests already submitted
    may still finish.
 
 The background sync runs every 12 hours by default and fetches a bounded recent
 window so late device imports can replace earlier daily records. Missing values
-are omitted rather than guessed. Stored data is limited to normalized daily
-activity, workout, sleep, heart-rate, weight, and body-fat summaries; raw
-Google payloads and provider IDs are not persisted in the summary table. Meal
-exports are persisted separately with retry state and opaque data point IDs. A
-one-time per-account backfill queues existing local meals with a durable cursor;
-the meal export worker runs every minute independently of health imports. Run
-only one active scheduler process per `tools.db` so a deployment does not
-dispatch duplicate work.
+are omitted rather than guessed. A separate archive worker runs every minute,
+committing at most eight bounded pages across accounts and data types per run.
+It imports all readable catalog types, including beta skin-temperature sensors,
+profile/settings, paired devices, nutrition catalogs, and exercise TCX media.
+Full JSON payloads, provider identifiers, and unknown fields stay in private
+host SQLite. Each response is capped at 8 MiB; oversized pages or media are
+reported as incomplete rather than silently truncated. Large or malformed TCX
+exports do not block other exercise JSON pages.
+
+Listing imports all available history without a date filter. Floors use
+reconciliation because Google does not expose their original records. Total
+calories and calories in heart rate zones use minute rollups in one-day ranges,
+working backward to the profile membership date. That date is an inferred
+history boundary, not a provider guarantee that earlier imports cannot exist.
+Set `GOOGLE_HEALTH_ARCHIVE_START_DATE=YYYY-MM-DD` to extend the boundary earlier
+or supply a missing membership date. A later override never shortens history.
+The archive status reports the actual date range. Empty days do not stop it.
+
+`/health_summary` reads the existing daily summaries and reports separate archive
+progress. The agent receives coverage metadata, never full archival payloads.
+A completed scan repeats after 24 hours. Observed versions are deduplicated and
+retained until disconnect or account replacement. This is an observation
+archive: provider deletions do not remove earlier observations. Unreadable
+write-only types are listed explicitly; permission gaps and failures prevent a
+complete status. Archive payloads never enter R2, the sandbox, or Telegram.
+
+Meal exports retain their separate retry state and one-time local-meal backfill.
+Run one scheduler process per `tools.db` to avoid duplicate network work.
+Checkpoint comparison and connection generations reject stale concurrent writes.
 
 Google's v4 discovery document currently lists `nutrition-log` as a supported
 data type. Blacki writes only the local meal description, kcal, available
@@ -264,3 +287,9 @@ Check that:
 - the VPS can make outbound HTTPS requests.
 
 See [Troubleshooting](troubleshooting.md) for startup and model failures.
+
+Health authorization requests only Google Health scopes and disables merging
+previous Google grants. A shared OAuth client must not pull Gmail or YouTube
+permissions into a Health token. If Google reports `DISALLOWED_OAUTH_SCOPES`,
+start a fresh connection with the updated link and verify the OAuth client's
+configured Health scopes.

@@ -1472,14 +1472,17 @@ class TelegramBot:
             await self.api.send_message(
                 chat_id=message.chat.id,
                 text=(
-                    "Google Health can provide read-only wellness summaries from "
-                    "data that reaches Google Health from Fitbit-compatible sources. "
+                    "Blacki imports your readable Google Health history and stores "
+                    "it privately on this server. This includes available activity, "
+                    "health measurements, sleep, nutrition, profile, devices, ECG, "
+                    "irregular rhythm, and exercise routes. Observed versions remain "
+                    "until you disconnect or change the linked account. "
                     "If you grant both Google Health nutrition permissions, Blacki "
                     "will queue the meals already saved in this private chat once "
                     "for this Google account, then automatically export future meal "
                     "logs, edits, and deletions. The nutrition read permission "
-                    "also lets Blacki verify records it created; it does not import "
-                    "unrelated food logs. "
+                    "also lets Blacki verify records it created and import your "
+                    "nutrition and hydration history. "
                     "Read-only summaries remain available without nutrition "
                     "permissions. Existing connections must reconnect to add them. "
                     "Blacki does not receive Apple ID credentials or raw Apple Health "
@@ -1562,7 +1565,8 @@ class TelegramBot:
             text=(
                 "Disconnect Google Health and cancel future meal sync for this "
                 "chat? Blacki will remove its stored health credentials and "
-                "summaries, but keep local calorie logs. Blacki will not delete "
+                "summaries, all imported records, and import progress, but keep local "
+                "calorie logs. Blacki will not delete "
                 "records already sent to Google Health; requests already submitted "
                 "may still finish."
             ),

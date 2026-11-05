@@ -394,6 +394,7 @@ async def summarize_stored_health(
     return {
         "status": "success",
         "source": "google_health",
+        "archive": await storage.archive.coverage(user_id),
         "days": summaries,
         "trends": _build_trends(summaries),
     }
@@ -415,11 +416,31 @@ def format_health_summary(summary: dict[str, Any]) -> str:
             "I couldn't read your Google Health data right now. Please try again later."
         )
 
+    archive = summary.get("archive", {})
+    streams = archive.get("streams", {}) if isinstance(archive, dict) else {}
+    archive_text = ""
+    if isinstance(streams, dict) and streams:
+        completed = sum(item.get("status") == "complete" for item in streams.values())
+        gaps = sum(
+            item.get("status") in {"permission_required", "reauthorization_required"}
+            for item in streams.values()
+        )
+        failed = sum(
+            item.get("status")
+            in {"failed", "blocked_membership_date", "record_too_large"}
+            or item.get("mediaStatus") in {"unavailable", "permission_required"}
+            for item in streams.values()
+        )
+        archive_text = (
+            f"\nFull-history archive: {completed}/{len(streams)} streams scanned; "
+            f"{gaps} need authorization; {failed} have acquisition gaps."
+        )
     days = summary.get("days")
     if not isinstance(days, list) or not days:
         return (
             "Google Health is connected, but no imported records were available for "
             "the selected period. Missing values are omitted; nothing is guessed."
+            + archive_text
         )
 
     lines = ["📊 Google Health summary"]
@@ -461,7 +482,7 @@ def format_health_summary(summary: dict[str, Any]) -> str:
             "what Google Health retained from connected sources.",
         ]
     )
-    return "\n".join(lines)
+    return "\n".join(lines) + archive_text
 
 
 def _canonical_user_id(user_id: str) -> str:

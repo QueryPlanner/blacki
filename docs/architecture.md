@@ -161,7 +161,7 @@ Blacki uses different stores for different responsibilities:
 | Telegram photo parts in ADK history | SQLite-backed session events | Yes |
 | Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
 | Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
-| Google Health refresh tokens and normalized summaries | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
+| Google Health refresh tokens, normalized summaries, full-record archive, and import checkpoints | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
 | Google Health meal export revisions and retry state | SQLite (`tools.db`), payloads account-bound and sent over HTTPS | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
 
@@ -210,7 +210,8 @@ database still retains tool calls and arguments as normal conversation history.
 
 Google Health summaries are a separate read-only boundary. The connector uses
 the current Google Health API, not the legacy Fitbit Web API. It requests the
-current read-only activity/fitness, measurements, and sleep scopes plus
+current read-only activity/fitness, measurements, sleep, ECG, irregular rhythm,
+profile, settings, and location scopes plus
 `googlehealth.nutrition.readonly` and `googlehealth.nutrition.writeonly` for
 optional meal export. It handles missing or partially imported categories as
 unavailable. Health commands reject group chats, and the summary tool requires
@@ -291,3 +292,17 @@ configuration are intentionally separate architectural decisions. A direct
 Tailscale bind or Tailscale Serve can provide private network reachability, but
 the application deliberately does not implement HTTP Basic auth, cookies, or
 Tailscale identity-header authentication.
+
+### Google Health archive
+
+The full-history worker stores observed provider payloads in private host SQLite,
+separately from normalized daily summaries and nutrition exports. Its catalog
+selects list, reconcile, or minute rollup contracts per type. Metadata and TCX
+media are separate representations. Eight pages per minute and an 8 MiB page
+limit bound ingestion. SQLite commits observations, token-cycle hashes, and
+progress atomically. A connection generation changes on every authorization;
+stale responses cannot write after disconnect, account replacement, or reconsent.
+
+Read-only summary tools receive coverage metadata without archival payloads.
+Historical observations survive provider edits and deletions until the user
+confirms disconnect or replaces the linked account. See [Telegram setup](telegram-setup.md#optional-connect-google-health) for history bounds and gaps.

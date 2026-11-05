@@ -18,6 +18,10 @@ async def get_health_summary(
 
     This tool is intentionally read-only. It never calls Google directly; the
     scheduled or explicit refresh path owns provider access and persistence.
+    The archive field reports acquisition status and stored observation counts,
+    not archived values. Empty days means no normalized summaries in that date
+    window; it does not mean the full-history archive is empty. This tool cannot
+    search historical archive payloads or report values from those payloads.
     """
     if days < 1 or days > 14:
         return {"status": "error", "error": "days must be between 1 and 14"}

@@ -85,6 +85,8 @@ async def test_connect_health_sends_protected_authorization_link() -> None:
     assert "future meal logs, edits, and deletions" in kwargs["text"]
     assert "meals already saved" in kwargs["text"]
     assert "verify records it created" in kwargs["text"]
+    assert "stores it privately on this server" in kwargs["text"]
+    assert "until you disconnect or change the linked account" in kwargs["text"]
     assert "Read-only summaries remain available" in kwargs["text"]
     assert "Apple ID" in kwargs["text"]
 

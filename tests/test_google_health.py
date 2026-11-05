@@ -114,6 +114,11 @@ def test_health_config_and_cipher() -> None:
         "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
         "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
         "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
+        "https://www.googleapis.com/auth/googlehealth.ecg.readonly",
+        "https://www.googleapis.com/auth/googlehealth.irn.readonly",
+        "https://www.googleapis.com/auth/googlehealth.profile.readonly",
+        "https://www.googleapis.com/auth/googlehealth.settings.readonly",
+        "https://www.googleapis.com/auth/googlehealth.location.readonly",
         "https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
         "https://www.googleapis.com/auth/googlehealth.nutrition.writeonly",
     )
@@ -122,6 +127,7 @@ def test_health_config_and_cipher() -> None:
     assert query["state"] == ["state-value"]
     assert query["access_type"] == ["offline"]
     assert query["prompt"] == ["consent"]
+    assert query["include_granted_scopes"] == ["false"]
     assert query["scope"] == [" ".join(GOOGLE_HEALTH_SCOPES)]
 
     cipher = config.cipher
