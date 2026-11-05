@@ -15,6 +15,7 @@ from blacki.utils.timezone import now_utc
 from .catalog import HEALTH_STREAMS, SCOPE_PREFIX, HealthStream
 from .client import GoogleHealthApiError, GoogleHealthClient
 from .config import TokenEncryptionError
+from .normalize import _date_from_value
 from .service import GoogleHealthService
 from .storage import HealthConnection
 
@@ -37,9 +38,29 @@ class HealthArchiveWorker:
             candidates = []
             for connection in await self.service.storage.list_active_connections():
                 progress = await self.storage.progress(connection.telegram_user_id)
+                desired = await self.storage.history_start(
+                    connection.telegram_user_id,
+                    connection.health_user_id,
+                    self.service.config.archive_start_date,
+                )
                 for spec in HEALTH_STREAMS:
                     previous = progress.get(spec.key)
-                    if previous and previous.get("due", "") > now_utc().isoformat():
+                    covered = (previous or {}).get(
+                        "coveredStart", (previous or {}).get("historyStart")
+                    )
+                    extending = (
+                        spec.method == "rollUp"
+                        and previous
+                        and previous.get("status") == "complete"
+                        and desired
+                        and covered
+                        and desired < covered
+                    )
+                    if (
+                        previous
+                        and previous.get("due", "") > now_utc().isoformat()
+                        and not extending
+                    ):
                         continue
                     # Profile goes first so aggregate history can use membership date.
                     candidates.append(
@@ -73,7 +94,27 @@ class HealthArchiveWorker:
         state = dict(previous or {})
         now = now_utc()
         if state.get("status") == "complete":
-            state = {"pageSize": state["pageSize"]} if "pageSize" in state else {}
+            covered = state.get("coveredStart", state.get("historyStart"))
+            desired = await self.storage.history_start(
+                connection.telegram_user_id,
+                connection.health_user_id,
+                self.service.config.archive_start_date,
+            )
+            state = {
+                key: state[key]
+                for key in (
+                    "pageSize",
+                    "completed",
+                    "coveredStart",
+                    "earliestObservedDate",
+                )
+                if key in state
+            }
+            if spec.method == "rollUp" and desired and covered and desired < covered:
+                state["rangeEnd"] = datetime.combine(
+                    date.fromisoformat(covered), time.min, UTC
+                ).isoformat()
+
         state.setdefault("scanId", uuid.uuid4().hex)
         state.update(
             attempted=now.isoformat(),
@@ -148,6 +189,7 @@ class HealthArchiveWorker:
             records=[
                 {"representation": output_stream, "data": record} for record in records
             ],
+            observed_start=state.get("earliestObservedDate"),
         )
 
     async def _fetch(
@@ -210,14 +252,10 @@ class HealthArchiveWorker:
         elif spec.method == "reconcile":
             path += ":reconcile"
         elif spec.method == "rollUp":
-            lower = await self.storage.membership_start(
-                connection.telegram_user_id, connection.health_user_id
-            )
-            configured = self.service.config.archive_start_date
-            lower = (
-                min(value for value in (lower, configured) if value)
-                if lower or configured
-                else None
+            lower = await self.storage.history_start(
+                connection.telegram_user_id,
+                connection.health_user_id,
+                self.service.config.archive_start_date,
             )
             if lower is None or date.fromisoformat(lower) > now_utc().date():
                 state.update(
@@ -225,7 +263,7 @@ class HealthArchiveWorker:
                     due=(now_utc() + timedelta(minutes=5)).isoformat(),
                 )
                 return f"{spec.version}:{spec.method}", []
-            state.setdefault("historyStart", lower)
+            state["historyStart"] = min(state.get("historyStart", lower), lower)
             state.setdefault(
                 "rangeEnd",
                 datetime.combine(
@@ -239,6 +277,8 @@ class HealthArchiveWorker:
                 ),
                 end - timedelta(days=1),
             )
+            if state.get("pageToken"):
+                start = datetime.fromisoformat(state["rangeStart"])
             state["rangeStart"] = start.isoformat()
             path += ":rollUp"
             method = "POST"
@@ -294,6 +334,11 @@ class HealthArchiveWorker:
             state.update(pageToken=next_token)
         else:
             state.pop("pageToken", None)
+            if spec.method == "rollUp":
+                state["coveredStart"] = min(
+                    state.get("coveredStart", state["rangeStart"][:10]),
+                    state["rangeStart"][:10],
+                )
             if (
                 spec.method == "rollUp"
                 and state["rangeStart"][:10] > state["historyStart"]
@@ -315,6 +360,12 @@ class HealthArchiveWorker:
                 if state["status"] == "complete":
                     state.update(status="running", jsonFinished=True)
                     state.pop("due", None)
+        if spec.method in {"list", "reconcile"}:
+            observed = earliest_observation_date(spec.key, records)
+            if observed:
+                state["earliestObservedDate"] = min(
+                    state.get("earliestObservedDate", observed), observed
+                )
         state["pagesSeen"] = state.get("pagesSeen", 0) + 1
         state["recordsSeen"] = state.get("recordsSeen", 0) + len(records)
         return f"{spec.version}:{spec.method}", records
@@ -326,3 +377,41 @@ class HealthArchiveWorker:
             completed=now_utc().isoformat(),
             due=(now_utc() + timedelta(hours=24)).isoformat(),
         )
+
+
+def earliest_observation_date(
+    data_type: str, records: list[dict[str, Any]]
+) -> str | None:
+    """Inspect only a known data component's documented observation fields."""
+    parts = data_type.split("-")
+    field = parts[0] + "".join(part.title() for part in parts[1:])
+    dates = []
+    for record in records:
+        component = record.get(field)
+        if not isinstance(component, dict):
+            continue
+        daily = _date_from_value(component.get("date"))
+        if daily:
+            dates.append(daily)
+        for group, physical, civil in (
+            ("sampleTime", ("physicalTime",), ("civilTime",)),
+            ("interval", ("startTime", "endTime"), ("civilStartTime", "civilEndTime")),
+        ):
+            times = component.get(group)
+            if not isinstance(times, dict):
+                continue
+            for key in civil:
+                day = _date_from_value(times.get(key))
+                if day:
+                    dates.append(day)
+            for key in physical:
+                value = times.get(key)
+                if not isinstance(value, str):
+                    continue
+                try:
+                    instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                    if instant.tzinfo is not None:
+                        dates.append(instant.astimezone(UTC).date().isoformat())
+                except ValueError:
+                    continue
+    return min(dates) if dates else None

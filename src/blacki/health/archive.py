@@ -42,6 +42,31 @@ class HealthArchiveStorage(SqlStorage):
             )
         """)
 
+        await self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS google_health_archive_bounds (
+                owner TEXT NOT NULL, account TEXT NOT NULL,
+                observed_start TEXT NOT NULL,
+                PRIMARY KEY (owner, account)
+            )
+        """)
+
+    async def observed_start(self, owner: str) -> str | None:
+        rows = await self._fetch_all(
+            "SELECT min(observed_start) AS oldest FROM google_health_archive_bounds "
+            "WHERE owner = ?",
+            (owner,),
+        )
+        value = rows[0]["oldest"]
+        return str(value) if value is not None else None
+
+    async def history_start(
+        self, owner: str, account: str, configured: str | None
+    ) -> str | None:
+        membership = await self.membership_start(owner, account)
+        observed = await self.observed_start(owner)
+        candidates = [value for value in (membership, observed, configured) if value]
+        return min(candidates) if candidates else None
+
     async def cursor_seen(
         self, owner: str, stream: str, scan: str, token: str, request: str = ""
     ) -> bool:
@@ -66,6 +91,10 @@ class HealthArchiveStorage(SqlStorage):
             "DELETE FROM google_health_import_tokens WHERE owner = ?", (owner,)
         )
         if records:
+            await self._conn.execute(
+                "DELETE FROM google_health_archive_bounds WHERE owner = ?",
+                (owner,),
+            )
             await self._conn.execute(
                 "DELETE FROM google_health_archive WHERE owner = ?", (owner,)
             )
@@ -105,6 +134,7 @@ class HealthArchiveStorage(SqlStorage):
         expected: Mapping[str, Any] | None,
         checkpoint: Mapping[str, Any],
         records: list[dict[str, Any]],
+        observed_start: str | None = None,
     ) -> bool:
         """Reject stale work after disconnect, reconsent, or another page commit."""
         timestamp = now_utc().isoformat()
@@ -154,6 +184,13 @@ class HealthArchiveStorage(SqlStorage):
                                 ).encode()
                             ).hexdigest(),
                         ),
+                    )
+                if observed_start:
+                    await self._conn.execute(
+                        "INSERT INTO google_health_archive_bounds VALUES (?, ?, ?) "
+                        "ON CONFLICT(owner, account) DO UPDATE SET "
+                        "observed_start = min(observed_start, excluded.observed_start)",
+                        (owner, account, observed_start),
                     )
                 for record in records:
                     payload = json.dumps(
@@ -209,6 +246,7 @@ class HealthArchiveStorage(SqlStorage):
                     "attempted",
                     "error",
                     "historyStart",
+                    "coveredStart",
                     "rangeStart",
                     "rangeEnd",
                     "recordsSeen",
@@ -217,6 +255,20 @@ class HealthArchiveStorage(SqlStorage):
             }
             for spec in HEALTH_STREAMS
         }
+        observed = await self.observed_start(owner)
+        for spec in HEALTH_STREAMS:
+            state = statuses[spec.key]
+            covered = progress.get(spec.key, {}).get(
+                "coveredStart", state.get("historyStart")
+            )
+            if (
+                spec.method == "rollUp"
+                and state.get("status") == "complete"
+                and observed
+                and covered
+                and observed < covered
+            ):
+                state["status"] = "extension_pending"
         return {
             "observations_stored": int(count[0]["observations"]),
             "storage": "private_host_database",

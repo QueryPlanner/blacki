@@ -146,7 +146,7 @@ identities.
 | `GOOGLE_HEALTH_SYNC_INTERVAL_HOURS` | `12` | Background sync interval |
 | `GOOGLE_HEALTH_MANUAL_REFRESH_COOLDOWN_SECONDS` | `3600` | Per-user on-demand refresh cooldown |
 | `GOOGLE_HEALTH_OAUTH_STATE_TTL_SECONDS` | `600` | Lifetime of one-time OAuth state |
-| `GOOGLE_HEALTH_ARCHIVE_START_DATE` | Profile membership date | Optional earlier aggregation history boundary, `YYYY-MM-DD` |
+| `GOOGLE_HEALTH_ARCHIVE_START_DATE` | Earliest known observation or membership | Optional earlier aggregation history boundary, `YYYY-MM-DD` |
 
 Blacki requests the current Google Health read-only activity/fitness,
 health-metrics/measurements, sleep, ECG, irregular rhythm, profile, settings,

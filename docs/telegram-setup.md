@@ -136,8 +136,11 @@ exports do not block other exercise JSON pages.
 Listing imports all available history without a date filter. Floors use
 reconciliation because Google does not expose their original records. Total
 calories and calories in heart rate zones use minute rollups in one-day ranges,
-working backward to the profile membership date. That date is an inferred
-history boundary, not a provider guarantee that earlier imports cannot exist.
+working backward to the earlier of profile membership and the earliest known
+recorded observation. Older observations extend this bound monotonically,
+including across rescans and reauthorization. Previously completed aggregate
+streams resume only the newly uncovered interval. This remains an inferred
+boundary, not a guarantee that aggregate-only data cannot exist earlier.
 Set `GOOGLE_HEALTH_ARCHIVE_START_DATE=YYYY-MM-DD` to extend the boundary earlier
 or supply a missing membership date. A later override never shortens history.
 The archive status reports the actual date range. Empty days do not stop it.

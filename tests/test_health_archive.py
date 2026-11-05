@@ -690,3 +690,138 @@ async def test_compressed_provider_page_is_decoded_once(
         "active-energy-burned"
     ]
     assert state["status"] == "complete"
+
+
+async def test_older_observation_reopens_only_uncovered_aggregate_history(
+    archive: ArchiveHarness,
+) -> None:
+    await archive.run(15)
+    assert (await archive.storage.archive.coverage("telegram-chat-42"))["complete"]
+    # Only the next HRV scan is due; older evidence must reopen other streams.
+    future = (archive.clock[0] + timedelta(days=3)).isoformat()
+    states = await archive.storage.archive.progress("telegram-chat-42")
+    for key, state in states.items():
+        state["due"] = "" if key == "daily-heart-rate-variability" else future
+        await archive.conn.execute(
+            "UPDATE google_health_imports SET checkpoint=? WHERE owner=? AND stream=?",
+            (json.dumps(state), "telegram-chat-42", key),
+        )
+    archive.responses[
+        "/v4/users/me/dataTypes/daily-heart-rate-variability/dataPoints"
+    ] = [
+        {
+            "dataPoints": [
+                {
+                    "dailyHeartRateVariability": {
+                        "date": {"year": 2026, "month": 11, "day": 1}
+                    }
+                }
+            ]
+        }
+    ]
+    start = len(archive.requests)
+    await archive.worker.run_once(page_budget=1)
+    coverage = await archive.storage.archive.coverage("telegram-chat-42")
+    assert coverage["complete"] is False
+    assert coverage["streams"]["total-calories"]["status"] == "extension_pending"
+    assert (
+        coverage["streams"]["total-calories"]["completed"]
+        == states["total-calories"]["completed"]
+    )
+    # Restart and reconsent retain the historical evidence even when progress resets.
+    archive.worker = HealthArchiveWorker(archive.worker.service)
+    await archive.run(8)
+    rollups = [
+        json.loads(r.content)
+        for r in archive.requests[start:]
+        if r.url.path.endswith("/total-calories/dataPoints:rollUp")
+    ]
+    assert rollups[0]["range"]["endTime"] == "2026-11-03T00:00:00+00:00"
+    assert rollups[-1]["range"]["startTime"] == "2026-11-01T00:00:00+00:00"
+    assert (await archive.storage.archive.coverage("telegram-chat-42"))["complete"]
+    await archive.connect()
+    assert (
+        await archive.storage.archive.observed_start("telegram-chat-42") == "2026-11-01"
+    )
+    await archive.connect(account="new-account")
+    assert await archive.storage.archive.observed_start("telegram-chat-42") is None
+
+
+@pytest.mark.parametrize(
+    "component,expected",
+    [
+        ({"date": {"year": 2026, "month": 10, "day": 1}}, "2026-10-01"),
+        ({"sampleTime": {"physicalTime": "2026-10-01T01:00:00+02:00"}}, "2026-09-30"),
+        (
+            {
+                "sampleTime": {
+                    "civilTime": {"year": 2026, "month": 9, "day": 29},
+                    "physicalTime": "2026-10-01T00:00:00Z",
+                }
+            },
+            "2026-09-29",
+        ),
+        (
+            {
+                "interval": {
+                    "startTime": "2026-10-01T00:00:00Z",
+                    "civilStartTime": {"year": 2026, "month": 9, "day": 30},
+                }
+            },
+            "2026-09-30",
+        ),
+        ({"sampleTime": {"physicalTime": "bad"}}, None),
+        ({"sampleTime": {"physicalTime": "2026-10-01T00:00:00"}}, None),
+        ({"sampleTime": {"physicalTime": 42}}, None),
+    ],
+)
+async def test_observation_dates_extend_history_without_using_unrelated_dates(
+    archive: ArchiveHarness, component: dict[str, Any], expected: str | None
+) -> None:
+    archive.responses["/v4/users/me/dataTypes/active-energy-burned/dataPoints"] = [
+        {
+            "dataPoints": [
+                {
+                    "activeEnergyBurned": component,
+                    "metadata": {"date": {"year": 1900, "month": 1, "day": 1}},
+                }
+            ]
+        }
+    ]
+    await archive.run()
+    assert await archive.storage.archive.observed_start("telegram-chat-42") == expected
+
+
+async def test_aggregate_pagination_keeps_window_when_older_data_arrives(
+    archive: ArchiveHarness,
+) -> None:
+    path = "/v4/users/me/dataTypes/total-calories/dataPoints:rollUp"
+    archive.responses[path] = [
+        {"rollupDataPoints": [], "nextPageToken": "continue"},
+        {"rollupDataPoints": []},
+    ]
+    await archive.run(6)
+    state = (await archive.storage.archive.progress("telegram-chat-42"))[
+        "total-calories"
+    ]
+    assert state["pageToken"] == "continue"
+    # An independently committed recorded page extends the desired historical bound.
+    connection = await archive.storage.get_connection("telegram-chat-42")
+    assert connection is not None
+    await archive.storage.archive.commit_page(
+        owner="telegram-chat-42",
+        account="account",
+        generation=connection.generation,
+        stream="test-recorded-evidence",
+        expected=None,
+        checkpoint={"status": "complete"},
+        records=[],
+        observed_start="2026-11-01",
+    )
+    await archive.run(6)
+    bodies = [json.loads(r.content) for r in archive.requests if r.url.path == path]
+    assert bodies[0]["range"] == bodies[1]["range"]
+    assert bodies[1]["pageToken"] == "continue"
+    assert (await archive.storage.archive.progress("telegram-chat-42"))[
+        "total-calories"
+    ]["historyStart"] == "2026-11-01"
