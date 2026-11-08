@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import inspect
+import sys
+
 import pytest
 
+from blacki.miniapp.compiler import compile_program
 from blacki.miniapp.lang import (
+    MAX_EXPRESSION_OPERATORS,
     MAX_SOURCE_BYTES,
     BinaryOp,
     Call,
@@ -259,3 +264,66 @@ def test_parser_synthetic_tokens() -> None:
     ]
     with pytest.raises(LangError, match="expected an action name after '@'"):
         _Parser(tokens3).program()
+
+
+def _page_with_expression(expr: str) -> str:
+    return f'x = {expr}\nroot = Page("T", [Text("Hi")])'
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "- " * 200 + "1",
+        " + ".join(["1"] * 201),
+        "- " * MAX_EXPRESSION_OPERATORS + "1",  # exactly at the budget
+    ],
+    ids=["unary-200", "sum-200", "unary-at-budget"],
+)
+def test_operator_chains_within_budget_compile(expr: str) -> None:
+    """Chains a real page could write must parse, format and compile."""
+    program = parse(_page_with_expression(expr))
+    assert program.to_source()
+    assert "root" in compile_program(program)
+
+
+@pytest.mark.parametrize(
+    "expr",
+    [
+        "- " * (MAX_EXPRESSION_OPERATORS + 1) + "1",
+        " + ".join(["1"] * (MAX_EXPRESSION_OPERATORS + 2)),
+        "a" + ".b" * (MAX_EXPRESSION_OPERATORS + 1),
+        "- " * 2000 + "1",
+        " + ".join(["1"] * 3000),
+    ],
+    ids=["unary-over", "sum-over", "field-over", "unary-2000", "sum-3000"],
+)
+def test_operator_chains_over_budget_raise_lang_error(expr: str) -> None:
+    """Oversized chains fail as LangError, never as an uncaught RecursionError."""
+    with pytest.raises(
+        LangError,
+        match=f"an expression can have at most {MAX_EXPRESSION_OPERATORS} operators",
+    ):
+        parse(f"x = {expr}")
+
+
+def _stack_depth() -> int:
+    return len(inspect.stack(0))
+
+
+def test_parse_reports_real_recursion_failure_as_lang_error() -> None:
+    """Force a genuine RecursionError inside parse and check it is converted.
+
+    30 nested parentheses stay under the expression nesting check, so the
+    parser recurses about 9 frames per level and hits the lowered limit.
+    """
+    nested = "1"
+    for _ in range(30):
+        nested = f"({nested})"
+    original_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(_stack_depth() + 60)
+    try:
+        with pytest.raises(LangError, match="expression is nested too deeply") as info:
+            parse(f"x = {nested}")
+    finally:
+        sys.setrecursionlimit(original_limit)
+    assert isinstance(info.value.__cause__, RecursionError)

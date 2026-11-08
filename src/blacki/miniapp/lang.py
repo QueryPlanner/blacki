@@ -17,6 +17,9 @@ from typing import Any
 MAX_SOURCE_BYTES = 16 * 1024
 MAX_STATEMENTS = 200
 MAX_DEPTH = 8
+# Operators (unary -, binary ops, field access) per statement. Bounds the
+# recursion the parser and compiler use on left-deep chains like 1+1+1+...
+MAX_EXPRESSION_OPERATORS = 250
 
 
 class LangError(ValueError):
@@ -258,6 +261,7 @@ class _Parser:
         self.tokens = tokens
         self.pos = 0
         self.depth = 0
+        self.operators = 0
 
     def peek(self, offset: int = 0) -> Token:
         return self.tokens[min(self.pos + offset, len(self.tokens) - 1)]
@@ -294,7 +298,17 @@ class _Parser:
             if len(program.statements) > MAX_STATEMENTS:
                 raise LangError(f"more than {MAX_STATEMENTS} statements", tok.line)
 
+    def spend_operator(self, line: int) -> None:
+        """Count an operator against the per-statement budget."""
+        self.operators += 1
+        if self.operators > MAX_EXPRESSION_OPERATORS:
+            raise LangError(
+                f"an expression can have at most {MAX_EXPRESSION_OPERATORS} operators",
+                line,
+            )
+
     def statement(self) -> Statement:
+        self.operators = 0
         first = self.peek()
         is_var = self.accept("$")
         tok = self.next()
@@ -325,6 +339,7 @@ class _Parser:
         tok = self.peek()
         if tok.kind == "op" and tok.value in {"<", "<=", ">", ">=", "==", "!="}:
             self.pos += 1
+            self.spend_operator(tok.line)
             return BinaryOp(tok.line, tok.value, left, self.additive())
         return left
 
@@ -332,6 +347,7 @@ class _Parser:
         left = self.term()
         while self.peek().kind == "op" and self.peek().value in {"+", "-"}:
             tok = self.next()
+            self.spend_operator(tok.line)
             left = BinaryOp(tok.line, tok.value, left, self.term())
         return left
 
@@ -339,6 +355,7 @@ class _Parser:
         left = self.unary()
         while self.peek().kind == "op" and self.peek().value in {"*", "/"}:
             tok = self.next()
+            self.spend_operator(tok.line)
             left = BinaryOp(tok.line, tok.value, left, self.unary())
         return left
 
@@ -346,6 +363,7 @@ class _Parser:
         tok = self.peek()
         if tok.kind == "op" and tok.value == "-":
             self.pos += 1
+            self.spend_operator(tok.line)
             return Negate(tok.line, self.unary())
         return self.postfix()
 
@@ -355,6 +373,7 @@ class _Parser:
             tok = self.next()
             if tok.kind != "name":
                 raise LangError("expected a field name after '.'", tok.line)
+            self.spend_operator(tok.line)
             node = FieldAccess(tok.line, node, tok.value)
         return node
 
@@ -434,8 +453,15 @@ class _Parser:
 
 
 def parse(source: str) -> Program:
-    """Parse source text into a program. Raises LangError on bad syntax."""
-    return _Parser(tokenize(source)).program()
+    """Parse source text into a program. Raises LangError on bad syntax.
+
+    Recursion is bounded by the depth and operator budgets; a RecursionError
+    that still gets through is reported as a LangError, never as a crash.
+    """
+    try:
+        return _Parser(tokenize(source)).program()
+    except RecursionError as exc:
+        raise LangError("expression is nested too deeply") from exc
 
 
 # ---------------------------------------------------------------- formatting
