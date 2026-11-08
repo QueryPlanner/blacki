@@ -1331,7 +1331,6 @@ async def test_start_miniapp_skips_invalid_configuration(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A malformed Mini App port must disable the Mini App, not the main server."""
-    monkeypatch.setenv("MINIAPP_ENABLED", "true")
     monkeypatch.setenv("MINIAPP_PORT", "not-a-port")
 
     await miniapp_server._start_miniapp()
@@ -1349,7 +1348,6 @@ async def test_start_miniapp_serves_own_port_and_attaches_running_bot(
     """The Mini App runs on its own port; a running bot learns its launch URL."""
     from blacki.telegram.bot import TelegramBot
 
-    monkeypatch.setenv("MINIAPP_ENABLED", "true")
     monkeypatch.setenv("MINIAPP_PORT", "8091")
     monkeypatch.setenv("MINIAPP_PUBLIC_URL", "https://app.example.test")
     cast(Any, miniapp_server.env).log_level = "INFO"
@@ -1397,7 +1395,6 @@ async def test_start_miniapp_port_in_use_keeps_main_loop_alive(
     occupied.bind(("127.0.0.1", 0))
     occupied.listen()
     try:
-        monkeypatch.setenv("MINIAPP_ENABLED", "true")
         monkeypatch.setenv("MINIAPP_HOST", "127.0.0.1")
         monkeypatch.setenv("MINIAPP_PORT", str(occupied.getsockname()[1]))
         cast(Any, miniapp_server.env).log_level = "INFO"

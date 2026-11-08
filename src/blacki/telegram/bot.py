@@ -7,7 +7,6 @@ import contextlib
 import hashlib
 import hmac
 import logging
-import os
 import re
 from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
@@ -169,11 +168,6 @@ class VoiceTranscriber(Protocol):
 
     async def close(self) -> None:
         """Release any provider resources."""
-
-
-def _miniapp_enabled() -> bool:
-    """Whether the Mini App (and its /app command) is switched on."""
-    return os.getenv("MINIAPP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 
 
 class TelegramBot:
@@ -404,8 +398,7 @@ class TelegramBot:
                 description="Disconnect Gmail and remove credentials",
             ),
         ]
-        if _miniapp_enabled():
-            commands.append(BotCommand(command="app", description="Open Blacki's app"))
+        commands.append(BotCommand(command="app", description="Open Blacki's app"))
         if self.google_health_service is not None:
             commands.extend(
                 [

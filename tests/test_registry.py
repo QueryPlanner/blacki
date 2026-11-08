@@ -298,7 +298,9 @@ class TestBuildTools:
         tools = build_tools(config, include_user_scoped_tools=True)
 
         assert "send_text_to_speech" not in {tool.__name__ for tool in tools}
-        assert len(tools) == 6
+        # Six base tools plus the Mini App pair, which is always on for the root.
+        assert {"miniapp_read", "miniapp_write"} <= {tool.__name__ for tool in tools}
+        assert len(tools) == 8
         assert "Kokoro TTS disabled" in caplog.text
 
     def test_invalid_gmail_credentials_disable_only_gmail(
@@ -705,7 +707,7 @@ class TestMiniAppToolRegistration:
 
     def test_miniapp_tools_are_private_root_only(self) -> None:
         """Page read and write tools must never reach the public or worker agents."""
-        config = ToolConfig(weather_enabled=False, miniapp_enabled=True)
+        config = ToolConfig(weather_enabled=False)
 
         root_tools = build_tools(config, include_user_scoped_tools=True)
         worker_tools = build_tools(config, include_user_scoped_tools=False)
@@ -715,21 +717,12 @@ class TestMiniAppToolRegistration:
         assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in worker_tools}
         assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in default_tools}
 
-    def test_miniapp_tools_absent_when_disabled(self) -> None:
-        """A disabled Mini App must not expose its tools even to the root agent."""
-        config = ToolConfig(weather_enabled=False, miniapp_enabled=False)
-
-        root_tools = build_tools(config, include_user_scoped_tools=True)
-
-        assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in root_tools}
-
     def test_miniapp_skill_is_root_only(self) -> None:
         """The miniapp skill teaches the page language and must stay root-only."""
         skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
         config = ToolConfig(
             skills_dir=skills_dir,
             weather_enabled=False,
-            miniapp_enabled=True,
         )
 
         root_tools = build_tools(config, include_user_scoped_tools=True)
@@ -750,7 +743,6 @@ class TestMiniAppToolRegistration:
         config = ToolConfig(
             skills_dir=skills_dir,
             weather_enabled=False,
-            miniapp_enabled=True,
         )
 
         with patch("blacki.tools.skills.load_skill_from_dir", return_value=None):

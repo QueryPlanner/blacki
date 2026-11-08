@@ -36,10 +36,8 @@ class MiniAppConfig:
     session_ttl_seconds: int = 7200
 
     @classmethod
-    def from_environment(cls) -> MiniAppConfig | None:
-        """Return the config when ``MINIAPP_ENABLED`` is true, else None."""
-        if not _flag("MINIAPP_ENABLED"):
-            return None
+    def from_environment(cls) -> MiniAppConfig:
+        """Read and validate the Mini App settings. The Mini App is always on."""
         try:
             port = int(os.getenv("MINIAPP_PORT", "8090"))
             max_age = int(os.getenv("MINIAPP_INIT_DATA_MAX_AGE_SECONDS", "900"))
