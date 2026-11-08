@@ -736,3 +736,34 @@ class TestTelegramApiClient:
             )
 
         assert exc_info.value.retry_after == 30
+
+
+MINIAPP_MENU_BUTTON = {
+    "type": "web_app",
+    "text": "Open app",
+    "web_app": {"url": "https://app.example.test/miniapp/"},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chat_id", "expected_params"),
+    [
+        (None, {"menu_button": MINIAPP_MENU_BUTTON}),
+        (42, {"menu_button": MINIAPP_MENU_BUTTON, "chat_id": 42}),
+    ],
+)
+async def test_set_chat_menu_button_posts_web_app_payload(
+    chat_id: int | None, expected_params: dict[str, Any]
+) -> None:
+    """The menu button call must send the web_app payload, scoped only if asked."""
+    async with TelegramApiClient("test-token") as client:
+        with patch.object(
+            client, "_request", autospec=True, return_value=True
+        ) as request:
+            result = await client.set_chat_menu_button(
+                menu_button=MINIAPP_MENU_BUTTON, chat_id=chat_id
+            )
+
+    assert result is True
+    request.assert_awaited_once_with("setChatMenuButton", expected_params)

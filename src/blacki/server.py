@@ -7,6 +7,7 @@ interactive agent testing.
 
 import asyncio
 import logging
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -56,6 +57,9 @@ _google_health_scheduler = None
 _google_health_export_worker: Any = None
 _gmail_oauth_service: Any = None
 _google_health_backfill_tasks: set[asyncio.Task[None]] = set()
+_miniapp_server: Any = None
+_miniapp_task: asyncio.Task[None] | None = None
+_miniapp_socket: socket.socket | None = None
 
 
 def _shutdown_tracer_provider() -> None:
@@ -261,6 +265,111 @@ async def _start_reminder_scheduler() -> None:
     logger.info("Reminder scheduler started")
 
 
+def _bind_miniapp_socket(host: str, port: int) -> socket.socket:
+    """Bind the Mini App port synchronously so a conflict is caught here.
+
+    uvicorn calls sys.exit(1) when its own bind fails; inside a task that exit
+    would take the whole process down. Binding first turns it into an OSError.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+async def _serve_miniapp(server: uvicorn.Server, sock: socket.socket) -> None:
+    """Run the Mini App server; its failure must never stop the main process."""
+    try:
+        await server.serve(sockets=[sock])
+    except (OSError, SystemExit):
+        # SystemExit: uvicorn exits the process on startup failures.
+        logger.exception("Mini App server stopped; the bot and scheduler keep running")
+    finally:
+        sock.close()
+
+
+async def _start_miniapp() -> None:
+    """Serve the Telegram Mini App on its own port when MINIAPP_ENABLED is set.
+
+    A separate port means a tunnel for Telegram exposes only /miniapp, never
+    the dashboard or the ADK endpoints on the main port.
+    """
+    global _miniapp_server, _miniapp_task, _miniapp_socket
+
+    from contextlib import nullcontext
+
+    from .miniapp.config import MiniAppConfig, MiniAppConfigurationError
+    from .miniapp.routes import create_miniapp_app
+
+    try:
+        config = MiniAppConfig.from_environment()
+    except MiniAppConfigurationError:
+        logger.exception("Mini App configuration is invalid; Mini App disabled")
+        return
+    if config is None:
+        logger.info("Mini App not enabled (MINIAPP_ENABLED=false)")
+        return
+    miniapp = create_miniapp_app(config, env.telegram_bot_token)
+    try:
+        sock = _bind_miniapp_socket(config.host, config.port)
+    except OSError:
+        logger.exception(
+            "Mini App could not bind %s:%s; Mini App disabled",
+            config.host,
+            config.port,
+        )
+        return
+    # Attach only after the bind succeeds, so Telegram never gets a dead URL.
+    if _telegram_bot is not None:
+        _telegram_bot.attach_miniapp(config.launch_url)
+    server = uvicorn.Server(
+        uvicorn.Config(
+            miniapp,
+            host=config.host,
+            port=config.port,
+            proxy_headers=False,
+            lifespan="off",
+            log_level=env.log_level.lower(),
+        )
+    )
+    # The main server owns process signals; this nested server must not.
+    server.capture_signals = nullcontext  # type: ignore[method-assign,assignment]
+    _miniapp_server = server
+    _miniapp_socket = sock
+    _miniapp_task = asyncio.create_task(
+        _serve_miniapp(server, sock), name="miniapp_server"
+    )
+    logger.info("Mini App listening on http://%s:%s/miniapp/", config.host, config.port)
+
+
+async def _stop_miniapp() -> None:
+    """Stop the Mini App server if it is running."""
+    global _miniapp_server, _miniapp_task, _miniapp_socket
+
+    if _miniapp_server is not None:
+        _miniapp_server.should_exit = True
+    if _miniapp_task is not None:
+        try:
+            await asyncio.wait_for(_miniapp_task, timeout=5)
+        except (TimeoutError, asyncio.CancelledError):
+            _miniapp_task.cancel()
+        except Exception:
+            logger.exception("Mini App server stopped with an error")
+    from .miniapp.service import reset_miniapp_service
+
+    reset_miniapp_service()
+    _miniapp_server = None
+    _miniapp_task = None
+    if _miniapp_socket is not None:
+        _miniapp_socket.close()
+    _miniapp_socket = None
+
+
 async def _stop_telegram_bot() -> None:
     """Stop the Telegram bot."""
     if _telegram_bot:
@@ -357,8 +466,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             raise
 
         await _start_telegram_bot()
+        await _start_miniapp()
         yield
     finally:
+        await _stop_miniapp()
         await _stop_google_health()
         await _stop_gmail()
         await _stop_reminder_scheduler()

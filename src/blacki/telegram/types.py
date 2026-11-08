@@ -196,12 +196,19 @@ class TelegramResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class WebAppInfo(BaseModel):
+    """A Telegram Mini App to open from a button."""
+
+    url: str
+
+
 class InlineKeyboardButton(BaseModel):
     """A button for an inline keyboard."""
 
     text: str
     url: str | None = None
     callback_data: str | None = Field(None, max_length=64)
+    web_app: WebAppInfo | None = None
 
 
 class InlineKeyboardMarkup(BaseModel):

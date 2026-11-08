@@ -696,3 +696,64 @@ class TestBuildDeclarativeDbTools:
         tools = _build_declarative_db_tools()
 
         assert len(tools) == 7
+
+
+class TestMiniAppToolRegistration:
+    """The Mini App tools and skill belong to the private Telegram root agent."""
+
+    MINIAPP_TOOLS = {"miniapp_read", "miniapp_write"}
+
+    def test_miniapp_tools_are_private_root_only(self) -> None:
+        """Page read and write tools must never reach the public or worker agents."""
+        config = ToolConfig(weather_enabled=False, miniapp_enabled=True)
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+        default_tools = build_tools(config)
+
+        assert self.MINIAPP_TOOLS.issubset({tool.__name__ for tool in root_tools})
+        assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in worker_tools}
+        assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in default_tools}
+
+    def test_miniapp_tools_absent_when_disabled(self) -> None:
+        """A disabled Mini App must not expose its tools even to the root agent."""
+        config = ToolConfig(weather_enabled=False, miniapp_enabled=False)
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+
+        assert not self.MINIAPP_TOOLS & {tool.__name__ for tool in root_tools}
+
+    def test_miniapp_skill_is_root_only(self) -> None:
+        """The miniapp skill teaches the page language and must stay root-only."""
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            miniapp_enabled=True,
+        )
+
+        root_tools = build_tools(config, include_user_scoped_tools=True)
+        worker_tools = build_tools(config, include_user_scoped_tools=False)
+
+        root_skills = next(
+            tool for tool in root_tools if isinstance(tool, McpSkillToolset)
+        )
+        worker_skills = next(
+            tool for tool in worker_tools if isinstance(tool, McpSkillToolset)
+        )
+        assert "miniapp" in root_skills._skills
+        assert "miniapp" not in worker_skills._skills
+
+    def test_missing_miniapp_skill_file_registers_no_skill(self) -> None:
+        """A missing packaged miniapp skill must not register an empty skill."""
+        skills_dir = Path(__file__).parent.parent / "src" / "blacki" / "skills"
+        config = ToolConfig(
+            skills_dir=skills_dir,
+            weather_enabled=False,
+            miniapp_enabled=True,
+        )
+
+        with patch("blacki.tools.skills.load_skill_from_dir", return_value=None):
+            root_tools = build_tools(config, include_user_scoped_tools=True)
+
+        assert not any(isinstance(tool, McpSkillToolset) for tool in root_tools)

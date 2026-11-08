@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from blacki.gmail.storage import SqliteGmailStorage
     from blacki.health.nutrition_worker import NutritionExportWorker
     from blacki.health.storage import SqliteGoogleHealthStorage
+    from blacki.miniapp.store import MiniAppStore
     from blacki.reminders.storage import SqliteReminderStorage
     from blacki.telegram.access import TelegramAccessStorage
     from blacki.user_files.storage import SqliteUserFileStorage
@@ -155,6 +156,7 @@ class AppContainer:
     _telegram_access_storage: TelegramAccessStorage | None = field(
         default=None, init=False, repr=False
     )
+    _miniapp_store: MiniAppStore | None = field(default=None, init=False, repr=False)
     # Set by the server once the Google Health export worker is running, so
     # MealService.mutate() can wake the dispatch loop right after a commit
     # instead of waiting up to 60s for the next poll. None when the
@@ -237,6 +239,7 @@ class AppContainer:
         await self.gmail_storage.initialize()
         await self.user_file_storage.initialize()
         await self.telegram_access_storage.initialize()
+        await self.miniapp_store.initialize()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -327,3 +330,12 @@ class AppContainer:
 
             self._telegram_access_storage = TelegramAccessStorage(self.conn, self._lock)
         return self._telegram_access_storage
+
+    @property
+    def miniapp_store(self) -> MiniAppStore:
+        """Get or create Telegram Mini App page, card and preference storage."""
+        if self._miniapp_store is None:
+            from blacki.miniapp.store import MiniAppStore
+
+            self._miniapp_store = MiniAppStore(self.conn, self._lock)
+        return self._miniapp_store

@@ -1,0 +1,19 @@
+# Training: built-in, locked.
+root = Page("Training", [figures, weekly, logger, recent], subtitle: "Sessions from your tracker and from Blacki's log.")
+weeks = Query("training.weekly", {weeks: 10})
+sessions = Query("training.sessions", {days: 30})
+
+figures = StatRow([thisWeek, avgWeek, count])
+thisWeek = Stat("This week", Latest(weeks.minutes), unit: "min", tone: "hot")
+avgWeek = Stat("Weekly average", Round(Avg(weeks.minutes)), unit: "min")
+count = Stat("Sessions, 30 days", Count(sessions), tone: "inverse")
+
+weekly = Section("Minutes a week", [weekBars])
+weekBars = KeyBars(weeks, "week", "minutes", highlight: minutes >= Avg(weeks.minutes))
+
+logger = Section("Log a lift", [lift, rest])
+lift = SetLogger("Back squat", [[60, 8], [70, 6], [75, 5]])
+rest = RestTimer(seconds: 90)
+
+recent = Section("Recent sessions", [sessionList])
+sessionList = List(sessions, "date", value: "minutes", subtitle: "name", unit: "min", limit: 10)

@@ -50,6 +50,7 @@ class ToolConfig:
     gmail_config: GmailConfig | None = field(default=None, repr=False)
     r2_files_enabled: bool = False
     browser_takeover_enabled: bool = False
+    miniapp_enabled: bool = False
 
 
 def build_tools(
@@ -118,9 +119,24 @@ def build_tools(
     ):
         tools.extend(_build_browser_takeover_tools())
 
+    if include_user_scoped_tools and config.miniapp_enabled:
+        tools.extend(_build_miniapp_tools())
+
     tools.extend(_build_memory_tools())
 
     return tools
+
+
+def _build_miniapp_tools() -> list[Any]:
+    """Build Blacki's two private Mini App tools."""
+    try:
+        from blacki.tools.miniapp import miniapp_read, miniapp_write
+
+        logger.info("Mini App tools enabled for the Telegram root agent")
+        return [miniapp_read, miniapp_write]
+    except ImportError as exc:  # pragma: no cover
+        logger.warning("Mini App tools disabled: %s", exc)
+        return []
 
 
 def _build_exa_search_tools() -> list[Any]:
@@ -277,6 +293,12 @@ def _build_skill_tools(
                     loaded_skills.append((gmail_skill, gmail_toolset))
             except (GmailCredentialError, GmailConfigurationError) as exc:
                 logger.warning("Gmail API disabled: %s", exc)
+
+        if include_user_scoped_tools and config.miniapp_enabled:
+            miniapp_skill = load_skill_from_dir(skills_dir / "miniapp")
+            if miniapp_skill:
+                logger.info("Mini App skill enabled for the root agent")
+                loaded_skills.append((miniapp_skill, None))
 
         if loaded_skills:
             return [McpSkillToolset(skills=loaded_skills)]
@@ -437,6 +459,8 @@ def build_tool_config_from_env() -> ToolConfig:
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()
         in ("true", "1", "yes"),
         browser_takeover_enabled=browser_takeover_enabled,
+        miniapp_enabled=os.getenv("MINIAPP_ENABLED", "false").strip().lower()
+        in ("true", "1", "yes"),
     )
 
 

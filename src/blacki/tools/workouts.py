@@ -447,7 +447,35 @@ async def log_training(
     user_id = tool_context.user_id
     if not user_id:
         return {"status": "error", "message": "Missing user_id in tool_context"}
+    return await log_training_for_user(
+        user_id,
+        session_type=session_type,
+        cycle_day=cycle_day,
+        workout_date=workout_date,
+        exercises=exercises,
+        metrics=metrics,
+        notes=notes,
+        completion_status=completion_status,
+        advance_day=advance_day,
+    )
 
+
+async def log_training_for_user(
+    user_id: str,
+    *,
+    session_type: str,
+    cycle_day: int | None = None,
+    workout_date: str | None = None,
+    exercises: list[dict[str, Any]] | None = None,
+    metrics: dict[str, Any] | None = None,
+    notes: str | None = None,
+    completion_status: str = "completed",
+    advance_day: bool = False,
+) -> dict[str, Any]:
+    """Log a training session for one user; shared by the tool and the Mini App.
+
+    Keeps program, cycle-day and state-advance handling in one place.
+    """
     normalized_session_type = session_type.lower()
     if normalized_session_type not in SESSION_TYPES:
         return {
