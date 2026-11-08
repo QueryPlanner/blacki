@@ -268,6 +268,8 @@ async def test_server_lifespan_closes_search_clients(
         patch.object(server, "init_container", new=init_container),
         patch.object(server, "close_container", new=close_container),
         patch.object(server, "_start_telegram_bot", new=AsyncMock()),
+        # The Mini App is always on; these tests check shutdown, not its port.
+        patch.object(server, "_start_miniapp", new=AsyncMock()),
         patch.object(server, "_stop_telegram_bot", new=AsyncMock()),
         patch.object(server, "_stop_reminder_scheduler", new=AsyncMock()),
         patch.object(
@@ -380,6 +382,8 @@ async def test_lifespan_tolerates_container_closed_during_runtime(
         ),
         patch.object(server, "close_container", new=close_container),
         patch.object(server, "_start_telegram_bot", new=AsyncMock()),
+        # The Mini App is always on; these tests check shutdown, not its port.
+        patch.object(server, "_start_miniapp", new=AsyncMock()),
         patch.object(server, "_stop_telegram_bot", new=AsyncMock()),
         patch.object(server, "_stop_reminder_scheduler", new=AsyncMock()),
         patch.object(server.validation, "validate_configuration", return_value=[]),
