@@ -115,6 +115,33 @@ def test_browser_takeover_enables_content_redaction(
     assert private_tool_privacy_enabled() is True
 
 
+def test_miniapp_enables_content_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Mini App holds private pages and data, so it must redact spans alone."""
+    import os
+
+    for name in (
+        "GOOGLE_HEALTH_CLIENT_ID",
+        "GOOGLE_HEALTH_CLIENT_SECRET",
+        "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+        "KOKORO_TTS_BASE_URL",
+        "R2_FILES_ENABLED",
+        "BROWSER_TAKEOVER_PUBLIC_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("MINIAPP_ENABLED", "false")
+    assert private_tool_privacy_enabled() is False
+
+    # Restored by monkeypatch after the test; configure_... overwrites them.
+    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "true")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+    monkeypatch.setenv("MINIAPP_ENABLED", "true")
+
+    assert private_tool_privacy_enabled() is True
+    assert configure_private_tool_privacy() is True
+    assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
+
+
 def test_private_tool_app_removes_content_logging_plugin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

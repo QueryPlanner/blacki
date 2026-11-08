@@ -61,6 +61,11 @@ def google_health_enabled() -> bool:
     return google_health_configured_from_environment()
 
 
+def miniapp_enabled() -> bool:
+    """Return whether the Telegram Mini App, which serves private pages, is on."""
+    return os.getenv("MINIAPP_ENABLED", "false").strip().lower() in _ENABLED_VALUES
+
+
 def private_tool_privacy_enabled() -> bool:
     """Return whether any configured tool needs content-level redaction."""
     return (
@@ -68,6 +73,7 @@ def private_tool_privacy_enabled() -> bool:
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
+        or miniapp_enabled()
         or bool(os.getenv("BROWSER_TAKEOVER_PUBLIC_URL", "").strip())
     )
 
