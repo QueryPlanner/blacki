@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from .auth import InitDataError, SessionStore, verify_init_data
-from .config import MiniAppConfig
+from .config import LOOPBACK_HOSTS, MiniAppConfig
 from .service import ActionError, get_miniapp_service, hooks
 from .sources import MiniAppUser
 
@@ -38,7 +38,6 @@ _HEADERS: Mapping[str, str] = {
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Cross-Origin-Resource-Policy": "same-origin",
 }
-_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 _PROXY_HEADERS = (
     "x-forwarded-for",
     "x-forwarded-host",
@@ -95,7 +94,11 @@ def _is_strict_loopback(request: Request) -> bool:
     """True only for a direct local request that no proxy or tunnel touched."""
     client = request.scope.get("client")
     host_header = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]")
-    if not client or client[0] not in _LOOPBACK or host_header not in _LOOPBACK:
+    if (
+        not client
+        or client[0] not in LOOPBACK_HOSTS
+        or host_header not in LOOPBACK_HOSTS
+    ):
         return False
     return not any(h in request.headers for h in _PROXY_HEADERS)
 
@@ -104,7 +107,6 @@ def create_miniapp_app(config: MiniAppConfig, bot_token: str | None) -> FastAPI:
     """Build the standalone Mini App web app."""
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     sessions = SessionStore(config.session_ttl_seconds)
-    dev_users: set[int] = set()
 
     async def current_user(authorization: str | None) -> MiniAppUser:
         token = (authorization or "").removeprefix("Bearer ").strip()
@@ -112,9 +114,7 @@ def create_miniapp_app(config: MiniAppConfig, bot_token: str | None) -> FastAPI:
         if user_id is None:
             raise HTTPException(401, "sign in again")
         # Re-check access every request so a rotated access code revokes sessions.
-        if user_id not in dev_users and (
-            hooks.authorize is None or not await hooks.authorize(user_id)
-        ):
+        if hooks.authorize is None or not await hooks.authorize(user_id):
             raise HTTPException(403, "no access")
         return MiniAppUser(user_id)
 
@@ -141,7 +141,9 @@ def create_miniapp_app(config: MiniAppConfig, bot_token: str | None) -> FastAPI:
             if not config.dev_shortcut_enabled or not _is_strict_loopback(request):
                 raise HTTPException(403, "the local test sign-in is off")
             user_id = int(config.dev_telegram_user_id or 0)
-            dev_users.add(user_id)
+            # The dev identity gets no bypass: it must pass the same access check.
+            if hooks.authorize is None or not await hooks.authorize(user_id):
+                raise HTTPException(403, "no access")
             logger.warning("Mini App local test sign-in used for a configured user")
             return _json({"token": sessions.issue(user_id), "dev": True})
         if not bot_token:

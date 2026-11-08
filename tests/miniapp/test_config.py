@@ -40,20 +40,51 @@ def test_from_environment_custom_and_dev_shortcut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MINIAPP_ENABLED", "1")
-    monkeypatch.setenv("MINIAPP_HOST", "0.0.0.0")  # noqa: S104
+    monkeypatch.setenv("MINIAPP_HOST", "::1")
     monkeypatch.setenv("MINIAPP_PORT", "8888")
     monkeypatch.setenv("MINIAPP_INIT_DATA_MAX_AGE_SECONDS", "300")
     monkeypatch.setenv("MINIAPP_DEV_TELEGRAM_USER_ID", "123456")
+    monkeypatch.setenv("MINIAPP_ALLOW_DEV_SIGN_IN", "true")
     monkeypatch.delenv("MINIAPP_PUBLIC_URL", raising=False)
 
     cfg = MiniAppConfig.from_environment()
     assert cfg is not None
-    assert cfg.host == "0.0.0.0"  # noqa: S104
+    assert cfg.host == "::1"
     assert cfg.port == 8888
     assert cfg.init_data_max_age_seconds == 300
     assert cfg.dev_telegram_user_id == 123456
     assert cfg.dev_shortcut_enabled is True
     assert cfg.launch_url is None
+
+
+def test_dev_user_id_alone_does_not_enable_dev_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stray user id must not open a local sign-in without the explicit flag."""
+    monkeypatch.setenv("MINIAPP_ENABLED", "true")
+    monkeypatch.setenv("MINIAPP_DEV_TELEGRAM_USER_ID", "123456")
+    monkeypatch.delenv("MINIAPP_ALLOW_DEV_SIGN_IN", raising=False)
+    monkeypatch.delenv("MINIAPP_PUBLIC_URL", raising=False)
+
+    cfg = MiniAppConfig.from_environment()
+    assert cfg is not None
+    assert cfg.dev_telegram_user_id == 123456
+    assert cfg.allow_dev_sign_in is False
+    assert cfg.dev_shortcut_enabled is False
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_dev_sign_in_allowed_on_loopback_hosts(host: str) -> None:
+    cfg = MiniAppConfig(host=host, dev_telegram_user_id=123456, allow_dev_sign_in=True)
+    cfg.validate()
+    assert cfg.dev_shortcut_enabled is True
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "miniapp.internal"])  # noqa: S104
+def test_dev_sign_in_property_fails_closed_on_non_loopback(host: str) -> None:
+    """Even a hand-built config never enables dev sign-in on a reachable bind."""
+    cfg = MiniAppConfig(host=host, dev_telegram_user_id=123456, allow_dev_sign_in=True)
+    assert cfg.dev_shortcut_enabled is False
 
 
 def test_public_url_and_launch_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -99,6 +130,18 @@ def test_public_url_and_launch_url(monkeypatch: pytest.MonkeyPatch) -> None:
         (
             {"MINIAPP_PUBLIC_URL": "https://example.com#frag"},
             "MINIAPP_PUBLIC_URL can't contain credentials, a query or a fragment",
+        ),
+        (
+            {"MINIAPP_ALLOW_DEV_SIGN_IN": "true"},
+            "MINIAPP_ALLOW_DEV_SIGN_IN needs MINIAPP_DEV_TELEGRAM_USER_ID",
+        ),
+        (
+            {
+                "MINIAPP_ALLOW_DEV_SIGN_IN": "true",
+                "MINIAPP_DEV_TELEGRAM_USER_ID": "123456",
+                "MINIAPP_HOST": "0.0.0.0",  # noqa: S104
+            },
+            "MINIAPP_ALLOW_DEV_SIGN_IN needs MINIAPP_HOST to be a loopback address",
         ),
     ],
 )

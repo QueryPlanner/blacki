@@ -16,6 +16,9 @@ class MiniAppConfigurationError(ValueError):
     """Raised when Mini App settings are unsafe or incomplete."""
 
 
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
 def _flag(name: str) -> bool:
     return os.getenv(name, "false").strip().lower() in {"1", "true", "yes"}
 
@@ -28,6 +31,7 @@ class MiniAppConfig:
     port: int = 8090
     public_url: str | None = None
     dev_telegram_user_id: int | None = None
+    allow_dev_sign_in: bool = False
     init_data_max_age_seconds: int = 900
     session_ttl_seconds: int = 7200
 
@@ -49,12 +53,23 @@ class MiniAppConfig:
             port=port,
             public_url=public_url,
             dev_telegram_user_id=dev_user,
+            allow_dev_sign_in=_flag("MINIAPP_ALLOW_DEV_SIGN_IN"),
             init_data_max_age_seconds=max_age,
         )
         config.validate()
         return config
 
     def validate(self) -> None:
+        if self.allow_dev_sign_in:
+            if self.dev_telegram_user_id is None:
+                raise MiniAppConfigurationError(
+                    "MINIAPP_ALLOW_DEV_SIGN_IN needs MINIAPP_DEV_TELEGRAM_USER_ID"
+                )
+            if self.host not in LOOPBACK_HOSTS:
+                raise MiniAppConfigurationError(
+                    "MINIAPP_ALLOW_DEV_SIGN_IN needs MINIAPP_HOST to be a loopback "
+                    "address (127.0.0.1, ::1 or localhost)"
+                )
         if not 1024 <= self.port <= 65535:
             raise MiniAppConfigurationError(
                 "MINIAPP_PORT must be between 1024 and 65535"
@@ -76,8 +91,18 @@ class MiniAppConfig:
 
     @property
     def dev_shortcut_enabled(self) -> bool:
-        """The local test identity only works when no public URL is configured."""
-        return self.dev_telegram_user_id is not None and self.public_url is None
+        """Local test sign-in: explicit opt-in, loopback bind, no public URL.
+
+        A reverse proxy on the same host can rewrite Host and hide its origin, so
+        the request checks alone cannot prove a caller is local. The explicit
+        opt-in flag is the real gate; the loopback bind limits the blast radius.
+        """
+        return (
+            self.allow_dev_sign_in
+            and self.dev_telegram_user_id is not None
+            and self.public_url is None
+            and self.host in LOOPBACK_HOSTS
+        )
 
     @property
     def launch_url(self) -> str | None:

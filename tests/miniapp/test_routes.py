@@ -78,6 +78,7 @@ async def service() -> AsyncGenerator[MiniAppService]:
 def config() -> MiniAppConfig:
     return MiniAppConfig(
         dev_telegram_user_id=12345,
+        allow_dev_sign_in=True,
         session_ttl_seconds=3600,
         init_data_max_age_seconds=86400,
     )
@@ -201,7 +202,8 @@ async def test_session_dev_and_telegram(config: MiniAppConfig) -> None:
     async with AsyncClient(
         transport=transport, base_url="http://localhost:8090"
     ) as client:
-        # 1. Dev shortcut success
+        # 1. Dev shortcut success (the dev user still needs access)
+        hooks.authorize = _authorizer(True)
         r_dev = await client.post("/miniapp/api/session", json={"dev": True})
         assert r_dev.status_code == 200
         data = r_dev.json()
@@ -253,6 +255,117 @@ async def test_session_dev_and_telegram(config: MiniAppConfig) -> None:
         )
         assert r_auth.status_code == 200
         assert r_auth.json()["dev"] is False
+
+
+@pytest.mark.asyncio
+async def test_dev_sign_in_requires_explicit_opt_in() -> None:
+    """A dev user id alone, from a real loopback caller, must not sign in."""
+    off = MiniAppConfig(dev_telegram_user_id=12345, allow_dev_sign_in=False)
+    hooks.authorize = _authorizer(True)
+    app = create_miniapp_app(off, bot_token="123456:ABC-DEF")
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:8090"
+    ) as client:
+        response = await client.post("/miniapp/api/session", json={"dev": True})
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("client_ip", "host", "extra_headers"),
+    [
+        ("203.0.113.9", "localhost:8090", {}),  # remote peer, loopback Host
+        ("127.0.0.1", "miniapp.example.com", {}),  # proxy keeps its public Host
+        (
+            "127.0.0.1",
+            "localhost:8090",
+            {"x-forwarded-for": "203.0.113.9"},
+        ),  # proxy adds forwarding headers
+    ],
+)
+async def test_dev_sign_in_refused_for_remote_or_proxied_callers(
+    config: MiniAppConfig,
+    client_ip: str,
+    host: str,
+    extra_headers: dict[str, str],
+) -> None:
+    hooks.authorize = _authorizer(True)
+    app = create_miniapp_app(config, bot_token="123456:ABC-DEF")
+    transport = ASGITransport(app=app, client=(client_ip, 12345))
+    async with AsyncClient(transport=transport, base_url=f"http://{host}") as client:
+        response = await client.post(
+            "/miniapp/api/session", json={"dev": True}, headers=extra_headers
+        )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_dev_sign_in_rewritten_loopback_host_relies_on_opt_in_flag(
+    config: MiniAppConfig,
+) -> None:
+    """Documents the residual risk: a same-host proxy that rewrites Host to
+    localhost and adds no forwarding headers looks local to the request checks.
+    Only the explicit MINIAPP_ALLOW_DEV_SIGN_IN flag stops it, so the flag must
+    stay off whenever a proxy fronts the Mini App port.
+    """
+    hooks.authorize = _authorizer(True)
+    on = create_miniapp_app(config, bot_token="123456:ABC-DEF")
+    transport = ASGITransport(app=on, client=("127.0.0.1", 12345))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:8090"
+    ) as client:
+        assert (
+            await client.post("/miniapp/api/session", json={"dev": True})
+        ).status_code == 200
+
+    off = MiniAppConfig(dev_telegram_user_id=12345, allow_dev_sign_in=False)
+    off_app = create_miniapp_app(off, bot_token="123456:ABC-DEF")
+    off_transport = ASGITransport(app=off_app, client=("127.0.0.1", 12345))
+    async with AsyncClient(
+        transport=off_transport, base_url="http://localhost:8090"
+    ) as client:
+        assert (
+            await client.post("/miniapp/api/session", json={"dev": True})
+        ).status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorizer", [None, False], ids=["no-hook", "denied"])
+async def test_dev_sign_in_still_needs_access(
+    config: MiniAppConfig, authorizer: bool | None
+) -> None:
+    """The opted-in dev identity is subject to the same access check."""
+    hooks.authorize = None if authorizer is None else _authorizer(authorizer)
+    app = create_miniapp_app(config, bot_token="123456:ABC-DEF")
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:8090"
+    ) as client:
+        response = await client.post("/miniapp/api/session", json={"dev": True})
+    assert response.status_code == 403
+    assert response.json() == {"error": "no access"}
+
+
+@pytest.mark.asyncio
+async def test_dev_user_loses_access_when_revoked(
+    config: MiniAppConfig, service: MiniAppService
+) -> None:
+    """Dev sessions get no bypass: revoking access ends them on the next request."""
+    app = create_miniapp_app(config, bot_token="123456:ABC-DEF")
+    transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+    async with AsyncClient(
+        transport=transport, base_url="http://localhost:8090"
+    ) as client:
+        hooks.authorize = _authorizer(True)
+        token = (await client.post("/miniapp/api/session", json={"dev": True})).json()[
+            "token"
+        ]
+        hooks.authorize = _authorizer(False)
+        response = await client.get(
+            "/miniapp/api/nav", headers={"Authorization": f"Bearer {token}"}
+        )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -308,6 +421,7 @@ async def test_auth_headers_and_revocation(
 async def test_pages_and_cards_endpoints(
     config: MiniAppConfig, service: MiniAppService
 ) -> None:
+    hooks.authorize = _authorizer(True)
     app = create_miniapp_app(config, bot_token="123456:ABC-DEF")
     transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
     async with AsyncClient(
@@ -355,6 +469,7 @@ async def test_pages_and_cards_endpoints(
 
 @pytest.mark.asyncio
 async def test_action_endpoint(config: MiniAppConfig, service: MiniAppService) -> None:
+    hooks.authorize = _authorizer(True)
     app = create_miniapp_app(config, bot_token="123456:ABC-DEF")
     transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
     async with AsyncClient(
