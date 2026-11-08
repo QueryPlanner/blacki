@@ -573,7 +573,7 @@ def test_production_publishes_miniapp_on_loopback_only() -> None:
 
     assert service["ports"] == [
         "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8080}:8080",
-        "127.0.0.1:8090:8090",
+        "127.0.0.1:8443:8090",
     ]
     # The container binds all interfaces; the host publish above is loopback only.
     assert service["environment"]["MINIAPP_HOST"] == "0.0.0.0"  # noqa: S104
@@ -704,7 +704,7 @@ def test_production_overlay_defeats_hostile_environment_overrides() -> None:
             "mode": "ingress",
             "host_ip": "127.0.0.1",
             "target": 8090,
-            "published": "8090",
+            "published": "8443",
             "protocol": "tcp",
         },
     ]

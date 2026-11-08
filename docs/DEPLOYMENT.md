@@ -162,30 +162,31 @@ Do not use Tailscale Funnel for this dashboard.
 ## Telegram Mini App
 
 The Mini App listens on port 8090 inside the container. Production Compose
-publishes it on `127.0.0.1` only, so it is never reachable on `HOST_BIND_IP`.
-Tailscale Serve reaches it through that loopback port.
+publishes it on `127.0.0.1:8443` only, so it is never reachable on
+`HOST_BIND_IP`. Tailscale Serve reaches it through that loopback port.
 
 1. Set the `MINIAPP_PUBLIC_URL` GitHub secret to the HTTPS address your phone
    will open, without `/miniapp/`. Include a port only if you use one. Telegram
    requires HTTPS outside its test environment. Deployment writes this secret to
    `.env`, so do not set it by hand on the server; the next deploy would
    overwrite it.
-2. Deploy the service as usual so the Mini App is listening on port 8090.
+2. Deploy the service as usual so the Mini App is published on `127.0.0.1:8443`.
 3. On the VPS, check the current Serve configuration first:
 
    ```bash
    tailscale serve status
    ```
 
-4. Add an HTTPS route for the Mini App. Choose a port that the dashboard's
-   route does not use; the dashboard route above claims port 443 at `/`.
+4. Add an HTTPS route for the Mini App. The dashboard route above claims port
+   443 at `/`, so use port 8443 for the Mini App. The route proxies to the host
+   publish, not the container port.
 
    ```text
-   tailscale serve --bg --https=<port> http://127.0.0.1:8090
+   tailscale serve --bg --https=8443 http://127.0.0.1:8443
    ```
 
-5. Confirm `MINIAPP_PUBLIC_URL` matches that address, including the port if you
-   used one.
+5. Confirm `MINIAPP_PUBLIC_URL` matches that address, including the port:
+   `https://<machine>.<tailnet>.ts.net:8443`.
 
 Opening the address in a normal browser on a tailnet device loads the page but
 cannot sign in, because sign-in needs Telegram's launch data. That is expected.
@@ -194,7 +195,7 @@ Send `/app` to the bot in Telegram to test the real flow.
 To stop the Mini App route:
 
 ```text
-tailscale serve --https=<port> off
+tailscale serve --https=8443 off
 ```
 
 Do not use Tailscale Funnel for the Mini App. Funnel makes the address public.
