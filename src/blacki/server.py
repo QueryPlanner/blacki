@@ -294,7 +294,7 @@ async def _serve_miniapp(server: uvicorn.Server, sock: socket.socket) -> None:
 
 
 async def _start_miniapp() -> None:
-    """Serve the Telegram Mini App on its own port when MINIAPP_ENABLED is set.
+    """Serve the Telegram Mini App on its own port.
 
     A separate port means a tunnel for Telegram exposes only /miniapp, never
     the dashboard or the ADK endpoints on the main port.
@@ -310,9 +310,6 @@ async def _start_miniapp() -> None:
         config = MiniAppConfig.from_environment()
     except MiniAppConfigurationError:
         logger.exception("Mini App configuration is invalid; Mini App disabled")
-        return
-    if config is None:
-        logger.info("Mini App not enabled (MINIAPP_ENABLED=false)")
         return
     miniapp = create_miniapp_app(config, env.telegram_bot_token)
     try:

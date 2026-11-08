@@ -101,7 +101,7 @@ async def _send_card_button(
     except ValueError:
         return False
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    if config is None or not config.launch_url or not token:
+    if not config.launch_url or not token:
         return False
     thread = tool_context.state.get("telegram_thread_id")
     try:

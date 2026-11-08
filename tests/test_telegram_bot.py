@@ -1616,8 +1616,9 @@ class TestTelegramBotLifecycle:
 
         mock_api.set_my_commands.assert_called_once()
         commands = mock_api.set_my_commands.call_args.args[0]
-        assert len(commands) == 7
+        assert len(commands) == 8
         assert commands[0].command == "start"
+        assert "app" in {command.command for command in commands}
         assert {command.command for command in commands} >= {
             "model",
             "thinking",

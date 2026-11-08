@@ -245,15 +245,11 @@ async def test_app_command_sends_open_app_web_app_button() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("env_value", "expected"), [("true", True), ("false", False)])
-async def test_app_command_listed_only_when_miniapp_enabled(
-    monkeypatch: pytest.MonkeyPatch, env_value: str, expected: bool
-) -> None:
-    """The /app command appears in Telegram's menu only when the Mini App is on."""
-    monkeypatch.setenv("MINIAPP_ENABLED", env_value)
+async def test_app_command_always_listed_in_menu() -> None:
+    """The Mini App is always on, so /app is always offered in Telegram's menu."""
     bot, api = _bot()
 
     await bot._register_commands()
 
     commands = api.set_my_commands.call_args.args[0]
-    assert ("app" in {command.command for command in commands}) is expected
+    assert "app" in {command.command for command in commands}

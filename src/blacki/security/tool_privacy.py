@@ -61,19 +61,18 @@ def google_health_enabled() -> bool:
     return google_health_configured_from_environment()
 
 
-def miniapp_enabled() -> bool:
-    """Return whether the Telegram Mini App, which serves private pages, is on."""
-    return os.getenv("MINIAPP_ENABLED", "false").strip().lower() in _ENABLED_VALUES
-
-
 def private_tool_privacy_enabled() -> bool:
-    """Return whether any configured tool needs content-level redaction."""
+    """Return whether any configured tool needs content-level redaction.
+
+    The Mini App is deliberately not listed. Its tool payloads are still skipped
+    in lifecycle logs by is_private_tool, but ADK span attributes are only
+    redacted when another private integration is configured.
+    """
     return (
         gmail_configured()
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
-        or miniapp_enabled()
         or bool(os.getenv("BROWSER_TAKEOVER_PUBLIC_URL", "").strip())
     )
 

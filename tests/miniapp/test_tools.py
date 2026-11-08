@@ -114,7 +114,7 @@ async def test_miniapp_write(service: MiniAppService) -> None:
     # 4. Card write without public launch URL
     with patch.dict(
         "os.environ",
-        {"MINIAPP_ENABLED": "true", "MINIAPP_PUBLIC_URL": ""},
+        {"MINIAPP_PUBLIC_URL": ""},
         clear=False,
     ):
         res_card_nourl = await miniapp_write(
@@ -139,13 +139,14 @@ async def test_send_card_button(service: MiniAppService) -> None:
     )
 
     # 1. Config raises ValueError (e.g. invalid port)
-    with patch.dict(
-        "os.environ", {"MINIAPP_ENABLED": "true", "MINIAPP_PORT": "invalid"}
-    ):
+    with patch.dict("os.environ", {"MINIAPP_PORT": "invalid"}):
         assert not await _send_card_button(user, "c1", "Title", ctx)
 
-    # 2. Missing token or public url or disabled
-    with patch.dict("os.environ", {"MINIAPP_ENABLED": "false"}):
+    # 2. Valid config and launch URL but no bot token
+    with patch.dict(
+        "os.environ",
+        {"MINIAPP_PUBLIC_URL": "https://example.com", "TELEGRAM_BOT_TOKEN": ""},
+    ):
         assert not await _send_card_button(user, "c1", "Title", ctx)
 
     # 3. Valid config and token, TelegramApiClient succeeds
@@ -153,7 +154,6 @@ async def test_send_card_button(service: MiniAppService) -> None:
         patch.dict(
             "os.environ",
             {
-                "MINIAPP_ENABLED": "true",
                 "MINIAPP_PUBLIC_URL": "https://example.com",
                 "TELEGRAM_BOT_TOKEN": "123:ABC",
             },
@@ -175,7 +175,6 @@ async def test_send_card_button(service: MiniAppService) -> None:
         patch.dict(
             "os.environ",
             {
-                "MINIAPP_ENABLED": "true",
                 "MINIAPP_PUBLIC_URL": "https://example.com",
                 "TELEGRAM_BOT_TOKEN": "123:ABC",
             },
@@ -198,7 +197,6 @@ async def test_send_card_button(service: MiniAppService) -> None:
         patch.dict(
             "os.environ",
             {
-                "MINIAPP_ENABLED": "true",
                 "MINIAPP_PUBLIC_URL": "https://example.com",
                 "TELEGRAM_BOT_TOKEN": "123:ABC",
             },
@@ -216,7 +214,6 @@ async def test_send_card_button(service: MiniAppService) -> None:
         patch.dict(
             "os.environ",
             {
-                "MINIAPP_ENABLED": "true",
                 "MINIAPP_PUBLIC_URL": "https://example.com",
                 "TELEGRAM_BOT_TOKEN": "123:ABC",
             },

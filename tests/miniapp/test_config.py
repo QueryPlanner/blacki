@@ -5,19 +5,21 @@ import pytest
 from blacki.miniapp.config import MiniAppConfig, MiniAppConfigurationError
 
 
-def test_from_environment_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("MINIAPP_ENABLED", raising=False)
-    assert MiniAppConfig.from_environment() is None
+@pytest.mark.parametrize("legacy_flag", [None, "false", "0"])
+def test_from_environment_is_always_on(
+    monkeypatch: pytest.MonkeyPatch, legacy_flag: str | None
+) -> None:
+    """MINIAPP_ENABLED is retired: the Mini App is configured whatever it says."""
+    if legacy_flag is None:
+        monkeypatch.delenv("MINIAPP_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("MINIAPP_ENABLED", legacy_flag)
+    monkeypatch.delenv("MINIAPP_PORT", raising=False)
 
-    monkeypatch.setenv("MINIAPP_ENABLED", "false")
-    assert MiniAppConfig.from_environment() is None
-
-    monkeypatch.setenv("MINIAPP_ENABLED", "0")
-    assert MiniAppConfig.from_environment() is None
+    assert MiniAppConfig.from_environment().port == 8090
 
 
 def test_from_environment_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MINIAPP_ENABLED", "true")
     monkeypatch.delenv("MINIAPP_PORT", raising=False)
     monkeypatch.delenv("MINIAPP_HOST", raising=False)
     monkeypatch.delenv("MINIAPP_PUBLIC_URL", raising=False)
@@ -25,7 +27,6 @@ def test_from_environment_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MINIAPP_INIT_DATA_MAX_AGE_SECONDS", raising=False)
 
     cfg = MiniAppConfig.from_environment()
-    assert cfg is not None
     assert cfg.host == "127.0.0.1"
     assert cfg.port == 8090
     assert cfg.public_url is None
@@ -39,7 +40,6 @@ def test_from_environment_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_from_environment_custom_and_dev_shortcut(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("MINIAPP_ENABLED", "1")
     monkeypatch.setenv("MINIAPP_HOST", "::1")
     monkeypatch.setenv("MINIAPP_PORT", "8888")
     monkeypatch.setenv("MINIAPP_INIT_DATA_MAX_AGE_SECONDS", "300")
@@ -48,7 +48,6 @@ def test_from_environment_custom_and_dev_shortcut(
     monkeypatch.delenv("MINIAPP_PUBLIC_URL", raising=False)
 
     cfg = MiniAppConfig.from_environment()
-    assert cfg is not None
     assert cfg.host == "::1"
     assert cfg.port == 8888
     assert cfg.init_data_max_age_seconds == 300
@@ -61,13 +60,11 @@ def test_dev_user_id_alone_does_not_enable_dev_sign_in(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A stray user id must not open a local sign-in without the explicit flag."""
-    monkeypatch.setenv("MINIAPP_ENABLED", "true")
     monkeypatch.setenv("MINIAPP_DEV_TELEGRAM_USER_ID", "123456")
     monkeypatch.delenv("MINIAPP_ALLOW_DEV_SIGN_IN", raising=False)
     monkeypatch.delenv("MINIAPP_PUBLIC_URL", raising=False)
 
     cfg = MiniAppConfig.from_environment()
-    assert cfg is not None
     assert cfg.dev_telegram_user_id == 123456
     assert cfg.allow_dev_sign_in is False
     assert cfg.dev_shortcut_enabled is False
@@ -88,12 +85,10 @@ def test_dev_sign_in_property_fails_closed_on_non_loopback(host: str) -> None:
 
 
 def test_public_url_and_launch_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MINIAPP_ENABLED", "yes")
     monkeypatch.setenv("MINIAPP_PUBLIC_URL", "https://miniapp.example.com/")
     monkeypatch.setenv("MINIAPP_DEV_TELEGRAM_USER_ID", "123456")
 
     cfg = MiniAppConfig.from_environment()
-    assert cfg is not None
     assert cfg.public_url == "https://miniapp.example.com"
     assert cfg.launch_url == "https://miniapp.example.com/miniapp/"
     # dev shortcut disabled when public_url is configured
@@ -148,7 +143,6 @@ def test_public_url_and_launch_url(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_validation_errors(
     monkeypatch: pytest.MonkeyPatch, env_vars: dict[str, str], err_msg: str
 ) -> None:
-    monkeypatch.setenv("MINIAPP_ENABLED", "true")
     for k, v in env_vars.items():
         monkeypatch.setenv(k, v)
     with pytest.raises(MiniAppConfigurationError, match=err_msg):
