@@ -1,0 +1,29 @@
+# Today: built-in, locked. Blacki can read this page but not edit it.
+root = Page("Your week, played back.", [week, pinned, recovery, protein, meals, moving], subtitle: "Sleep, heart and food from your archive. Tap a day to see how it went.")
+days = Query("health.days", {days: 14})
+food = Query("food.days", {days: 14})
+targets = Query("targets")
+weeks = Query("training.weekly", {weeks: 8})
+$goal = Or(Latest(targets.protein_g), 140)
+
+week = OctaveWeek()
+pinned = PinnedCards()
+
+recovery = Section("Recovery", [stats, hrvBars])
+stats = StatRow([hrv, slept, rhr])
+hrv = Stat("Last night's HRV", Latest(days.hrv), unit: "ms", tone: "hot")
+slept = Stat("Asleep last night", Round(Latest(days.asleep) / 60, 1), unit: "h", tone: "inverse")
+rhr = Stat("Resting heart rate", Latest(days.resting_hr), unit: "bpm")
+hrvBars = KeyBars(days, "date", "hrv", highlight: hrv >= Avg(days.hrv))
+
+protein = Section("Protein", [goalSlider, proteinRing, saveGoal])
+goalSlider = Slider($goal, "Daily protein goal", 60, 220, step: 5, unit: "g")
+proteinRing = Ring(Percent(food, protein >= $goal), "of logged days reached the goal")
+saveGoal = Button("Save goal", @SaveTarget("protein_g", $goal))
+
+meals = Section("What you ate", [mealLog])
+mealLog = MealLog(days: 2)
+
+moving = Section("Moving", [weekBars, more])
+weekBars = KeyBars(weeks, "week", "minutes", highlight: minutes >= Avg(weeks.minutes))
+more = Link("See training", "training")

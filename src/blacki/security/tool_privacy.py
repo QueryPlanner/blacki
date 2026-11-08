@@ -26,6 +26,8 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "restore_user_file",
         "delete_user_file",
         "start_browser_takeover",
+        "miniapp_read",
+        "miniapp_write",
     }
 )
 

@@ -1,0 +1,3 @@
+# Files: built-in, locked.
+root = Page("Files", [files], subtitle: "What you've sent Blacki to keep.")
+files = FileList(kind: "all")

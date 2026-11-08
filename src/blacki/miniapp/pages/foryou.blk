@@ -1,0 +1,4 @@
+# For you: seeded here, then owned and edited by Blacki.
+root = Page("For you", [intro, feed], subtitle: "Pages and cards Blacki builds when you ask.")
+intro = Text("Ask Blacki a question in Telegram and it can answer with a card here. Pin the useful ones to **Today**.")
+feed = CardFeed()

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import hmac
 import logging
+import os
 import re
 from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
@@ -56,6 +57,7 @@ from .types import (
     ParseMode,
     Update,
     User,
+    WebAppInfo,
 )
 
 if TYPE_CHECKING:
@@ -169,6 +171,11 @@ class VoiceTranscriber(Protocol):
         """Release any provider resources."""
 
 
+def _miniapp_enabled() -> bool:
+    """Whether the Mini App (and its /app command) is switched on."""
+    return os.getenv("MINIAPP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
+
+
 class TelegramBot:
     """Telegram bot client that sends typing indicators and final replies."""
 
@@ -202,6 +209,7 @@ class TelegramBot:
         self._conversation_turn_locks: dict[str, asyncio.Lock] = {}
         self._album_buffer = AlbumBuffer(on_flush=self._on_album_flushed)
         self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._miniapp_url: str | None = None
         self._chat_type_context: ContextVar[ChatType | None] = ContextVar(
             "telegram_chat_type", default=None
         )
@@ -265,6 +273,115 @@ class TelegramBot:
 
         logger.info("Telegram bot stopped")
 
+    def attach_miniapp(self, launch_url: str | None) -> None:
+        """Connect the Mini App: access checks, prompts and the menu button."""
+        from blacki.miniapp.service import hooks
+
+        self._miniapp_url = launch_url
+        hooks.authorize = self.miniapp_user_authorized
+        hooks.send_prompt = self.submit_miniapp_prompt
+        if launch_url:
+            task = asyncio.create_task(self._set_miniapp_menu_button(launch_url))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+    async def _set_miniapp_menu_button(self, launch_url: str) -> None:
+        try:
+            await self.api.set_chat_menu_button(
+                menu_button={
+                    "type": "web_app",
+                    "text": "Open app",
+                    "web_app": {"url": launch_url},
+                }
+            )
+            logger.info("Mini App menu button set")
+        except Exception:
+            logger.exception("Could not set the Mini App menu button")
+
+    async def miniapp_user_authorized(self, telegram_user_id: int) -> bool:
+        """Apply the bot's access policy to a verified Mini App user."""
+        if not self.config.access_control_enabled:
+            return True
+        try:
+            return await self._get_access_storage().is_authorized(
+                telegram_user_id, self._access_code_fingerprint()
+            )
+        except Exception:
+            logger.exception("Mini App access check failed closed")
+            return False
+
+    async def submit_miniapp_prompt(self, telegram_user_id: int, text: str) -> None:
+        """Queue a confirmed Mini App question as a turn in the private chat.
+
+        The turn waits behind any in-flight turn instead of cancelling it, and is
+        echoed into the chat so the user can see where it came from.
+        """
+        chat_id = telegram_user_id
+        chat_key = str(chat_id)
+        identity = self._build_session_identity(
+            chat_id=chat_key, message_thread_id=None
+        )
+        state = self._build_session_state(
+            chat_id=chat_key,
+            message_thread_id=None,
+            conversation_key=identity.conversation_key,
+            chat_type=ChatType.PRIVATE,
+            sender_user_id=telegram_user_id,
+        )
+        state["temp:origin"] = "miniapp"
+        await self.api.send_message(chat_id=chat_id, text=f"From the app: {text}")
+        turn = self._run_turn_and_send_response(
+            session_identity=identity,
+            chat_id=chat_id,
+            message_thread_id=None,
+            state=state,
+            message_text=(
+                "[Sent from the Blacki Mini App by the user, after confirming] " + text
+            ),
+        )
+
+        async def run() -> None:
+            try:
+                # seq 0 never supersedes an in-flight turn; it queues on the lock.
+                await self._run_sequenced_turn(
+                    identity.conversation_key,
+                    0,
+                    turn,
+                    progress_chat_id=chat_id,
+                    progress_thread_id=None,
+                )
+            except asyncio.CancelledError:
+                logger.info("Mini App prompt superseded by a newer message")
+            except Exception:
+                logger.exception("Mini App prompt turn failed")
+
+        task = asyncio.create_task(run(), name="miniapp_prompt")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _send_miniapp_button(self, chat_id: int) -> None:
+        if not self._miniapp_url:
+            await self.api.send_message(
+                chat_id=chat_id,
+                text="The app isn't set up yet. Set MINIAPP_PUBLIC_URL on the server.",
+            )
+            return
+        await self.api.send_message(
+            chat_id=chat_id,
+            text="Open Blacki's app:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="Open app",
+                            callback_data=None,
+                            web_app=WebAppInfo(url=self._miniapp_url),
+                        )
+                    ]
+                ]
+            ),
+        )
+
     async def _register_commands(self) -> None:
         """Register bot commands with Telegram's command menu."""
         commands = [
@@ -287,6 +404,8 @@ class TelegramBot:
                 description="Disconnect Gmail and remove credentials",
             ),
         ]
+        if _miniapp_enabled():
+            commands.append(BotCommand(command="app", description="Open Blacki's app"))
         if self.google_health_service is not None:
             commands.extend(
                 [
@@ -1449,6 +1568,8 @@ class TelegramBot:
             await self._settings_menu.send_thinking_menu(
                 chat_id, message.message_thread_id
             )
+        elif command == "/app":
+            await self._send_miniapp_button(chat_id)
         elif command == "/connect_health":
             await self._connect_health(message)
         elif command == "/health_summary":

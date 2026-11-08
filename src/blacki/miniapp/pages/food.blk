@@ -1,0 +1,29 @@
+# Food: built-in, locked.
+root = Page("Food", [figures, targetsSec, kcalSec, proteinSec, log], subtitle: "Everything you've sent Blacki to log.")
+food = Query("food.days", {days: 14})
+targets = Query("targets")
+$kcal = Or(Latest(targets.calories_kcal), 2000)
+$protein = Or(Latest(targets.protein_g), 140)
+
+figures = StatRow([lastKcal, lastProtein, avgKcal])
+lastKcal = Stat("Last logged day", Latest(food.kcal), unit: "kcal", tone: "hot")
+lastProtein = Stat("Protein that day", Latest(food.protein), unit: "g")
+avgKcal = Stat("Daily average", Round(Avg(food.kcal)), unit: "kcal", tone: "inverse")
+
+targetsSec = Section("Targets", [kcalSlider, proteinSlider, saveRow])
+kcalSlider = Slider($kcal, "Calories", 1200, 3600, step: 50, unit: "kcal")
+proteinSlider = Slider($protein, "Protein", 60, 240, step: 5, unit: "g")
+saveRow = Grid([saveKcal, saveProtein])
+saveKcal = Button("Save calories", @SaveTarget("calories_kcal", $kcal))
+saveProtein = Button("Save protein", @SaveTarget("protein_g", $protein))
+
+kcalSec = Section("Calories", [kcalHit, kcalBars])
+kcalHit = Stat("Days at or under target", Count(food, kcal <= $kcal), note: "logged days only")
+kcalBars = KeyBars(food, "date", "kcal", highlight: kcal <= $kcal)
+
+proteinSec = Section("Protein", [proteinRing, proteinBars])
+proteinRing = Ring(Percent(food, protein >= $protein), "of logged days reached the target")
+proteinBars = KeyBars(food, "date", "protein", highlight: protein >= $protein)
+
+log = Section("Meal log", [mealLog])
+mealLog = MealLog(days: 7)

@@ -594,6 +594,16 @@ class TelegramApiClient:
         await self._request("sendChatAction", params)
         return True
 
+    async def set_chat_menu_button(
+        self, *, menu_button: dict[str, Any], chat_id: int | None = None
+    ) -> bool:
+        """Set the bot's menu button, e.g. a web_app button that opens the Mini App."""
+        params: dict[str, Any] = {"menu_button": menu_button}
+        if chat_id is not None:
+            params["chat_id"] = chat_id
+        await self._request("setChatMenuButton", params)
+        return True
+
     async def set_my_commands(
         self,
         commands: list[BotCommand],
