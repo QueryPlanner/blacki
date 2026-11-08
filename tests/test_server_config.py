@@ -2,12 +2,13 @@
 """Tests for server configuration."""
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
-from collections.abc import Generator
+from collections.abc import AsyncIterator, Generator
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import aiosqlite
 import pytest
@@ -1296,3 +1297,146 @@ async def test_google_health_stop_suppresses_export_worker_errors(
 
     assert getattr(server, "_google_health_export_worker", object()) is None
     server._container = None
+
+
+@pytest.fixture
+async def miniapp_server(
+    mock_dependencies: MagicMock,
+) -> AsyncIterator[Any]:
+    """Import the server module and reset its Mini App globals around each test."""
+    if "blacki.server" in sys.modules:
+        del sys.modules["blacki.server"]
+
+    import blacki.server as server
+
+    server._telegram_bot = None
+    server._miniapp_server = None
+    server._miniapp_task = None
+    yield server
+    leftover_task = cast(Any, server)._miniapp_task
+    if leftover_task is not None and not leftover_task.done():
+        leftover_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await leftover_task
+    server._telegram_bot = None
+    server._miniapp_server = None
+    server._miniapp_task = None
+
+
+@pytest.mark.asyncio
+async def test_start_miniapp_skips_invalid_configuration(
+    miniapp_server: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A malformed Mini App port must disable the Mini App, not the main server."""
+    monkeypatch.setenv("MINIAPP_ENABLED", "true")
+    monkeypatch.setenv("MINIAPP_PORT", "not-a-port")
+
+    await miniapp_server._start_miniapp()
+
+    assert miniapp_server._miniapp_task is None
+    assert miniapp_server._miniapp_server is None
+    assert "Mini App configuration is invalid" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("telegram_running", [True, False])
+async def test_start_miniapp_serves_own_port_and_attaches_running_bot(
+    miniapp_server: Any, monkeypatch: pytest.MonkeyPatch, telegram_running: bool
+) -> None:
+    """The Mini App runs on its own port; a running bot learns its launch URL."""
+    from blacki.telegram.bot import TelegramBot
+
+    monkeypatch.setenv("MINIAPP_ENABLED", "true")
+    monkeypatch.setenv("MINIAPP_PORT", "8091")
+    monkeypatch.setenv("MINIAPP_PUBLIC_URL", "https://app.example.test")
+    cast(Any, miniapp_server.env).log_level = "INFO"
+    bot = create_autospec(TelegramBot, instance=True, spec_set=True)
+    miniapp_server._telegram_bot = bot if telegram_running else None
+
+    with patch.object(miniapp_server.uvicorn, "Server", autospec=True) as server_cls:
+        await miniapp_server._start_miniapp()
+
+        if telegram_running:
+            bot.attach_miniapp.assert_called_once_with(
+                "https://app.example.test/miniapp/"
+            )
+        else:
+            bot.attach_miniapp.assert_not_called()
+        server_cls.assert_called_once()
+        config = server_cls.call_args.args[0]
+        assert config.port == 8091
+        assert config.host == "127.0.0.1"
+        assert config.lifespan == "off"
+        assert miniapp_server._miniapp_server is server_cls.return_value
+        assert miniapp_server._miniapp_task is not None
+
+        await miniapp_server._stop_miniapp()
+
+    assert server_cls.return_value.should_exit is True
+    assert miniapp_server._miniapp_task is None
+    assert miniapp_server._miniapp_server is None
+
+
+@pytest.mark.asyncio
+async def test_stop_miniapp_without_server_is_noop(miniapp_server: Any) -> None:
+    """Shutdown must be safe when the Mini App was never started."""
+    await miniapp_server._stop_miniapp()
+
+    assert miniapp_server._miniapp_server is None
+    assert miniapp_server._miniapp_task is None
+
+
+@pytest.mark.asyncio
+async def test_stop_miniapp_tolerates_task_that_raised(
+    miniapp_server: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Mini App server that crashed must be logged without blocking shutdown."""
+
+    async def crash() -> None:
+        raise RuntimeError("socket closed")
+
+    miniapp_server._miniapp_task = asyncio.create_task(crash())
+    await asyncio.sleep(0)
+
+    await miniapp_server._stop_miniapp()
+
+    assert "Mini App server stopped with an error" in caplog.text
+    assert miniapp_server._miniapp_task is None
+
+
+@pytest.mark.asyncio
+async def test_stop_miniapp_cancels_task_that_was_already_cancelled(
+    miniapp_server: Any,
+) -> None:
+    """A task cancelled before shutdown is cancelled again without raising."""
+    task = asyncio.create_task(asyncio.sleep(60))
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    miniapp_server._miniapp_task = task
+
+    await miniapp_server._stop_miniapp()
+
+    assert task.cancelled()
+    assert miniapp_server._miniapp_task is None
+
+
+@pytest.mark.asyncio
+async def test_stop_miniapp_cancels_task_that_ignores_shutdown(
+    miniapp_server: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Mini App server that does not stop within the timeout is cancelled."""
+    task = asyncio.create_task(asyncio.sleep(60))
+    miniapp_server._miniapp_task = task
+    timeout_expired = create_autospec(asyncio.wait_for, side_effect=TimeoutError)
+    monkeypatch.setattr(miniapp_server.asyncio, "wait_for", timeout_expired)
+
+    await miniapp_server._stop_miniapp()
+
+    timeout_expired.assert_called_once()
+    assert timeout_expired.call_args.kwargs == {"timeout": 5}
+    assert task.cancelling() > 0
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+    assert miniapp_server._miniapp_task is None

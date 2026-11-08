@@ -206,6 +206,20 @@ class TestAppContainer:
         assert container._telegram_access_storage is storage
 
     @pytest.mark.asyncio
+    async def test_miniapp_store_property_is_cached(self, conn, lock) -> None:
+        """Mini App storage is created once and reused by later accesses."""
+        from blacki.miniapp.store import MiniAppStore
+
+        container = AppContainer(conn=conn, _lock=lock)
+        assert container._miniapp_store is None
+
+        first = container.miniapp_store
+        second = container.miniapp_store
+
+        assert isinstance(first, MiniAppStore)
+        assert second is first
+
+    @pytest.mark.asyncio
     async def test_declarative_db_storage_property(self, conn, lock) -> None:
         """Should lazily instantiate declarative DB storage."""
         container = AppContainer(conn=conn, _lock=lock)
