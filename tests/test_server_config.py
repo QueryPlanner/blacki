@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import json
 import os
+import socket
 import sys
 from collections.abc import AsyncIterator, Generator
 from typing import Any, cast
@@ -1377,6 +1378,63 @@ async def test_start_miniapp_serves_own_port_and_attaches_running_bot(
     assert server_cls.return_value.should_exit is True
     assert miniapp_server._miniapp_task is None
     assert miniapp_server._miniapp_server is None
+
+
+@pytest.mark.asyncio
+async def test_start_miniapp_port_in_use_keeps_main_loop_alive(
+    miniapp_server: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Mini App port already in use disables only the Mini App.
+
+    Uses a real listening socket and the real uvicorn path (no patching).
+    Before the fix, uvicorn's sys.exit(1) escaped the task and killed the loop.
+    """
+    from blacki.telegram.bot import TelegramBot
+
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.bind(("127.0.0.1", 0))
+    occupied.listen()
+    try:
+        monkeypatch.setenv("MINIAPP_ENABLED", "true")
+        monkeypatch.setenv("MINIAPP_HOST", "127.0.0.1")
+        monkeypatch.setenv("MINIAPP_PORT", str(occupied.getsockname()[1]))
+        cast(Any, miniapp_server.env).log_level = "INFO"
+        bot = create_autospec(TelegramBot, instance=True, spec_set=True)
+        miniapp_server._telegram_bot = bot
+
+        await miniapp_server._start_miniapp()
+        # Stand-in for the main loop (polling, scheduler): it must keep running.
+        heartbeats = 0
+        for _ in range(10):
+            heartbeats += 1
+            await asyncio.sleep(0.02)
+
+        assert heartbeats == 10
+        assert miniapp_server._miniapp_task is None
+        assert miniapp_server._miniapp_server is None
+        bot.attach_miniapp.assert_not_called()
+        assert "Mini App could not bind 127.0.0.1" in caplog.text
+    finally:
+        occupied.close()
+
+
+@pytest.mark.asyncio
+async def test_serve_miniapp_swallows_uvicorn_exit_and_closes_socket(
+    miniapp_server: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """uvicorn exits the process on startup failure; the wrapper must absorb it."""
+    fake_server = create_autospec(
+        miniapp_server.uvicorn.Server, instance=True, spec_set=True
+    )
+    fake_server.serve.side_effect = SystemExit(1)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+    await miniapp_server._serve_miniapp(fake_server, sock)
+
+    assert sock.fileno() == -1
+    assert "Mini App server stopped" in caplog.text
 
 
 @pytest.mark.asyncio
