@@ -567,6 +567,38 @@ def test_production_deployment_serializes_kokoro_tts_settings() -> None:
         assert setting in writer_names
 
 
+def test_production_publishes_miniapp_on_loopback_only() -> None:
+    """Serve proxies only to 127.0.0.1, so the Mini App stays off HOST_BIND_IP."""
+    service = _load_yaml("compose.prod.yaml")["services"]["agent"]
+
+    assert service["ports"] == [
+        "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8080}:8080",
+        "127.0.0.1:8090:8090",
+    ]
+    # The container binds all interfaces; the host publish above is loopback only.
+    assert service["environment"]["MINIAPP_HOST"] == "0.0.0.0"  # noqa: S104
+    assert service["environment"]["MINIAPP_PORT"] == "8090"
+
+
+def test_production_deployment_serializes_miniapp_public_url() -> None:
+    """The Mini App's HTTPS address must survive each regenerated .env."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    assert deploy_step["env"]["MINIAPP_PUBLIC_URL"] == (
+        "${{ secrets.MINIAPP_PUBLIC_URL }}"
+    )
+    assert "MINIAPP_PUBLIC_URL" in writer_names
+
+
 def test_production_deployment_serializes_cloudflare_whisper_settings() -> None:
     """Cloudflare Workers AI credentials must reach production Compose."""
     workflow = _load_yaml(".github/workflows/docker-publish.yml")
@@ -667,7 +699,14 @@ def test_production_overlay_defeats_hostile_environment_overrides() -> None:
             "target": 8080,
             "published": "8080",
             "protocol": "tcp",
-        }
+        },
+        {
+            "mode": "ingress",
+            "host_ip": "127.0.0.1",
+            "target": 8090,
+            "published": "8090",
+            "protocol": "tcp",
+        },
     ]
 
 

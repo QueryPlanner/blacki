@@ -2,6 +2,13 @@ services:
   agent:
     ports:
       - "${HOST_BIND_IP:-127.0.0.1}:${HOST_PORT:-8080}:8080"
+      # Loopback only: Tailscale Serve proxies to 127.0.0.1, so the Mini App
+      # must never be published on HOST_BIND_IP.
+      - "127.0.0.1:8090:8090"
     environment:
       RELOAD_AGENTS: "false"
       SERVE_WEB_INTERFACE: "false"
+      # Pin the Mini App listener so the published port above always matches.
+      # 0.0.0.0 is needed inside the container; the host publish limits reach.
+      MINIAPP_HOST: "0.0.0.0"
+      MINIAPP_PORT: "8090"
