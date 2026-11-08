@@ -65,6 +65,10 @@ remove oldChart
 Use `page <id> "Title" replace` to rewrite a page. Other commands:
 `delete page <id>`, `revert <id> to <n>`, `move <id> to <position>`.
 
+One `miniapp_write` call is all or nothing: every block saves, or if any block
+fails none does (the reply says `"saved": false`). Fix the reported line and
+send the whole script again. Put each page in one block per call.
+
 Make a one-off card for a chat answer; the user gets an "Open in app" button,
 and the card expires after 14 days unless they pin it:
 

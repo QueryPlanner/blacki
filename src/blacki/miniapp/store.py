@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import secrets
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import resources
 from typing import Any
@@ -32,6 +34,53 @@ BUILTIN_TITLES = {
 
 class StaleVersionError(ValueError):
     """The page changed since the caller read it."""
+
+
+class WriteBatchError(Exception):
+    """One write in a batch failed, so the whole batch was rolled back."""
+
+    def __init__(self, index: int, cause: Exception) -> None:
+        self.index = index
+        self.cause = cause
+        super().__init__(f"write {index} failed: {cause}")
+
+
+@dataclass(frozen=True)
+class PageSave:
+    """Save a new version of an agent page."""
+
+    owner: str
+    page_id: str
+    title: str
+    source: str
+    ir: dict[str, Any]
+    base_version: int | None
+    created_by: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class PageDelete:
+    owner: str
+    page_id: str
+
+
+@dataclass(frozen=True)
+class PageMove:
+    owner: str
+    page_id: str
+    position: int
+
+
+@dataclass(frozen=True)
+class CardCreate:
+    owner: str
+    title: str
+    source: str
+    ir: dict[str, Any]
+
+
+StoreWrite = PageSave | PageDelete | PageMove | CardCreate
 
 
 _LIST_CARDS_ALL_SQL = (
@@ -181,87 +230,160 @@ class MiniAppStore(SqlStorage):
         note: str | None = None,
     ) -> int:
         """Save a new version; raises StaleVersionError on a version mismatch."""
+        version: int = await self._single(
+            PageSave(
+                owner,
+                page_id,
+                title,
+                source,
+                ir,
+                base_version,
+                created_by,
+                note,
+            )
+        )
+        return version
+
+    async def delete_page(self, owner: str, page_id: str) -> bool:
+        try:
+            await self._single(PageDelete(owner, page_id))
+        except LookupError:
+            return False
+        return True
+
+    async def move_page(self, owner: str, page_id: str, position: int) -> bool:
+        try:
+            await self._single(PageMove(owner, page_id, position))
+        except LookupError:
+            return False
+        return True
+
+    async def apply_writes(self, writes: Sequence[StoreWrite]) -> list[Any]:
+        """Run writes in one transaction: every write commits, or none does.
+
+        Returns one result per write: the new version for a page save, the card
+        id for a card, and None for a delete or move. A failing write raises
+        WriteBatchError with its index, and nothing from this call is saved.
+        """
         await self.initialize()
+        results: list[Any] = []
         async with self._lock:
             await self._conn.execute("BEGIN")
             try:
-                async with self._conn.execute(
-                    "SELECT version, deleted FROM miniapp_pages WHERE owner = ? AND page_id = ?",  # noqa: E501
-                    (owner, page_id),
-                ) as cur:
-                    row = await cur.fetchone()
-                current = int(row[0]) if row and not row[1] else 0
-                if base_version is not None and base_version != current:
-                    raise StaleVersionError(
-                        f"page {page_id} is at version {current}, not {base_version}; read it again"  # noqa: E501
-                    )
-                if row is None or row[1]:
-                    async with self._conn.execute(
-                        "SELECT COUNT(*) FROM miniapp_pages WHERE owner = ? AND deleted = 0",  # noqa: E501
-                        (owner,),
-                    ) as cur:
-                        count_row = await cur.fetchone()
-                    if count_row and count_row[0] >= MAX_AGENT_PAGES:
-                        raise ValueError(
-                            f"you can have at most {MAX_AGENT_PAGES} Blacki pages"
-                        )
-                version = (int(row[0]) if row else 0) + 1
-                now = _now()
-                await self._conn.execute(
-                    """
-                    INSERT INTO miniapp_pages
-                        (owner, page_id, title, version, source, ir, deleted,
-                         updated_at, position)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, 100)
-                    ON CONFLICT(owner, page_id) DO UPDATE SET
-                        title = excluded.title, version = excluded.version,
-                        source = excluded.source, ir = excluded.ir, deleted = 0,
-                        updated_at = excluded.updated_at
-                    """,
-                    (owner, page_id, title, version, source, json.dumps(ir), now),
-                )
-                await self._conn.execute(
-                    """
-                    INSERT INTO miniapp_page_versions
-                        (owner, page_id, version, title, source, created_by, note,
-                         created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (owner, page_id, version, title, source, created_by, note, now),
-                )
-                await self._conn.execute(
-                    """
-                    DELETE FROM miniapp_page_versions
-                    WHERE owner = ? AND page_id = ? AND version <= ?
-                    """,
-                    (owner, page_id, version - MAX_VERSIONS),
-                )
+                for index, write in enumerate(writes):
+                    try:
+                        results.append(await self._apply(write))
+                    except (StaleVersionError, ValueError, LookupError) as exc:
+                        raise WriteBatchError(index, exc) from exc
                 await self._conn.commit()
-                return version
             except BaseException:
                 await self._conn.rollback()
                 raise
+        return results
 
-    async def delete_page(self, owner: str, page_id: str) -> bool:
-        await self.initialize()
-        async with self._lock:
-            cursor = await self._conn.execute(
-                "UPDATE miniapp_pages SET deleted = 1, updated_at = ? "
-                "WHERE owner = ? AND page_id = ? AND deleted = 0",
-                (_now(), owner, page_id),
-            )
-            await self._conn.commit()
-            return cursor.rowcount > 0
+    async def _single(self, write: StoreWrite) -> Any:
+        """Run one write on its own; its own failure is raised unwrapped."""
+        try:
+            (result,) = await self.apply_writes([write])
+        except WriteBatchError as failed:
+            raise failed.cause from None
+        return result
 
-    async def move_page(self, owner: str, page_id: str, position: int) -> bool:
-        await self.initialize()
-        async with self._lock:
-            cursor = await self._conn.execute(
-                "UPDATE miniapp_pages SET position = ? WHERE owner = ? AND page_id = ? AND deleted = 0",  # noqa: E501
-                (position, owner, page_id),
+    async def _apply(self, write: StoreWrite) -> Any:
+        """Run one write inside the open transaction; the caller commits."""
+        if isinstance(write, PageSave):
+            return await self._save_page_in_tx(write)
+        if isinstance(write, PageDelete):
+            return await self._delete_page_in_tx(write)
+        if isinstance(write, PageMove):
+            return await self._move_page_in_tx(write)
+        return await self._create_card_in_tx(write)
+
+    async def _save_page_in_tx(self, write: PageSave) -> int:
+        async with self._conn.execute(
+            "SELECT version, deleted FROM miniapp_pages WHERE owner = ? AND page_id = ?",  # noqa: E501
+            (write.owner, write.page_id),
+        ) as cur:
+            row = await cur.fetchone()
+        current = int(row[0]) if row and not row[1] else 0
+        if write.base_version is not None and write.base_version != current:
+            raise StaleVersionError(
+                f"page {write.page_id} is at version {current}, not {write.base_version}; read it again"  # noqa: E501
             )
-            await self._conn.commit()
-            return cursor.rowcount > 0
+        if row is None or row[1]:
+            async with self._conn.execute(
+                "SELECT COUNT(*) FROM miniapp_pages WHERE owner = ? AND deleted = 0",
+                (write.owner,),
+            ) as cur:
+                count_row = await cur.fetchone()
+            if count_row and count_row[0] >= MAX_AGENT_PAGES:
+                raise ValueError(f"you can have at most {MAX_AGENT_PAGES} Blacki pages")
+        version = (int(row[0]) if row else 0) + 1
+        now = _now()
+        await self._conn.execute(
+            """
+            INSERT INTO miniapp_pages
+                (owner, page_id, title, version, source, ir, deleted,
+                 updated_at, position)
+            VALUES (?, ?, ?, ?, ?, ?, 0, ?, 100)
+            ON CONFLICT(owner, page_id) DO UPDATE SET
+                title = excluded.title, version = excluded.version,
+                source = excluded.source, ir = excluded.ir, deleted = 0,
+                updated_at = excluded.updated_at
+            """,
+            (
+                write.owner,
+                write.page_id,
+                write.title,
+                version,
+                write.source,
+                json.dumps(write.ir),
+                now,
+            ),
+        )
+        await self._conn.execute(
+            """
+            INSERT INTO miniapp_page_versions
+                (owner, page_id, version, title, source, created_by, note,
+                 created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                write.owner,
+                write.page_id,
+                version,
+                write.title,
+                write.source,
+                write.created_by,
+                write.note,
+                now,
+            ),
+        )
+        await self._conn.execute(
+            """
+            DELETE FROM miniapp_page_versions
+            WHERE owner = ? AND page_id = ? AND version <= ?
+            """,
+            (write.owner, write.page_id, version - MAX_VERSIONS),
+        )
+        return version
+
+    async def _delete_page_in_tx(self, write: PageDelete) -> None:
+        cursor = await self._conn.execute(
+            "UPDATE miniapp_pages SET deleted = 1, updated_at = ? "
+            "WHERE owner = ? AND page_id = ? AND deleted = 0",
+            (_now(), write.owner, write.page_id),
+        )
+        if cursor.rowcount == 0:
+            raise LookupError(f"page {write.page_id} not found")
+
+    async def _move_page_in_tx(self, write: PageMove) -> None:
+        cursor = await self._conn.execute(
+            "UPDATE miniapp_pages SET position = ? WHERE owner = ? AND page_id = ? AND deleted = 0",  # noqa: E501
+            (write.position, write.owner, write.page_id),
+        )
+        if cursor.rowcount == 0:
+            raise LookupError(f"page {write.page_id} not found")
 
     async def history(self, owner: str, page_id: str) -> list[dict[str, Any]]:
         await self.initialize()
@@ -286,31 +408,32 @@ class MiniAppStore(SqlStorage):
     async def create_card(
         self, owner: str, *, title: str, source: str, ir: dict[str, Any]
     ) -> str:
-        await self.initialize()
+        card_id: str = await self._single(CardCreate(owner, title, source, ir))
+        return card_id
+
+    async def _create_card_in_tx(self, write: CardCreate) -> str:
         card_id = secrets.token_urlsafe(9)
         now = datetime.now(UTC)
-        async with self._lock:
-            await self._conn.execute(
-                "DELETE FROM miniapp_cards WHERE owner = ? AND pinned = 0 AND expires_at < ?",  # noqa: E501
-                (owner, now.isoformat(timespec="seconds")),
-            )
-            await self._conn.execute(
-                """
-                INSERT INTO miniapp_cards
-                    (owner, card_id, title, source, ir, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    owner,
-                    card_id,
-                    title,
-                    source,
-                    json.dumps(ir),
-                    now.isoformat(timespec="seconds"),
-                    (now + timedelta(days=CARD_TTL_DAYS)).isoformat(timespec="seconds"),
-                ),
-            )
-            await self._conn.commit()
+        await self._conn.execute(
+            "DELETE FROM miniapp_cards WHERE owner = ? AND pinned = 0 AND expires_at < ?",  # noqa: E501
+            (write.owner, now.isoformat(timespec="seconds")),
+        )
+        await self._conn.execute(
+            """
+            INSERT INTO miniapp_cards
+                (owner, card_id, title, source, ir, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                write.owner,
+                card_id,
+                write.title,
+                write.source,
+                json.dumps(write.ir),
+                now.isoformat(timespec="seconds"),
+                (now + timedelta(days=CARD_TTL_DAYS)).isoformat(timespec="seconds"),
+            ),
+        )
         return card_id
 
     async def get_card(self, owner: str, card_id: str) -> dict[str, Any] | None:

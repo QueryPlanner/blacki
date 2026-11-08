@@ -993,3 +993,166 @@ async def test_tool_write_and_check_templates(service: MiniAppService) -> None:
     )
     assert res_page["status"] == "ok"
     assert "unused_var" in res_page["results"][0]["warning"]
+
+
+def _page_script(page_id: str, title: str, text: str) -> str:
+    return f'page {page_id} "{title}"\nroot = Page("{title}", [Header("{text}")])'
+
+
+async def _seed_alpha_v2_bravo_v1(service: MiniAppService) -> MiniAppUser:
+    """Two pages: alpha at version 2 and bravo at version 1."""
+    user = MiniAppUser(100)
+    for page_id in ("alpha", "bravo"):
+        created = await service.tool_write(
+            user, _page_script(page_id, page_id.title(), "one"), None
+        )
+        assert created["status"] == "ok"
+    edited = await service.tool_write(
+        user, _page_script("alpha", "Alpha", "two"), base_version=1
+    )
+    assert edited["status"] == "ok"
+    return user
+
+
+async def _versions(service: MiniAppService, user: MiniAppUser) -> dict[str, int]:
+    versions = {}
+    for page_id in ("alpha", "bravo"):
+        page = await service.store.get_page(user.chat_user_id, page_id)
+        assert page is not None
+        versions[page_id] = page["version"]
+    return versions
+
+
+async def test_write_script_saves_all_blocks_together(service: MiniAppService) -> None:
+    user = MiniAppUser(100)
+    script = (
+        _page_script("alpha", "Alpha", "one")
+        + "\n"
+        + _page_script("bravo", "Bravo", "one")
+    )
+
+    res = await service.tool_write(user, script, None)
+
+    assert res["status"] == "ok"
+    assert [r["version"] for r in res["results"]] == [1, 1]
+    assert await _versions(service, user) == {"alpha": 1, "bravo": 1}
+
+
+async def test_later_stale_block_rolls_back_earlier_block(
+    service: MiniAppService,
+) -> None:
+    """bravo (at v1) would save first; alpha (at v2) then fails on base_version 1.
+
+    Before the batch commit, bravo was saved and stayed saved. Now nothing is.
+    """
+    user = await _seed_alpha_v2_bravo_v1(service)
+    script = (
+        _page_script("bravo", "Bravo", "changed")
+        + "\n"
+        + _page_script("alpha", "Alpha", "again")
+    )
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["status"] == "error"
+    assert res["saved"] is False
+    assert [r["status"] for r in res["results"]] == ["not_saved", "error"]
+    assert res["results"][1]["target"] == "alpha"
+    assert "is at version 2, not 1" in res["results"][1]["errors"][0]
+    assert await _versions(service, user) == {"alpha": 2, "bravo": 1}
+
+
+async def test_compile_error_in_later_block_saves_nothing(
+    service: MiniAppService,
+) -> None:
+    user = await _seed_alpha_v2_bravo_v1(service)
+    script = (
+        _page_script("bravo", "Bravo", "changed")
+        + "\n"
+        + ('page charlie "Charlie"\nroot = Nope("x")')
+    )
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["status"] == "error"
+    assert res["results"][-1]["target"] == "charlie"
+    assert await _versions(service, user) == {"alpha": 2, "bravo": 1}
+    assert await service.store.get_page(user.chat_user_id, "charlie") is None
+
+
+async def test_card_is_rolled_back_when_a_later_page_write_fails(
+    service: MiniAppService,
+) -> None:
+    user = await _seed_alpha_v2_bravo_v1(service)
+    script = (
+        'card "Sleep Card"\nroot = Page("Sleep Card", [Header("Hi")])\n'
+        + _page_script("alpha", "Alpha", "again")
+    )
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["status"] == "error"
+    assert res["results"][-1]["target"] == "alpha"
+    assert await service.store.list_cards(user.chat_user_id) == []
+
+
+async def test_delete_is_rolled_back_when_a_later_page_write_fails(
+    service: MiniAppService,
+) -> None:
+    user = await _seed_alpha_v2_bravo_v1(service)
+    script = "delete page bravo\n" + _page_script("alpha", "Alpha", "again")
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["status"] == "error"
+    assert await _versions(service, user) == {"alpha": 2, "bravo": 1}
+
+
+async def test_missing_page_in_later_move_rolls_back_earlier_save(
+    service: MiniAppService,
+) -> None:
+    user = await _seed_alpha_v2_bravo_v1(service)
+    script = _page_script("bravo", "Bravo", "changed") + "\nmove ghost to 1"
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["results"][-1] == {
+        "status": "error",
+        "target": "ghost",
+        "errors": ["page ghost not found"],
+    }
+    assert await _versions(service, user) == {"alpha": 2, "bravo": 1}
+
+
+async def test_same_page_twice_in_one_script_is_rejected(
+    service: MiniAppService,
+) -> None:
+    user = MiniAppUser(100)
+    script = (
+        _page_script("alpha", "Alpha", "one")
+        + "\n"
+        + _page_script("alpha", "Alpha", "two")
+    )
+
+    res = await service.tool_write(user, script, None)
+
+    assert res["status"] == "error"
+    assert "appears twice in one write" in res["results"][-1]["errors"][0]
+    assert await service.store.get_page(user.chat_user_id, "alpha") is None
+
+
+async def test_oversized_expression_in_later_block_saves_nothing(
+    service: MiniAppService,
+) -> None:
+    """Before the operator budget, 2000 unary minus escaped as RecursionError."""
+    user = await _seed_alpha_v2_bravo_v1(service)
+    deep = "- " * 2000 + "1"
+    script = _page_script("bravo", "Bravo", "changed") + (
+        f'\npage charlie "Charlie"\n$x = {deep}\nroot = Page("C", [Header("h")])'
+    )
+
+    res = await service.tool_write(user, script, base_version=1)
+
+    assert res["status"] == "error"
+    assert "at most 250 operators" in res["results"][-1]["errors"][0]
+    assert await _versions(service, user) == {"alpha": 2, "bravo": 1}

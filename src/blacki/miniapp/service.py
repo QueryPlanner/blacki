@@ -16,7 +16,18 @@ from .catalog import AGENT_HOME_PAGE, BUILTIN_PAGES, TARGET_KINDS, reference_tex
 from .compiler import PAGE_ID, CompileError, compile_program
 from .lang import LangError, Program, parse
 from .sources import SOURCES, MiniAppUser, SourceContext, resolve
-from .store import BUILTIN_TITLES, MiniAppStore, StaleVersionError, builtin_source
+from .store import (
+    BUILTIN_TITLES,
+    CardCreate,
+    MiniAppStore,
+    PageDelete,
+    PageMove,
+    PageSave,
+    StaleVersionError,
+    StoreWrite,
+    WriteBatchError,
+    builtin_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -492,90 +503,119 @@ class MiniAppService:
     async def tool_write(
         self, user: MiniAppUser, code: str, base_version: int | None
     ) -> dict[str, Any]:
-        """Apply one write script from Blacki and report what happened."""
+        """Apply one write script from Blacki: every block saves, or none does.
+
+        Each block is checked and compiled before anything is written. The
+        whole script then commits in one transaction, so a failure in any block
+        leaves every page and card as it was.
+        """
         try:
             blocks = _split_blocks(code)
         except LangError as exc:
             return {"status": "error", "errors": [str(exc)]}
-        results: list[dict[str, Any]] = []
+        prepared: list[_PreparedBlock] = []
+        pages_in_script: set[str] = set()
         for block in blocks:
             try:
-                results.append(await self._run_block(user, block, base_version))
+                if block["command"] != "card":
+                    if block["target"] in pages_in_script:
+                        raise ValueError(
+                            f"page {block['target']} appears twice in one write; "
+                            "combine its lines into one block"
+                        )
+                    pages_in_script.add(block["target"])
+                prepared.append(await self._prepare_block(user, block, base_version))
             except (LangError, CompileError) as exc:
                 errors = exc.errors if isinstance(exc, CompileError) else [exc]
                 lines = [_shift(e, block.get("offset", 0)) for e in errors]
-                results.append(
-                    {"status": "error", "target": block.get("target"), "errors": lines}
+                return _not_saved(
+                    prepared,
+                    {"status": "error", "target": block.get("target"), "errors": lines},
                 )
-                break
             except (StaleVersionError, ValueError, LookupError) as exc:
-                results.append(
+                return _not_saved(
+                    prepared,
                     {
                         "status": "error",
                         "target": block.get("target"),
                         "errors": [str(exc)],
-                    }
+                    },
                 )
-                break
-        ok = all(r["status"] == "ok" for r in results)
-        return {"status": "ok" if ok else "error", "results": results}
+        try:
+            outcomes = await self.store.apply_writes([p.write for p in prepared])
+        except WriteBatchError as failed:
+            failing = prepared[failed.index]
+            return _not_saved(
+                prepared[: failed.index],
+                {
+                    "status": "error",
+                    "target": failing.target,
+                    "errors": [str(failed.cause)],
+                },
+            )
+        for item, outcome in zip(prepared, outcomes, strict=True):
+            if item.outcome_key is not None:
+                item.result[item.outcome_key] = outcome
+        return {"status": "ok", "results": [item.result for item in prepared]}
 
-    async def _run_block(
+    async def _prepare_block(
         self, user: MiniAppUser, block: dict[str, Any], base_version: int | None
-    ) -> dict[str, Any]:
+    ) -> _PreparedBlock:
+        """Check one block and describe its write, without writing anything."""
         owner = user.chat_user_id
         command = block["command"]
         if command == "delete":
             page_id = block["target"]
             if page_id in BUILTIN_PAGES or page_id == AGENT_HOME_PAGE:
                 raise ValueError(f"{page_id} can't be deleted")
-            if not await self.store.delete_page(owner, page_id):
-                raise LookupError(f"page {page_id} not found")
-            return {"status": "ok", "target": page_id, "message": "deleted"}
+            return _PreparedBlock(
+                page_id,
+                PageDelete(owner, page_id),
+                {"status": "ok", "target": page_id, "message": "deleted"},
+            )
         if command == "move":
-            if not await self.store.move_page(
-                owner, block["target"], block["position"]
-            ):
-                raise LookupError(f"page {block['target']} not found")
-            return {"status": "ok", "target": block["target"], "message": "moved"}
+            page_id = block["target"]
+            return _PreparedBlock(
+                page_id,
+                PageMove(owner, page_id, block["position"]),
+                {"status": "ok", "target": page_id, "message": "moved"},
+            )
         if command == "revert":
             page_id, version = block["target"], block["version"]
             row = await self.store.version_source(owner, page_id, version)
             if row is None:
                 raise LookupError(f"{page_id} has no version {version}")
             ir = compile_program(parse(row["source"]))
-            new_version = await self.store.save_page(
+            write = PageSave(
                 owner,
                 page_id,
-                title=ir["title"],
-                source=row["source"],
-                ir=ir,
-                base_version=base_version,
-                created_by="blacki",
-                note=f"revert to {version}",
+                ir["title"],
+                row["source"],
+                ir,
+                base_version,
+                "blacki",
+                f"revert to {version}",
             )
-            return {"status": "ok", "target": page_id, "version": new_version}
+            return _PreparedBlock(
+                page_id, write, {"status": "ok", "target": page_id}, "version"
+            )
         if command == "card":
             program = parse(block["body"])
             if block.get("title"):
                 _retitle(program, block["title"])
             ir = compile_program(program, kind="card")
             await self._check_templates(user, ir)
-            source = program.to_source()
-            card_id = await self.store.create_card(
-                owner, title=ir["title"], source=source, ir=ir
+            card = _PreparedBlock(
+                "card",
+                CardCreate(owner, ir["title"], program.to_source(), ir),
+                {"status": "ok", "target": "card", "title": ir["title"]},
+                "card_id",
             )
-            card_result: dict[str, Any] = {
-                "status": "ok",
-                "target": "card",
-                "card_id": card_id,
-                "title": ir["title"],
-            }
             if ir.get("unused"):
-                card_result["warning"] = "not shown on the card: " + ", ".join(
+                card.result["warning"] = "not shown on the card: " + ", ".join(
                     ir["unused"]
                 )
-            return card_result
+            return card
         # page create or edit
         page_id = block["target"]
         if page_id in BUILTIN_PAGES:
@@ -601,27 +641,27 @@ class MiniAppService:
         source = program.to_source()
         ir = compile_program(parse(source))
         await self._check_templates(user, ir)
-        version = await self.store.save_page(
+        write = PageSave(
             owner,
             page_id,
-            title=ir["title"],
-            source=source,
-            ir=ir,
-            base_version=(existing["version"] if existing else 0)
+            ir["title"],
+            source,
+            ir,
+            (existing["version"] if existing else 0)
             if base_version is None
             else base_version,
-            created_by="blacki",
-            note=block.get("note"),
+            "blacki",
+            block.get("note"),
         )
-        page_result: dict[str, Any] = {
-            "status": "ok",
-            "target": page_id,
-            "version": version,
-            "title": ir["title"],
-        }
+        page = _PreparedBlock(
+            page_id,
+            write,
+            {"status": "ok", "target": page_id, "title": ir["title"]},
+            "version",
+        )
         if ir.get("unused"):
-            page_result["warning"] = "not shown on the page: " + ", ".join(ir["unused"])
-        return page_result
+            page.result["warning"] = "not shown on the page: " + ", ".join(ir["unused"])
+        return page
 
     async def _check_templates(self, user: MiniAppUser, ir: dict[str, Any]) -> None:
         """@Log needs an existing INSERT template and tracker reads a SELECT one."""
@@ -707,6 +747,33 @@ _COMMAND = re.compile(
     r"|(move)\s+([a-z][a-z0-9-]{1,31})\s+to\s+(\d{1,3})"
     r"|(note)\s+\"([^\"]{1,120})\")\s*$"
 )
+
+
+@dataclass
+class _PreparedBlock:
+    """A checked block waiting for the batch commit."""
+
+    target: Any
+    write: StoreWrite
+    result: dict[str, Any]
+    # Result key the store's outcome fills in (version or card_id), if any.
+    outcome_key: str | None = None
+
+
+def _not_saved(
+    earlier: list[_PreparedBlock], failure: dict[str, Any]
+) -> dict[str, Any]:
+    """Report a rejected script: earlier blocks were checked but not written."""
+    results: list[dict[str, Any]] = [
+        {"status": "not_saved", "target": item.target} for item in earlier
+    ]
+    results.append(failure)
+    return {
+        "status": "error",
+        "saved": False,
+        "results": results,
+        "message": "nothing was saved; fix the error and send the whole script again",
+    }
 
 
 def _split_blocks(code: str) -> list[dict[str, Any]]:

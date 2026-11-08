@@ -64,6 +64,8 @@ async def miniapp_write(
       card "Title"               a one-off card; the user gets an Open in app button
       delete page <id> | revert <id> to <n> | move <id> to <position>
     Editing an existing page needs base_version from miniapp_read("page <id>").
+    All blocks in one call save together or not at all: if any block fails,
+    nothing is saved. A page can appear in one block per call.
     The server validates everything and returns line-numbered errors to fix.
     Saved pages are versioned; the user can undo. The theme can't be changed.
     """
