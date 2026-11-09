@@ -22,6 +22,7 @@ dependencies = [
     "python-dotenv>=1.0.0,<2.0.0",
     "openai>=2.20,<3",
     "aiosqlite>=0.20.0",
+    "sqlalchemy>=2,<3",
     "greenlet>=3.0.0",
     "openinference-instrumentation-google-adk==0.1.17",
     "httpx>=0.27.0,<1.0.0",
@@ -30,7 +31,6 @@ dependencies = [
     "apscheduler>=3.11.0,<4.0.0",
     "dateparser>=1.2.0,<2.0.0",
     "opensandbox>=0.1.7",
-    "mem0ai>=0.1.0,<1.0.0",
     "opensandbox-code-interpreter>=0.1.2",
     "boto3>=1.40.0,<2.0.0",
     "websockets>=15.0.1,<16.0.0",
@@ -43,6 +43,7 @@ server = "blacki.server:main"
 dev = [
     # `google-adk[eval]` is intentionally omitted: it pulls LiteLLM through
     # google-cloud-aiplatform[evaluation]. Install it explicitly for `adk eval`.
+    "numpy==2.4.4",  # Local speech client
     "ruff>=0.12.7,<1.0.0",
     "mypy>=1.17.1,<2.0.0",
     "pytest>=8.3.4,<9.0.0",
@@ -114,7 +115,7 @@ strict_equality = true
 show_error_codes = true
 
 [[tool.mypy.overrides]]
-module = ["apscheduler.*", "opensandbox.*", "mem0", "mem0.*", "boto3.*", "botocore.*"]
+module = ["apscheduler.*", "opensandbox.*", "boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
@@ -123,7 +124,6 @@ branch = true
 omit = [
     "src/blacki/**/__init__.py",
     "src/blacki/**/agent.py",
-    "src/blacki/memory/config.py",
 ]
 
 [tool.coverage.report]
@@ -144,6 +144,4 @@ filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
     # google-genai still emits this third-party warning while constructing types.
     "ignore::pydantic.warnings.PydanticDeprecatedSince212:google.genai.types",
-    # mem0 still uses instance-level model_fields in its project client.
-    "ignore::pydantic.warnings.PydanticDeprecatedSince20:mem0.client.project",
 ]

@@ -28,6 +28,9 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "start_browser_takeover",
         "miniapp_read",
         "miniapp_write",
+        "wiki_read",
+        "wiki_write",
+        "search_past_sessions",
     }
 )
 
@@ -73,6 +76,7 @@ def private_tool_privacy_enabled() -> bool:
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
+        or os.getenv("BLACKI_WIKI_ENABLED", "").strip().lower() in _ENABLED_VALUES
         or bool(os.getenv("BROWSER_TAKEOVER_PUBLIC_URL", "").strip())
     )
 

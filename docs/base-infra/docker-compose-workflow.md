@@ -99,8 +99,7 @@ mounts, then executes the server as the non-root `app` user.
 The healthcheck uses Python's standard HTTP client to call `/ready` inside the
 container. Readiness returns HTTP 503 until SQLite is initialized and whenever
 its side-effect-free `SELECT 1` check fails. `/live` checks only that the
-application event loop is serving requests. Optional Mem0 is not
-readiness-critical.
+application event loop is serving requests.
 
 ```bash
 docker compose -f compose.yaml -f compose.prod.yaml ps

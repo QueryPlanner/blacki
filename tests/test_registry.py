@@ -69,12 +69,12 @@ class TestToolConfig:
 class TestBuildTools:
     """Tests for build_tools function."""
 
-    def test_empty_config_returns_memory_tools(self) -> None:
-        """Should return memory tools even with empty config."""
+    def test_empty_config_returns_weather_tools(self) -> None:
+        """Should return weather tools with empty config."""
         config = ToolConfig()
         tools = build_tools(config)
 
-        assert len(tools) == 8
+        assert len(tools) == 2
 
     def test_brave_search_tools_added(self) -> None:
         """Should add Brave Search tools when API key provided."""
@@ -82,7 +82,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 9
+        assert len(tools) == 3
 
     def test_exa_search_tools_added_first(self) -> None:
         """Should register Exa before Brave when both keys are provided."""
@@ -94,7 +94,7 @@ class TestBuildTools:
         tools = build_tools(config)
 
         assert [tool.__name__ for tool in tools[:2]] == ["exa_search", "brave_search"]
-        assert len(tools) == 10
+        assert len(tools) == 4
 
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when sqlite path provided."""
@@ -110,7 +110,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 16
+        assert len(tools) == 10
 
     def test_sandbox_tool_order_keeps_effective_list_files_registration(self) -> None:
         """Keep the observed single list-files registration explicit.
@@ -139,7 +139,7 @@ class TestBuildTools:
 
         tools = build_tools(config)
 
-        assert len(tools) == 6
+        assert len(tools) == 0
 
     def test_all_tools_with_full_config(self) -> None:
         """Should include all tools with full configuration."""
@@ -298,9 +298,9 @@ class TestBuildTools:
         tools = build_tools(config, include_user_scoped_tools=True)
 
         assert "send_text_to_speech" not in {tool.__name__ for tool in tools}
-        # Six base tools plus the Mini App pair, which is always on for the root.
+        # The Mini App pair is always on for the root.
         assert {"miniapp_read", "miniapp_write"} <= {tool.__name__ for tool in tools}
-        assert len(tools) == 8
+        assert len(tools) == 2
         assert "Kokoro TTS disabled" in caplog.text
 
     def test_invalid_gmail_credentials_disable_only_gmail(
@@ -354,7 +354,7 @@ class TestBuildTools:
             config = ToolConfig(brave_search_api_key="test-key")
             tools = build_tools(config)
 
-            assert len(tools) == 8
+            assert len(tools) == 2
 
     def test_build_exa_search_tools_import_error(self) -> None:
         """Should omit Exa Search if its module cannot be imported."""
@@ -653,18 +653,6 @@ class TestBuildSandboxTools:
 
         assert len(tools) == 8
         assert "sandbox_view_image" in {tool.__name__ for tool in tools}
-
-
-class TestBuildMemoryTools:
-    """Tests for _build_memory_tools."""
-
-    def test_returns_tools_when_available(self) -> None:
-        """Should return memory tools when available."""
-        from blacki.tools.registry import _build_memory_tools
-
-        tools = _build_memory_tools()
-
-        assert len(tools) == 6
 
 
 class TestBuildSkillTools:

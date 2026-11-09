@@ -188,27 +188,12 @@ scopes configured and the resulting consent is verified.
 These integrations are optional. Their absence should not replace the required
 model key.
 
-## Mem0 memory
+## Private wiki
 
-Mem0 is optional. The current samples support:
-
-- `MEM0_LLM_PROVIDER`, `MEM0_LLM_MODEL`, `MEM0_LLM_API_KEY`,
-  `MEM0_LLM_TEMPERATURE`, and `MEM0_LLM_MAX_TOKENS`;
-- `MEM0_EMBEDDER_PROVIDER`, `MEM0_EMBEDDER_MODEL`,
-  `MEM0_EMBEDDER_DIMS`, and `MEM0_EMBEDDER_API_KEY`;
-- `MEM0_USER_ID`, `MEM0_COLLECTION_NAME`, and `MEM0_SEARCH_LIMIT`;
-- Qdrant Cloud through `MEM0_QDRANT_URL` and `MEM0_QDRANT_API_KEY`;
-- local embedded Qdrant through `MEM0_QDRANT_PATH`; or
-- a remote server through `MEM0_QDRANT_HOST` and `MEM0_QDRANT_PORT`.
-
-Compose mounts `./data` at `/app/data`. Use a path under `/app/data` for local
-memory that must persist:
-
-```dotenv
-MEM0_QDRANT_PATH=/app/data/qdrant
-```
-
-If Qdrant Cloud values are present, the provider stores the vectors remotely.
+Set `BLACKI_WIKI_ENABLED=true` to make private Telegram memory available. Each
+user enables it with `/memory on`. The wiki is stored in `wiki.db` beside
+`tools.db` or the configured `SQLITE_PATH`. Past session search reads the
+Telegram ADK SQLite database. [Telegram setup](../telegram-setup.md#private-wiki)
 
 ## OpenSandbox
 

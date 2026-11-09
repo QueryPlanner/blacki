@@ -8,6 +8,9 @@ import hashlib
 import hmac
 import logging
 import re
+import secrets
+import sqlite3
+import time
 from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -31,6 +34,8 @@ from blacki.models.inference import (
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.utils.preferences import get_preferences_storage
+from blacki.wiki.storage import Source, WikiStore
+from blacki.wiki.tools import WikiTurn, wiki_turn
 
 from . import TelegramConfig
 from .access import TelegramAccessStorage, TelegramIdentity, get_telegram_access_storage
@@ -181,6 +186,7 @@ class TelegramBot:
         access_storage: TelegramAccessStorage | None = None,
         voice_transcriber: VoiceTranscriber | None = None,
         gmail_oauth_service: GmailOAuthService | None = None,
+        wiki_store: WikiStore | None = None,
     ) -> None:
         """Initialize the Telegram bot."""
         self.config = config
@@ -188,6 +194,8 @@ class TelegramBot:
         self.google_health_service = google_health_service
         self.gmail_oauth_service = gmail_oauth_service
         self.access_storage = access_storage
+        self.wiki_store = wiki_store
+        self._wiki_forget: dict[int, tuple[str, str, str, int, float]] = {}
         self._voice_transcriber = (
             voice_transcriber or CloudflareWhisperTranscriber.from_environment()
         )
@@ -1004,14 +1012,128 @@ class TelegramBot:
                 await self._handle_command(message, user_message)
                 return
 
-            await self._handle_message(
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                user_message=user_message,
-                sender_user_id=message.from_user.id if message.from_user else None,
-            )
+            with wiki_turn(self._wiki_text_turn(message, user_message)):
+                await self._handle_message(
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    user_message=user_message,
+                    sender_user_id=message.from_user.id if message.from_user else None,
+                )
         finally:
             self._chat_type_context.reset(token)
+
+    def _wiki_text_turn(self, message: Message, text: str) -> WikiTurn | None:
+        if (
+            self.wiki_store is None
+            or message.chat.type != ChatType.PRIVATE
+            or not message.from_user
+            or message.from_user.id != message.chat.id
+        ):
+            return None
+        locator = self._build_session_identity(
+            chat_id=str(message.chat.id), message_thread_id=message.message_thread_id
+        )
+        source = None
+        if (
+            not (
+                message.forward_origin
+                or message.forward_from
+                or message.forward_from_chat
+                or message.forward_sender_name
+                or message.sender_chat
+            )
+            and len(text) <= 600
+        ):
+            source = Source(f"tg:{message.message_id}", text, message.date.isoformat())
+        return WikiTurn(
+            self.wiki_store,
+            self.runtime.wiki_history_path(),
+            message.chat.id,
+            locator.user_id,
+            current=source,
+            request=text,
+        )
+
+    async def _handle_memory_command(self, message: Message, command: str) -> None:
+        turn = self._wiki_text_turn(message, command)
+        if not turn or not turn.current:
+            return
+        args = command.split()
+        reply = (
+            "Use /memory on, /memory off, /memory list, "
+            "or /memory forget <path> <fact>."
+        )
+        try:
+            if len(args) == 2 and args[1] in {"on", "off"}:
+                enabled = args[1] == "on"
+                await asyncio.to_thread(turn.store.set_enabled, turn.owner, enabled)
+                reply = (
+                    "Memory enabled. Blacki can search your private chats "
+                    "and store supported wiki claims."
+                    if enabled
+                    else "Memory paused."
+                )
+            elif len(args) == 2 and args[1] == "list":
+                _, entries = await asyncio.to_thread(turn.store.inspect, turn.owner)
+                reply = (
+                    "\n".join(f"{path} {fact}" for path, fact in entries)
+                    or "Your wiki is empty."
+                )
+            elif len(args) == 4 and args[1] == "forget":
+                revision, entries = await asyncio.to_thread(
+                    turn.store.inspect, turn.owner, args[2], args[3]
+                )
+                if entries:
+                    token = secrets.token_urlsafe(12)
+                    now = time.monotonic()
+                    self._wiki_forget = {
+                        owner: pending
+                        for owner, pending in self._wiki_forget.items()
+                        if pending[-1] > now
+                    }
+                    self._wiki_forget[turn.owner] = (
+                        token,
+                        args[2],
+                        args[3],
+                        revision,
+                        now + 300,
+                    )
+                    reply = (
+                        f"To forget {args[2]} {args[3]}, send /memory confirm "
+                        f"{token} within five minutes. "
+                        "The original chat remains in its transcript."
+                    )
+                else:
+                    reply = "No matching wiki claim."
+            elif len(args) == 3 and args[1] == "confirm":
+                pending = self._wiki_forget.get(turn.owner)
+                if pending and secrets.compare_digest(
+                    args[2].encode(), pending[0].encode()
+                ):
+                    self._wiki_forget.pop(turn.owner, None)
+                    _, path, fact, revision, expires = pending
+                    success = expires > time.monotonic() and await asyncio.to_thread(
+                        turn.store.forget,
+                        turn.owner,
+                        path,
+                        fact,
+                        revision,
+                    )
+                    reply = (
+                        "Forgot the wiki claim."
+                        if success
+                        else "Start a fresh forget request."
+                    )
+                else:
+                    reply = "No matching forget request."
+        except (OSError, sqlite3.Error):
+            reply = "Memory storage is unavailable."
+        await self.api.send_message(
+            chat_id=message.chat.id,
+            text=reply,
+            message_thread_id=message.message_thread_id,
+            parse_mode=None,
+        )
 
     async def _route_non_text_message(self, message: Message) -> None:
         """Route a non-text message to the appropriate handler."""
@@ -1542,7 +1664,9 @@ class TelegramBot:
         chat_id = message.chat.id
         model_argument = _model_command_argument(command)
 
-        if command == "/start":
+        if command.split(maxsplit=1)[0] == "/memory":
+            await self._handle_memory_command(message, command)
+        elif command == "/start":
             await self._send_start_message(chat_id)
         elif command == "/help":
             await self._send_help_message(chat_id)
@@ -2435,13 +2559,36 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
             )
-            await self._run_turn_and_send_response(
-                session_identity=session_identity,
-                chat_id=chat_id,
-                message_thread_id=message_thread_id,
-                state=state,
-                message_text=f"[Scheduled Event] {reminder.message}",
-            )
+            review = None
+            if reminder.wiki_owner is not None:
+                store = self.wiki_store
+                if (
+                    store is None
+                    or reminder.wiki_owner != chat_id
+                    or not await self.miniapp_user_authorized(chat_id)
+                    or not await asyncio.to_thread(store.enabled, chat_id)
+                ):
+                    await self.api.send_message(
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        text="Your scheduled wiki review could not access memory.",
+                    )
+                    return
+                review = WikiTurn(
+                    store,
+                    self.runtime.wiki_history_path(),
+                    chat_id,
+                    session_identity.user_id,
+                    review=True,
+                )
+            with wiki_turn(review):
+                await self._run_turn_and_send_response(
+                    session_identity=session_identity,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    state=state,
+                    message_text=f"[Scheduled Event] {reminder.message}",
+                )
         except Exception:
             logger.exception(
                 "Error processing scheduled reminder %s for chat %s",

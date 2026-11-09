@@ -11,7 +11,7 @@ import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import uvicorn
 from fastapi import FastAPI
@@ -50,7 +50,10 @@ if not private_tool_secure_mode:
 setup_logging(log_level=env.log_level)
 _tracer_provider = setup_tracing()
 
-_telegram_bot = None
+if TYPE_CHECKING:
+    from .telegram.bot import TelegramBot
+
+_telegram_bot: "TelegramBot | None" = None
 _container: AppContainer | None = None
 _google_health_service = None
 _google_health_scheduler = None
@@ -175,6 +178,8 @@ async def _start_telegram_bot() -> None:
         from .agent import create_agent, create_app
         from .telegram import TelegramConfig
         from .telegram.bot import TelegramBot
+        from .wiki.storage import WikiStore
+        from .wiki.tools import wiki_configured
 
         logger.info("Telegram configuration detected, initializing bot...")
         telegram_config = TelegramConfig.model_validate(
@@ -193,6 +198,13 @@ async def _start_telegram_bot() -> None:
             adk_runtime,
             google_health_service=_google_health_service,
             gmail_oauth_service=_gmail_oauth_service,
+            wiki_store=(
+                WikiStore(
+                    Path(env.sqlite_path or DEFAULT_SQLITE_PATH).with_name("wiki.db")
+                )
+                if wiki_configured()
+                else None
+            ),
         )
         logger.info("Telegram bot instance created")
 
@@ -501,7 +513,6 @@ app: FastAPI = get_fast_api_app(
     agents_dir=AGENT_DIR,
     session_service_uri=None,
     artifact_service_uri=None,
-    memory_service_uri="mem0://",
     allow_origins=env.allow_origins_list,
     web=env.serve_web_interface,
     reload_agents=env.reload_agents,
