@@ -142,8 +142,8 @@ class TestAgentIntegration:
                 assert tool is not None
                 assert hasattr(tool, "__class__")
 
-    def test_memory_tools_are_registered(self) -> None:
-        """Verify memory tools stay available to ADK."""
+    def test_legacy_memory_tools_are_absent(self) -> None:
+        """Verify legacy memory tools are absent."""
         agent = app.root_agent
         assert agent is not None
         typed_agent = as_agent_config(agent)
@@ -154,8 +154,8 @@ class TestAgentIntegration:
             for tool in typed_agent.tools
         }
 
-        assert "save_memory" in tool_names
-        assert "search_memory" in tool_names
+        assert "save_memory" not in tool_names
+        assert "search_memory" not in tool_names
 
     def test_openrouter_models_use_openrouter_adapter(self, monkeypatch) -> None:
         monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")

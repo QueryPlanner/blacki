@@ -6,6 +6,8 @@ import os
 
 from google.adk.tools.base_tool import BaseTool
 
+from ..wiki import wiki_configured
+
 _GMAIL_TOOL_PREFIX = "gmail_"
 _ENABLED_VALUES = frozenset({"1", "true", "yes"})
 _PRIVATE_TOOL_NAMES = frozenset(
@@ -28,6 +30,9 @@ _PRIVATE_TOOL_NAMES = frozenset(
         "start_browser_takeover",
         "miniapp_read",
         "miniapp_write",
+        "wiki_read",
+        "wiki_write",
+        "search_past_sessions",
     }
 )
 
@@ -73,6 +78,7 @@ def private_tool_privacy_enabled() -> bool:
         or kokoro_tts_enabled()
         or google_health_enabled()
         or r2_files_enabled()
+        or wiki_configured()
         or bool(os.getenv("BROWSER_TAKEOVER_PUBLIC_URL", "").strip())
     )
 

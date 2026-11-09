@@ -121,8 +121,6 @@ def build_tools(
     if include_user_scoped_tools:
         tools.extend(_build_miniapp_tools())
 
-    tools.extend(_build_memory_tools())
-
     return tools
 
 
@@ -314,31 +312,6 @@ def _build_weather_tools() -> list[Any]:
         return [get_current_weather, get_weather_forecast]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Weather tools: %s", e)
-        return []
-
-
-def _build_memory_tools() -> list[Any]:
-    """Build memory tools."""
-    try:
-        from blacki.tools.memory import (
-            delete_memory,
-            get_all_memories,
-            get_memory,
-            save_memory,
-            search_memory,
-            update_memory,
-        )
-
-        return [
-            save_memory,
-            search_memory,
-            get_all_memories,
-            get_memory,
-            update_memory,
-            delete_memory,
-        ]
-    except ImportError as e:  # pragma: no cover
-        logger.warning("Failed to load Memory tools: %s", e)
         return []
 
 

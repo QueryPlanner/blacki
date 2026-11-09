@@ -44,7 +44,7 @@ mounted local memory remain.
 The state directories are:
 
 - `.adk_state/` for SQLite-backed application data; and
-- `data/` for optional local Mem0/Qdrant data.
+- `data/` for local runtime data and any retained legacy files.
 
 For a consistent filesystem copy, briefly stop the service:
 
@@ -58,8 +58,14 @@ Store the archive away from the VPS. Back up `.env` separately in an encrypted
 secrets system; it contains credentials and is intentionally excluded from the
 state archive.
 
-If Mem0 uses Qdrant Cloud, follow the provider's backup and retention
-procedures instead of assuming `data/` contains the remote vectors.
+Legacy Mem0 and Qdrant records remain outside live recall. Before a separate
+migration or deletion, inventory the configured collection, endpoint or volume,
+and backups. Verify ownership independently of legacy user IDs. To roll back,
+disable the wiki and preserve its database. Use a build with Mem0 disabled.
+
+A wiki backup can predate a forget request. Before serving a restored wiki,
+reconcile subsequent deletions using a newer trusted copy or verified deletion
+records. Use an empty wiki if neither is available.
 
 ## Upgrade a source-built deployment
 

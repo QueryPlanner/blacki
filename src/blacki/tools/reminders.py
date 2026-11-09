@@ -107,6 +107,9 @@ async def schedule_reminder(
 
     try:
         scheduler = get_scheduler()
+        from blacki.wiki.tools import review_reminder_owner
+
+        wiki_owner = await review_reminder_owner(user_id)
         reminder_id = await scheduler.schedule_reminder(
             user_id=user_id,
             message=message,
@@ -114,6 +117,7 @@ async def schedule_reminder(
             recurrence_rule=reminder_schedule["recurrence_rule"],
             recurrence_text=reminder_schedule["recurrence_text"],
             timezone_name=reminder_schedule["timezone_name"],
+            **({"wiki_owner": wiki_owner} if wiki_owner is not None else {}),
         )
 
         display_time = format_stored_instant_for_display(

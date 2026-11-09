@@ -158,9 +158,8 @@ Blacki uses different stores for different responsibilities:
 | ADK HTTP/web conversation sessions | In-memory ADK session service | No |
 | Reminders, calories, workouts, preferences, declarative data | SQLite | Yes |
 | Telegram runtime session metadata | SQLite-backed application state | Yes |
+| Private Telegram wiki | SQLite (`wiki.db`) | Yes with the Compose volume |
 | Telegram photo parts in ADK history | SQLite-backed session events | Yes |
-| Optional Mem0 memory with local Qdrant | `/app/data` | Yes with the Compose volume |
-| Optional Mem0 memory with Qdrant Cloud | Managed Qdrant | Provider-managed |
 | Google Health refresh tokens, normalized summaries, full-record archive, and import checkpoints | SQLite (`tools.db`), tokens encrypted at rest | Yes with the Compose volume |
 | Google Health meal export revisions and retry state | SQLite (`tools.db`), payloads account-bound and sent over HTTPS | Yes with the Compose volume |
 | Application logs and traces | JSON files under `/app/logs` | Yes with the Compose volume |
@@ -192,7 +191,6 @@ Optional tools follow the project's cloud-first principle:
   and screenshots remain in the temporary sandbox, and this tool adds no
   saved-login service or durable file retention;
 - speech synthesis can use a private Kokoro API reachable over Tailscale;
-- vector memory can use Qdrant Cloud;
 - code execution can use an OpenSandbox server; and
 - health summaries can use Google Health API after private Telegram OAuth.
 
@@ -273,8 +271,6 @@ takeover.
 `/live` is side-effect-free and process-only. `/ready` checks the already
 initialized SQLite connection and returns HTTP 503 during startup or database
 failure. `/health` delegates to the same implementation for compatibility.
-Optional Mem0 memory is not readiness-critical and probes never lazily
-initialize it.
 
 ## Security boundary
 

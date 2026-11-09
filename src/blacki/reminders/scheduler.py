@@ -211,6 +211,7 @@ class ReminderScheduler:
         recurrence_rule: str | None = None,
         recurrence_text: str | None = None,
         timezone_name: str | None = None,
+        wiki_owner: int | None = None,
     ) -> int:
         """Schedule a new reminder.
 
@@ -230,6 +231,7 @@ class ReminderScheduler:
             recurrence_text=recurrence_text,
             timezone_name=timezone_name,
             created_at=now_utc().isoformat(timespec="seconds"),
+            wiki_owner=wiki_owner,
         )
 
         reminder_id = await self.storage.add_reminder(reminder)

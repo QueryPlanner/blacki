@@ -744,37 +744,11 @@ def test_runtime_accepts_transport_specific_app() -> None:
     assert runtime.runner.app is transport_app
 
 
-def test_create_adk_runtime_uses_mem0_when_client_available(
-    tmp_path: Path,
-) -> None:
-    """Test runtime uses Mem0MemoryService when client is available."""
-    from unittest.mock import MagicMock
-
-    from blacki.memory.mem0_memory_service import Mem0MemoryService
-
+def test_create_adk_runtime_without_legacy_memory(tmp_path: Path) -> None:
     env = _build_server_env()
     env.agent_dir = str(tmp_path)
-
-    mock_client = MagicMock()
-    with patch("blacki.memory.config.get_memory_client", return_value=mock_client):
-        runtime = create_adk_runtime(env)
-
-    assert isinstance(runtime.runner.memory_service, Mem0MemoryService)
-
-
-def test_create_adk_runtime_falls_back_to_in_memory_when_mem0_unavailable(
-    tmp_path: Path,
-) -> None:
-    """Test runtime falls back to InMemoryMemoryService when Mem0 unavailable."""
-    from google.adk.memory.in_memory_memory_service import InMemoryMemoryService
-
-    env = _build_server_env()
-    env.agent_dir = str(tmp_path)
-
-    with patch("blacki.memory.config.get_memory_client", return_value=None):
-        runtime = create_adk_runtime(env)
-
-    assert isinstance(runtime.runner.memory_service, InMemoryMemoryService)
+    runtime = create_adk_runtime(env)
+    assert runtime.runner.memory_service is None
 
 
 def test_extract_session_version_rejects_invalid_format() -> None:

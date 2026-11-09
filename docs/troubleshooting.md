@@ -96,8 +96,7 @@ container.
 ## /ready returns HTTP 503
 
 `status: starting` means application startup has not finished. `status:
-degraded` with `database: unhealthy` means SQLite is unavailable. Optional
-Mem0 configuration does not affect readiness. `/health` is an exact
+degraded` with `database: unhealthy` means SQLite is unavailable. `/health` is an exact
 compatibility alias; `/live` can still return HTTP 200 while readiness is 503.
 
 ## The web interface is unreachable

@@ -148,14 +148,17 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
     Returns:
         Configured LlmAgent instance.
     """
-    from google.adk.tools.preload_memory_tool import PreloadMemoryTool
-
     tool_config = build_tool_config_from_env()
     agent_tools = build_tools(
         tool_config,
         include_user_scoped_tools=include_user_scoped_tools,
     )
-    agent_tools.append(PreloadMemoryTool())
+    if include_user_scoped_tools:
+        from blacki.wiki import wiki_configured
+        from blacki.wiki.tools import WikiToolset
+
+        if wiki_configured():
+            agent_tools.append(WikiToolset())
 
     before_tool_callbacks: list[Any] = [logging_callbacks.before_tool]
     after_model_callbacks: list[Any] = [logging_callbacks.after_model]
@@ -225,6 +228,10 @@ def create_app(agent: LlmAgent | None = None) -> App:
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         ResponsePolicyPlugin(name="response_policy"),
     ]
+    from blacki.wiki.tools import WikiPolicyPlugin, WikiToolset
+
+    if any(isinstance(tool, WikiToolset) for tool in getattr(agent, "tools", ())):
+        plugins.append(WikiPolicyPlugin(name="private_wiki"))
     if not private_tool_privacy_enabled():
         plugins.append(PrivacyAwareLoggingPlugin())
     else:

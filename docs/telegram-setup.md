@@ -330,3 +330,19 @@ booleans do not become zero. Provider-side deletion does not remove archived
 observations. Pagination is a live view, so new ingestion can change later pages.
 Queries have a two-second execution budget; large archives can hit that limit
 even for narrow dates because version selection precedes date filtering.
+
+## Private wiki
+
+Memory is enabled by default in private Telegram chats. Blacki can search eligible past conversations and keep
+source-backed wiki claims about durable preferences and decisions.
+`/memory off` pauses access and `/memory on` resumes it. Use `/memory list` to find claim keys and
+`/memory forget <path> <fact>` to start a confirmed removal. Forgetting
+suppresses known source messages from memory retrieval. Original chat
+transcripts and backups follow their own retention rules.
+
+Ask "Review the Blacki wiki using this week's project discussions" to review
+in chat. To authorize an existing reminder to run the review, start the
+request with "Schedule wiki review" and specify a time and scope. For example,
+"Schedule wiki review every Friday at 18:00. Check the last seven days of
+Blacki project chats and update supported decisions." Delivery checks that
+the owner still has memory enabled.

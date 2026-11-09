@@ -116,6 +116,8 @@ class Message(BaseModel):
     sender_chat: Chat | None = Field(None, alias="sender_chat")
     date: datetime
     chat: Chat
+    forward_origin: dict[str, Any] | None = None
+    forward_sender_name: str | None = None
     forward_from: User | None = Field(None, alias="forward_from")
     forward_from_chat: Chat | None = Field(None, alias="forward_from_chat")
     reply_to_message: Message | None = Field(None, alias="reply_to_message")
