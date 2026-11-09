@@ -190,8 +190,8 @@ model key.
 
 ## Private wiki
 
-Set `BLACKI_WIKI_ENABLED=true` to make private Telegram memory available. Each
-user enables it with `/memory on`. The wiki is stored in `wiki.db` beside
+Private Telegram memory is enabled by default. Set `BLACKI_WIKI_ENABLED=false`
+to disable it for the deployment. Users can pause it with `/memory off`. The wiki is stored in `wiki.db` beside
 `tools.db` or the configured `SQLITE_PATH`. Past session search reads the
 Telegram ADK SQLite database. [Telegram setup](../telegram-setup.md#private-wiki)
 

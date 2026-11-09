@@ -167,6 +167,7 @@ async def test_review_grant_requires_private_owner(tmp_path: Path) -> None:
     store = WikiStore(tmp_path / "wiki.db")
     source = Source("tg:1", "Schedule wiki review every Friday.", "2026-11-09")
     turn = WikiTurn(store, None, 12, "telegram-chat-12", source, request=source.text)
+    store.set_enabled(12, False)
     with wiki_turn(turn):
         assert await review_reminder_owner(turn.locator) is None
         store.set_enabled(12, True)
@@ -322,6 +323,7 @@ async def test_memory_controls_through_private_telegram(
         )
         await bot._safe_handle_update(update)
 
+    store.set_enabled(12, False)
     await send("/memory on", 1, "group")
     assert not store.enabled(12)
     await send("/memory on", 2)
@@ -333,7 +335,7 @@ async def test_memory_controls_through_private_telegram(
             "tone",
             "Short replies.",
             Source("tg:3", "Use short replies.", "2026-11-09"),
-            0,
+            1,
             False,
         )
         == "saved"
@@ -580,6 +582,7 @@ async def test_broken_wiki_storage_fails_closed(tmp_path: Path) -> None:
         assert wiki_origin() == {"blacki_wiki": {"owner": 12}}
 
     store = WikiStore(tmp_path / "wiki.db")
+    store.set_enabled(12, False)
     assert store.read(12, "search", "") == {"status": "disabled"}
     source = Source("tg:1", "Use vim.", "2026-11-09")
     assert (
@@ -772,3 +775,24 @@ async def test_existing_reminder_schema_and_in_memory_history(tmp_path: Path) ->
     finally:
         await db.close()
         await memory_session_service.close()
+
+
+def test_memory_defaults_to_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blacki.wiki import wiki_configured
+
+    monkeypatch.delenv("BLACKI_WIKI_ENABLED", raising=False)
+    assert wiki_configured()
+    store = WikiStore(tmp_path / "wiki.db")
+    assert store.enabled(42)
+    assert store.read(42, "search", "")["revision"] == 0
+    source = Source("tg:1", "Use SQLite.", "2026-11-09")
+    assert (
+        store.write(42, "project.md", "database", source.text, source, 0, False)
+        == "saved"
+    )
+    store.set_enabled(42, False)
+    assert not store.enabled(42)
+    monkeypatch.setenv("BLACKI_WIKI_ENABLED", "false")
+    assert not wiki_configured()

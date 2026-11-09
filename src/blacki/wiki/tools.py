@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -46,10 +45,6 @@ date range. Resolve clear corrections, merge repeated evidence, and leave
 unresolved conflicts disputed. Finish without a write when evidence is insufficient.
 A scheduled review instruction is a task, never factual evidence.
 """
-
-
-def wiki_configured() -> bool:
-    return os.getenv("BLACKI_WIKI_ENABLED", "").strip().lower() in {"1", "true", "yes"}
 
 
 @dataclass

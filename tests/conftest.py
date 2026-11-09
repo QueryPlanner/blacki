@@ -1,6 +1,7 @@
 """Shared pytest fixtures for all tests."""
 
 import asyncio
+import os
 import warnings
 from collections.abc import Callable, Generator
 from contextlib import AbstractContextManager
@@ -9,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import dotenv
 import pytest
+
+os.environ.setdefault("BLACKI_WIKI_ENABLED", "false")
 
 # Neutralize dotenv loading in test runs so tests do not inherit developer .env
 dotenv.load_dotenv = lambda *args, **kwargs: False

@@ -63,7 +63,7 @@ class WikiStore:
             row = db.execute(
                 "SELECT enabled FROM wiki_owners WHERE owner=?", (owner,)
             ).fetchone()
-            return bool(row and row["enabled"])
+            return row is None or bool(row["enabled"])
 
     def set_enabled(self, owner: int, enabled: bool) -> None:
         with self.connect() as db:
@@ -81,9 +81,9 @@ class WikiStore:
             state = db.execute(
                 "SELECT enabled, revision FROM wiki_owners WHERE owner=?", (owner,)
             ).fetchone()
-            if not state or not state["enabled"]:
+            if state is not None and not state["enabled"]:
                 return {"status": "disabled"}
-            revision = state["revision"]
+            revision = state["revision"] if state else 0
             if mode == "page":
                 rows = db.execute(
                     """
@@ -169,7 +169,7 @@ class WikiStore:
             state = db.execute(
                 "SELECT enabled, revision FROM wiki_owners WHERE owner=?", (owner,)
             ).fetchone()
-            if not state or not state["enabled"]:
+            if state is not None and not state["enabled"]:
                 return "disabled"
             rows = db.execute(
                 """
@@ -189,8 +189,12 @@ class WikiStore:
             ).fetchall()
             if any(row["kind"] == "source" or not explicit for row in blocked):
                 return "forgotten"
-            if revision != state["revision"]:
+            if revision != (state["revision"] if state else 0):
                 return "stale_revision"
+            db.execute(
+                "INSERT OR IGNORE INTO wiki_owners(owner, enabled) VALUES (?, 1)",
+                (owner,),
+            )
             # Replace only when the evidence is a newer, explicit correction.
             correction = source.text.lstrip().casefold().startswith(
                 ("actually ", "actually,", "correction:", "update:", "remember ")

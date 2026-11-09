@@ -178,8 +178,8 @@ async def _start_telegram_bot() -> None:
         from .agent import create_agent, create_app
         from .telegram import TelegramConfig
         from .telegram.bot import TelegramBot
+        from .wiki import wiki_configured
         from .wiki.storage import WikiStore
-        from .wiki.tools import wiki_configured
 
         logger.info("Telegram configuration detected, initializing bot...")
         telegram_config = TelegramConfig.model_validate(

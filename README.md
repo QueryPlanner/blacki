@@ -50,7 +50,7 @@ and upgrade notes.
 | Data | Host path | Notes |
 | --- | --- | --- |
 | Tools, reminders, preferences, and Telegram state | `.adk_state/` | SQLite |
-| Private Telegram wiki | `.adk_state/wiki.db` | Optional, owner opt-in |
+| Private Telegram wiki | `.adk_state/wiki.db` | Enabled by default in private chats |
 | Application JSON logs and traces | `logs/` | Monitor and rotate these files |
 | ADK HTTP/web sessions | Not persisted | In-memory and reset on restart |
 

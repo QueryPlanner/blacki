@@ -19,7 +19,8 @@ from google.genai import types
 
 from ..models.inference import InferenceProfile, inference_profile_context
 from ..utils.config import ServerEnv
-from ..wiki.tools import wiki_configured, wiki_origin
+from ..wiki import wiki_configured
+from ..wiki.tools import wiki_origin
 
 logger = logging.getLogger(__name__)
 

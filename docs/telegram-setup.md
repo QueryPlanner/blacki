@@ -333,10 +333,9 @@ even for narrow dates because version selection precedes date filtering.
 
 ## Private wiki
 
-With `BLACKI_WIKI_ENABLED=true` on the server, send `/memory on` in your
-private chat. Blacki can search eligible past conversations and keep
+Memory is enabled by default in private Telegram chats. Blacki can search eligible past conversations and keep
 source-backed wiki claims about durable preferences and decisions.
-`/memory off` pauses access. Use `/memory list` to find claim keys and
+`/memory off` pauses access and `/memory on` resumes it. Use `/memory list` to find claim keys and
 `/memory forget <path> <fact>` to start a confirmed removal. Forgetting
 suppresses known source messages from memory retrieval. Original chat
 transcripts and backups follow their own retention rules.

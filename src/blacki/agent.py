@@ -154,7 +154,8 @@ def create_agent(*, include_user_scoped_tools: bool = False) -> LlmAgent:
         include_user_scoped_tools=include_user_scoped_tools,
     )
     if include_user_scoped_tools:
-        from blacki.wiki.tools import WikiToolset, wiki_configured
+        from blacki.wiki import wiki_configured
+        from blacki.wiki.tools import WikiToolset
 
         if wiki_configured():
             agent_tools.append(WikiToolset())

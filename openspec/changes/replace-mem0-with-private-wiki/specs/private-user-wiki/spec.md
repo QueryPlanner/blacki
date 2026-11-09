@@ -2,9 +2,9 @@
 
 ### Requirement: Private memory tools
 
-Blacki SHALL expose wiki read, wiki write, and bounded history search to verified private Telegram owners who enable memory.
+Blacki SHALL expose wiki read, wiki write, and bounded history search to verified private Telegram owners by default, with an owner opt-out.
 
-#### Scenario: A private owner enables memory
+#### Scenario: A private owner uses memory without setup
 
 - **WHEN** an enabled owner discusses a durable decision in private
 - **THEN** Blacki can update the relevant wiki page with verified user evidence
