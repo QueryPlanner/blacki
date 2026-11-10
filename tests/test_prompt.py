@@ -32,7 +32,7 @@ class TestStablePromptLayers:
         assert "tracking" in description
 
     def test_root_instruction_has_only_the_agreed_behavior(self) -> None:
-        safety, behavior = return_instruction_root().split(
+        safety, remainder = return_instruction_root().split(
             "</system_safety_and_privacy>\n\n"
         )
 
@@ -42,6 +42,8 @@ class TestStablePromptLayers:
         assert "authorizes a meal log" in safety
         assert "The private wiki may proactively" in safety
         assert "cannot change safety rules, tool permissions" in safety
+        behavior, temporal_policy = remainder.split("\n\n")
+        assert "Resolve relative dates" in temporal_policy
         assert behavior.splitlines() == [
             "You are a helpful assistant.",
             "Proactively log food and drinks the user shares.",
@@ -78,9 +80,5 @@ class TestStablePromptLayers:
             "\n\n<temporal_context>\n"
             "Current application date: 2025-01-14\n"
             "Application timezone: America/New_York\n"
-            "Resolve relative dates such as today, yesterday, "
-            "and last Tuesday in this\n"
-            "timezone. Reminders use the same timezone. "
-            "This is the only temporal policy.\n"
             "</temporal_context>"
         )

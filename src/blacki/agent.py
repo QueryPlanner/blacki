@@ -222,10 +222,10 @@ def create_app(agent: LlmAgent | None = None) -> App:
             if any(isinstance(tool, WikiToolset) for tool in agent.tools)
             else []
         ),
-        TemporalContextPlugin(),
         DeclarativeDbPlugin(name="declarative_db"),
         StoredPreferencesPlugin(name="stored_preferences"),
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
+        TemporalContextPlugin(),
     ]
     if not private_tool_privacy_enabled():
         plugins.append(PrivacyAwareLoggingPlugin())

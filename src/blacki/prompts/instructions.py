@@ -37,6 +37,11 @@ Proactively log food and drinks the user shares.
 You can track the user's health data and training using the available tools."""
 
 
+TEMPORAL_POLICY = """\
+Resolve relative dates such as today, yesterday, and last Tuesday in the
+application timezone. Reminders use the same timezone."""
+
+
 def return_description_root() -> str:
     """Return the root agent's short capability description."""
     return (
@@ -47,7 +52,9 @@ def return_description_root() -> str:
 
 def return_instruction_root() -> str:
     """Return the fixed instructions that lead each request."""
-    return f"{SAFETY_AND_PRIVACY_RULES}\n\n{ROOT_ASSISTANT_BEHAVIOR}"
+    return (
+        f"{SAFETY_AND_PRIVACY_RULES}\n\n{ROOT_ASSISTANT_BEHAVIOR}\n\n{TEMPORAL_POLICY}"
+    )
 
 
 def return_temporal_context() -> str:
@@ -59,13 +66,11 @@ def return_temporal_context() -> str:
 <temporal_context>
 Current application date: {local_date}
 Application timezone: {timezone_name}
-Resolve relative dates such as today, yesterday, and last Tuesday in this
-timezone. Reminders use the same timezone. This is the only temporal policy.
 </temporal_context>"""
 
 
 class TemporalContextPlugin(BasePlugin):
-    """Append the changing application date after the fixed instructions."""
+    """Append the application date and timezone as the final prompt block."""
 
     def __init__(self) -> None:
         super().__init__(name="temporal_context")

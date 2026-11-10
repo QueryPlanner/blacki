@@ -11,6 +11,8 @@ adapter's behavior.
 
 from __future__ import annotations
 
+import hmac
+import json
 import logging
 from collections.abc import AsyncGenerator, Callable
 from pathlib import Path
@@ -90,6 +92,11 @@ class OpenRouterLlm(BaseLlm):
         )
         self._client_factory = client_factory
 
+    def session_affinity_id(self, *, app: str, user: str, session: str) -> str:
+        """Scope the routing ID without exposing the transport's identifiers."""
+        identity = json.dumps(["blacki:openrouter:session:v1", app, user, session])
+        return hmac.digest(self._api_key.encode(), identity.encode(), "sha256").hex()
+
     async def generate_content_async(
         self,
         llm_request: LlmRequest,
@@ -102,6 +109,10 @@ class OpenRouterLlm(BaseLlm):
         requested_model = llm_request.model or self.model
         api_model = canonical_openrouter_model_id(requested_model)
         request = build_chat_request(llm_request, model=api_model)
+        if not any(
+            name.lower() == "x-openrouter-metadata" for name in request.extra_headers
+        ):
+            request.extra_headers["X-OpenRouter-Metadata"] = "enabled"
 
         timeout_seconds = (
             request.timeout_seconds
@@ -141,10 +152,14 @@ class OpenRouterLlm(BaseLlm):
     ) -> AsyncGenerator[LlmResponse, None]:
         stream = await client.chat.completions.create(**create_kwargs)
         accumulator = OpenRouterStreamAccumulator()
+        routing: dict[str, Any] = {}
         try:
             async for chunk in stream:
                 raw = chunk.model_dump(exclude_none=True)
-                await observe_response(raw, ledger_model, self._ledger_path)
+                for field in ("model", "openrouter_metadata"):
+                    if raw.get(field):
+                        routing[field] = raw[field]
+                await observe_response(raw | routing, ledger_model, self._ledger_path)
                 for response in accumulator.add(raw):
                     yield response
         finally:

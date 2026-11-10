@@ -228,6 +228,10 @@ def test_ledger_write_preserves_existing_schema(tmp_path: Path) -> None:
         "cost_kind",
         "cost_source",
         "currency",
+        "cached_tokens",
+        "cache_write_tokens",
+        "resolved_model",
+        "provider",
     ]
 
 

@@ -4,22 +4,31 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 from collections.abc import Callable
+from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 import openai
 import pytest
+from google.adk.agents import LlmAgent
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
+from google.adk.sessions import InMemorySessionService
 from google.genai import types
 from openai import AsyncOpenAI
 
+from blacki.agent import create_app
+from blacki.container import close_container, init_container
 from blacki.models.openrouter import OpenRouterLlm
 from blacki.models.openrouter_request import OpenRouterRequestError
 from blacki.observability.ledger import read_usage_ledger
 from blacki.observability.lifecycle import attach_cost_metadata, begin_cost_capture
+from blacki.prompts.instructions import return_instruction_root
+from blacki.runtime.adk import AdkRuntime, SessionLocator
 
 RequestRecord = dict[str, Any]
 
@@ -93,6 +102,93 @@ def _request(*, model: str | None = None, config: Any = None) -> LlmRequest:
         ],
         config=config or types.GenerateContentConfig(),
     )
+
+
+@pytest.mark.asyncio
+async def test_telegram_openrouter_prompt_and_session_affinity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_TIMEZONE", "Asia/Kolkata")
+    now = datetime(2026, 11, 10, 18, 29, tzinfo=UTC)
+    monkeypatch.setattr("blacki.prompts.instructions.now_utc", lambda: now)
+    records: list[RequestRecord] = []
+
+    def lookup() -> str:
+        """Return the test result."""
+        return "found"
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        tool_call = not records
+        message: dict[str, Any] = {"role": "assistant", "content": "done"}
+        if tool_call:
+            message = {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }
+                ],
+            }
+        return _handler(
+            records,
+            {
+                "id": f"gen-{len(records)}",
+                "model": "openai/test",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": "tool_calls" if tool_call else "stop",
+                    }
+                ],
+            },
+        )(request)
+
+    agent = LlmAgent(
+        name="blacki",
+        model=_llm(respond, tmp_path=tmp_path, model="openrouter/openai/test"),
+        instruction=return_instruction_root(),
+        tools=[lookup],
+    )
+    runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
+    first = SessionLocator(
+        "telegram-chat-123456789", "telegram-chat-123456789-thread-1"
+    )
+    other = SessionLocator(first.user_id, "telegram-chat-123456789-thread-2")
+    state = {"user_id": first.user_id}
+    container = await init_container(tmp_path / "tools.db")
+    try:
+        storage = container.declarative_db_storage
+        await storage.initialize()
+        await storage.set_custom_instruction_override(first.user_id, "units: metric")
+        await runtime.run_user_turn(
+            locator=first, message_text="Look it up", state=state
+        )
+        now = datetime(2026, 11, 10, 18, 31, tzinfo=UTC)
+        await runtime.run_user_turn(locator=first, message_text="Thanks", state=state)
+        await runtime.run_user_turn(
+            locator=other, message_text="New topic", state=state
+        )
+        await runtime.create_next_session(locator=first)
+        await runtime.run_user_turn(
+            locator=first, message_text="After reset", state=state
+        )
+    finally:
+        await close_container()
+
+    headers = [record["headers"]["x-session-id"] for record in records]
+    assert headers[0] == headers[1] == headers[2]
+    assert len(set(headers)) == 3
+    assert all(len(value) <= 256 and "123456789" not in value for value in headers)
+    before, after = (records[i]["body"]["messages"][0]["content"] for i in (0, 2))
+    assert "</stored_user_preferences>" in before
+    assert before.endswith("</temporal_context>")
+    assert "2026-11-10" in before
+    assert before.replace("2026-11-10", "2026-11-11") == after
+    messages = records[1]["body"]["messages"]
+    assert messages[-2]["tool_calls"][0]["id"] == messages[-1]["tool_call_id"]
 
 
 @pytest.mark.asyncio
@@ -258,11 +354,47 @@ async def test_unsupported_config_fails_before_network(tmp_path: Path) -> None:
 async def test_cost_observation_writes_prefixed_model_to_ledger(
     tmp_path: Path,
 ) -> None:
+    records: list[RequestRecord] = []
+    with closing(sqlite3.connect(tmp_path / "costs.db")) as db, db:
+        db.executescript("""
+            CREATE TABLE llm_usage_ledger (
+                dedupe_key TEXT PRIMARY KEY, observed_at REAL NOT NULL,
+                user_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                invocation_id TEXT NOT NULL, model TEXT NOT NULL,
+                provider_response_id TEXT, input_tokens INTEGER,
+                output_tokens INTEGER, total_tokens INTEGER, cost_nano_usd INTEGER,
+                upstream_cost_nano_usd INTEGER, estimated_cost_nano_usd INTEGER,
+                cost_kind TEXT NOT NULL, cost_source TEXT NOT NULL,
+                currency TEXT NOT NULL
+            );
+            INSERT INTO llm_usage_ledger VALUES (
+                'legacy', 1, 'old-user', 'old-session', 'old-inv', 'openrouter/old',
+                'old-gen', 2, 3, 5, 1000, NULL, NULL,
+                'reported', 'provider_usage', 'USD'
+            );
+        """)
     llm = _llm(
         _handler(
-            [],
+            records,
             {
                 "id": "gen-cost",
+                "model": "openai/test-resolved",
+                "openrouter_metadata": {
+                    "endpoints": {
+                        "available": [
+                            {
+                                "model": "openai/test-resolved",
+                                "provider": "Other",
+                                "selected": False,
+                            },
+                            {
+                                "model": "openai/test-resolved",
+                                "provider": "OpenAI",
+                                "selected": True,
+                            },
+                        ]
+                    },
+                },
                 "choices": [
                     {
                         "index": 0,
@@ -275,6 +407,7 @@ async def test_cost_observation_writes_prefixed_model_to_ledger(
                     "completion_tokens": 5,
                     "total_tokens": 15,
                     "cost": 0.01,
+                    "prompt_tokens_details": {"cached_tokens": 0},
                     "cost_details": {"upstream_inference_cost": 0.009},
                 },
             },
@@ -293,6 +426,15 @@ async def test_cost_observation_writes_prefixed_model_to_ledger(
     assert metadata is not None
     assert metadata["cost_usd"] == 0.01
     assert metadata["cost_source"] == "provider_usage"
+    assert records[0]["headers"]["x-openrouter-metadata"] == "enabled"
+    with closing(sqlite3.connect(tmp_path / "costs.db")) as db:
+        assert db.execute(
+            "SELECT cached_tokens, cache_write_tokens, resolved_model, provider "
+            "FROM llm_usage_ledger ORDER BY observed_at"
+        ).fetchall() == [
+            (None, None, None, None),
+            (0, None, "openai/test-resolved", "OpenAI"),
+        ]
 
     ledger = read_usage_ledger(
         tmp_path / "costs.db",
@@ -301,7 +443,8 @@ async def test_cost_observation_writes_prefixed_model_to_ledger(
         month_start=0,
         now=10**12,
     )
-    assert ledger.cumulative.records == 1
+    assert ledger.cumulative.records == 2
+    assert ledger.users["old-user"].cost_nano_usd == 1000
     assert ledger.users["user-1"].cost_nano_usd is not None
 
 
@@ -310,12 +453,13 @@ async def test_streaming_cost_observation_writes_one_ledger_row(
     tmp_path: Path,
 ) -> None:
     sse = (
-        'data: {"id":"gen-stream","choices":[{"index":0,'
-        '"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
+        'data: {"id":"gen-stream","model":"openai/test","openrouter_metadata":'
+        '{"endpoints":{"available":[{"provider":"OpenAI","selected":true}]}},'
+        '"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":"stop"}]}\n\n'
         'data: {"id":"gen-stream","choices":[{"index":0,'
         '"delta":{"content":""},"finish_reason":"stop"}],'
         '"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2,'
-        '"cost":0.002}}\n\n'
+        '"cost":0.002,"prompt_tokens_details":{"cached_tokens":1,"cache_write_tokens":0}}}\n\n'
         "data: [DONE]\n\n"
     )
     llm = _llm(_handler([], sse=sse), tmp_path=tmp_path)
@@ -330,6 +474,11 @@ async def test_streaming_cost_observation_writes_one_ledger_row(
 
     assert metadata is not None
     assert metadata["cost_usd"] == 0.002
+    with closing(sqlite3.connect(tmp_path / "costs.db")) as db:
+        assert db.execute(
+            "SELECT cached_tokens, cache_write_tokens, resolved_model, provider "
+            "FROM llm_usage_ledger"
+        ).fetchall() == [(1, 0, "openai/test", "OpenAI")]
 
     ledger = read_usage_ledger(
         tmp_path / "costs.db",
@@ -395,9 +544,10 @@ async def test_per_request_timeout_and_retry_options_are_forwarded(
     tmp_path: Path,
 ) -> None:
     captures: list[dict[str, Any]] = []
+    records: list[RequestRecord] = []
     llm = _llm(
         _handler(
-            [],
+            records,
             {
                 "choices": [
                     {
@@ -416,6 +566,7 @@ async def test_per_request_timeout_and_retry_options_are_forwarded(
         config=types.GenerateContentConfig(
             http_options=types.HttpOptions(
                 timeout=5_000,
+                headers={"x-openrouter-metadata": "disabled"},
                 retry_options=types.HttpRetryOptions(attempts=4),
             )
         )
@@ -423,6 +574,7 @@ async def test_per_request_timeout_and_retry_options_are_forwarded(
     [response async for response in llm.generate_content_async(request)]
 
     assert captures == [{"timeout": 5.0, "max_retries": 3}]
+    assert records[0]["headers"]["x-openrouter-metadata"] == "disabled"
 
 
 @pytest.mark.asyncio

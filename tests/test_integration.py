@@ -78,9 +78,9 @@ class TestAppIntegration:
 
         assert plugin_names == [
             "telegram_model_override",
-            "temporal_context",
             "declarative_db",
             "stored_preferences",
+            "temporal_context",
             "logging_plugin",
         ]
 

@@ -72,6 +72,17 @@ def _nonnegative_integer(value: Any) -> int | None:
     return int(number) if number is not None else None
 
 
+def _selected_provider(response: Any) -> str | None:
+    metadata = _read_value(response, "openrouter_metadata")
+    endpoints = _read_value(_read_value(metadata, "endpoints"), "available")
+    if isinstance(endpoints, list):
+        for endpoint in endpoints:
+            provider = _read_value(endpoint, "provider")
+            if _read_value(endpoint, "selected") is True and isinstance(provider, str):
+                return provider[:256]
+    return None
+
+
 def extract_cost_observation(response: Any, model: str) -> CostObservation | None:
     """Extract raw provider cost and token fields from an OpenRouter response."""
     usage = _read_value(response, "usage")
@@ -91,8 +102,15 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
         _first_value(usage, ("completion_tokens", "output_tokens"))
     )
     total_tokens = _nonnegative_integer(_first_value(usage, ("total_tokens",)))
+    prompt_details = _read_value(usage, "prompt_tokens_details")
+    cached_tokens = _nonnegative_integer(_read_value(prompt_details, "cached_tokens"))
+    cache_write_tokens = _nonnegative_integer(
+        _read_value(prompt_details, "cache_write_tokens")
+    )
     if (
-        reported_cost is None
+        cached_tokens is None
+        and cache_write_tokens is None
+        and reported_cost is None
         and upstream_cost is None
         and input_tokens is None
         and output_tokens is None
@@ -115,8 +133,15 @@ def extract_cost_observation(response: Any, model: str) -> CostObservation | Non
         if reported_cost is not None or upstream_cost is not None
         else "usage_only"
     )
+    resolved_model = _read_value(response, "model")
     return {
         "model": str(model)[:256],
+        "resolved_model": resolved_model[:256]
+        if isinstance(resolved_model, str)
+        else None,
+        "provider": _selected_provider(response),
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
         "provider_response_id": response_id,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -177,13 +202,14 @@ def _remember_observation(observation: CostObservation) -> _CostCapture | None:
     if capture is None:
         return None
     current = capture.observation
-    if (
-        current is not None
-        and current.get("cost_usd") is not None
-        and observation.get("cost_usd") is None
-    ):
-        return capture
     remembered = dict(observation)
+    if current is not None:
+        remembered = current | {
+            field: value for field, value in observation.items() if value is not None
+        }
+        if current.get("cost_usd") is not None and observation.get("cost_usd") is None:
+            remembered["cost_kind"] = current["cost_kind"]
+            remembered["cost_source"] = current["cost_source"]
     remembered["dedupe_key"] = _dedupe_key(capture, remembered)
     capture.observation = remembered
     return capture
@@ -222,6 +248,10 @@ async def observe_response(
         cost_kind=str(remembered["cost_kind"]),
         cost_source=str(remembered["cost_source"]),
         currency=str(remembered["currency"]),
+        cached_tokens=remembered.get("cached_tokens"),
+        cache_write_tokens=remembered.get("cache_write_tokens"),
+        resolved_model=remembered.get("resolved_model"),
+        provider=remembered.get("provider"),
     )
     try:
         await asyncio.to_thread(write_usage_record, ledger_path, record)

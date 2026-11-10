@@ -66,9 +66,9 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
 
     before_model_callbacks: list[Any] = [
         *_callback_list(eval_agent.before_model_callback),
-        temporal_context.before_model_callback,
         declarative_db.before_model_callback,
         stored_preferences.before_model_callback,
+        temporal_context.before_model_callback,
     ]
     before_agent_callbacks: list[Any] = [
         _ensure_eval_container,

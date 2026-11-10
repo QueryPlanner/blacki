@@ -22,6 +22,13 @@ def test_extract_cost_observation_preserves_provider_and_upstream_costs() -> Non
     observation = extract_cost_observation(
         {
             "id": "generation-1",
+            "openrouter_metadata": {
+                "endpoints": {
+                    "available": [
+                        {"provider": "Other", "selected": False},
+                    ]
+                }
+            },
             "usage": {
                 "prompt_tokens": 12,
                 "completion_tokens": 8,
@@ -35,6 +42,7 @@ def test_extract_cost_observation_preserves_provider_and_upstream_costs() -> Non
 
     assert observation is not None
     assert observation["provider_response_id"] == "generation-1"
+    assert observation["provider"] is None
     assert observation["input_tokens"] == 12
     assert observation["output_tokens"] == 8
     assert observation["cost_usd"] == 0.0025
