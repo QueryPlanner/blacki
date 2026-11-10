@@ -2,6 +2,8 @@
 
 const root = document.getElementById("view");
 const refresh = document.getElementById("refresh");
+const pageSize = 50;
+const maxPageSize = 200;
 const views = {
   sessions: ["Sessions", "Read conversations, inspect captured model context, and browse a user’s wiki."],
   overview: ["Overview", "Review activity, token use, and reported costs in the local files."],
@@ -10,7 +12,8 @@ const views = {
 };
 const state = {
   view: "sessions", user: "", session: "", pane: "transcript", wikiSelection: {},
-  userSearch: "", window: "all", traces: { search: "", status: "", limit: 50 }, logs: { search: "", level: "", limit: 50 },
+  userSearch: "", userLimit: pageSize, sessionLimit: pageSize, window: "all",
+  traces: { search: "", status: "", limit: 50 }, logs: { search: "", level: "", limit: 50 },
 };
 let currentView;
 let currentDetail;
@@ -92,6 +95,19 @@ async function api(endpoint, params, signal) {
   return data;
 }
 
+async function loadVisibleRange(endpoint, params, limit, signal) {
+  const result = await api(endpoint, { ...params, offset: 0, limit: Math.min(limit, maxPageSize) }, signal);
+  // Refresh the range the operator has already loaded, in API-sized pages.
+  while (result.items.length < Math.min(limit, result.total)) {
+    const offset = result.items.length;
+    const next = await api(endpoint, { ...params, offset, limit: Math.min(limit - offset, maxPageSize) }, signal);
+    if (!next.items.length) break;
+    result.items.push(...next.items);
+    result.total = next.total;
+  }
+  return result;
+}
+
 function dateNode(value, full = false) {
   const node = el("time", "", full ? dateTime(value) : clock(value));
   if (value) node.dateTime = value;
@@ -121,7 +137,7 @@ async function renderSessions(signal) {
   const panel = el("div", "inspector");
   const bench = el("div", "workbench");
   bench.append(rail, panel);
-  const users = await api("users", { search: state.userSearch, offset: 0 }, signal);
+  const users = await loadVisibleRange("users", { search: state.userSearch }, state.userLimit, signal);
   root.replaceChildren(bench);
   const listedUsers = [...users.items];
   const searchForm = el("form", "owner-search");
@@ -138,6 +154,8 @@ async function renderSessions(signal) {
     state.userSearch = search.value.trim();
     state.user = "";
     state.session = "";
+    state.userLimit = pageSize;
+    state.sessionLimit = pageSize;
     state.wikiSelection = {};
     render();
   });
@@ -156,17 +174,24 @@ async function renderSessions(signal) {
   let selectedOwner;
 
   function setUserOptions() {
-    const next = options(listedUsers.map((u) => [u.user_id, ownerName(u)]), state.user);
+    const entries = listedUsers.map((u) => [u.user_id, ownerName(u)]);
+    const visible = listedUsers.some((u) => u.user_id === state.user);
+    if (!visible) entries.unshift(["", "Choose a user"]);
+    const next = options(entries, visible ? state.user : "");
+    if (!visible) next.options[0].disabled = true;
     chooser.replaceChildren(...next.options);
+    chooser.value = visible ? state.user : "";
   }
 
   function ownerMore(offset) {
     const button = action("More users", "control more", async () => {
       button.disabled = true;
       try {
-        const result = await api("users", { search: state.userSearch, offset }, signal);
+        const result = await api("users", { search: state.userSearch, offset, limit: pageSize }, signal);
         listedUsers.push(...result.items);
+        state.userLimit = Math.max(state.userLimit, listedUsers.length);
         setUserOptions();
+        if (!selectedOwner && chooser.value) await loadSessions();
         if (offset + result.items.length < result.total) {
           button.replaceWith(ownerMore(offset + result.items.length));
         } else {
@@ -180,7 +205,7 @@ async function renderSessions(signal) {
     return button;
   }
 
-  if (!listedUsers.some((user) => user.user_id === state.user)) state.user = listedUsers[0].user_id;
+  if (!state.user) state.user = listedUsers[0].user_id;
   setUserOptions();
   const ownerCost = el("p", "rail-note");
   rail.append(labelControl("User", chooser), ownerCost);
@@ -199,6 +224,12 @@ async function renderSessions(signal) {
     const detailSignal = AbortSignal.any([signal, controller.signal]);
     const offset = append ? sessionRows.length : 0;
     selectedOwner = listedUsers.find((user) => user.user_id === state.user);
+    if (!selectedOwner) {
+      ownerCost.textContent = "";
+      list.replaceChildren();
+      panel.replaceChildren(notice("The selected user is outside the loaded results. Choose a user to continue."));
+      return;
+    }
     ownerCost.textContent = costDescription(selectedOwner);
     if (!append) {
       list.replaceChildren(notice("Reading sessions…", "status"));
@@ -206,11 +237,13 @@ async function renderSessions(signal) {
     }
     more.disabled = true;
     try {
-      sessionPage = await api("sessions", { user_id: state.user, offset }, detailSignal);
+      const params = { user_id: state.user };
+      sessionPage = append
+        ? await api("sessions", { ...params, offset, limit: pageSize }, detailSignal)
+        : await loadVisibleRange("sessions", params, state.sessionLimit, detailSignal);
       sessionRows = append ? [...sessionRows, ...sessionPage.items] : sessionPage.items;
-      if (!sessionRows.some((row) => row.session_id === state.session)) {
-        state.session = sessionRows[0]?.session_id || "";
-      }
+      state.sessionLimit = Math.max(state.sessionLimit, sessionRows.length);
+      if (!state.session) state.session = sessionRows[0]?.session_id || "";
       renderRail();
       await renderDetail(detailSignal);
     } catch (reason) {
@@ -245,6 +278,7 @@ async function renderSessions(signal) {
   chooser.addEventListener("change", () => {
     state.user = chooser.value;
     state.session = "";
+    state.sessionLimit = pageSize;
     state.wikiSelection = {};
     more.hidden = true;
     loadSessions();
@@ -260,7 +294,10 @@ async function renderSessions(signal) {
   async function renderDetail(detailSignal) {
     const row = sessionRows.find((item) => item.session_id === state.session);
     if (!row) {
-      panel.replaceChildren(notice("Select a session to read its transcript."));
+      const message = state.session
+        ? "The selected session is outside the loaded history. Choose a session to continue."
+        : "Select a session to read its transcript.";
+      panel.replaceChildren(notice(message));
       return;
     }
     const header = el("div", "session-heading");
