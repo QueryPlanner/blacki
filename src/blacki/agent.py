@@ -28,7 +28,6 @@ from .prompts.instructions import (
     return_description_root,
     return_instruction_root,
 )
-from .prompts.policies import ResponsePolicyPlugin
 from .security.tool_privacy import (
     configure_private_tool_privacy,
     private_tool_privacy_enabled,
@@ -227,7 +226,6 @@ def create_app(agent: LlmAgent | None = None) -> App:
         DeclarativeDbPlugin(name="declarative_db"),
         StoredPreferencesPlugin(name="stored_preferences"),
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
-        ResponsePolicyPlugin(name="response_policy"),
     ]
     if not private_tool_privacy_enabled():
         plugins.append(PrivacyAwareLoggingPlugin())

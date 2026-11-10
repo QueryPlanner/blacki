@@ -15,7 +15,6 @@ from blacki.declarative_db.plugin import (
     StoredPreferencesPlugin,
 )
 from blacki.prompts.instructions import TemporalContextPlugin
-from blacki.prompts.policies import ResponsePolicyPlugin
 
 _container_lock = asyncio.Lock()
 _active_invocations = 0
@@ -64,17 +63,12 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
     temporal_context = TemporalContextPlugin()
     declarative_db = DeclarativeDbPlugin()
     stored_preferences = StoredPreferencesPlugin()
-    response_policy = ResponsePolicyPlugin()
 
     before_model_callbacks: list[Any] = [
         *_callback_list(eval_agent.before_model_callback),
         temporal_context.before_model_callback,
         declarative_db.before_model_callback,
         stored_preferences.before_model_callback,
-    ]
-    after_model_callbacks: list[Any] = [
-        response_policy.after_model_callback,
-        *_callback_list(eval_agent.after_model_callback),
     ]
     before_agent_callbacks: list[Any] = [
         _ensure_eval_container,
@@ -87,7 +81,6 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
     eval_agent.before_agent_callback = before_agent_callbacks
     eval_agent.after_agent_callback = after_agent_callbacks
     eval_agent.before_model_callback = before_model_callbacks
-    eval_agent.after_model_callback = after_model_callbacks
     return eval_agent
 
 

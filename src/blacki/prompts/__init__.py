@@ -1,1 +1,1 @@
-"""Agent instructions and policy plugins."""
+"""Agent instructions and temporal context."""

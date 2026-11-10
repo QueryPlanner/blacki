@@ -12,6 +12,7 @@ from google.adk.tools import ToolContext
 from google.genai import types
 
 from blacki.agent import create_agent, create_app
+from blacki.models.openrouter_request import build_chat_request
 from blacki.runtime.adk import AdkRuntime, SessionLocator
 from blacki.telegram.progress_callbacks import recover_telegram_tool_error
 
@@ -144,3 +145,45 @@ async def test_telegram_tool_failure_does_not_fail_the_root_runner(
     assert tool_invocations == 1
     assert model.saw_recoverable_tool_error is True
     assert response.content == "Recovered after tool failure."
+
+
+class ReasoningLlm(BaseLlm):
+    """Return a final answer with a provider-marked reasoning part."""
+
+    requests: list[LlmRequest] = []
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        self.requests.append(llm_request)
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[
+                    types.Part(text="Test reasoning from the provider.", thought=True),
+                    types.Part(text="The answer is 42."),
+                ],
+            ),
+        )
+
+
+async def test_telegram_reply_excludes_reasoning_but_follow_up_retains_it() -> None:
+    model = ReasoningLlm(model="reasoning-test")
+    agent = create_agent(include_user_scoped_tools=True)
+    agent.model = model
+    runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
+    locator = SessionLocator(
+        user_id="telegram-chat-42", session_id_prefix="telegram-reasoning"
+    )
+
+    reply = await runtime.run_user_turn(locator=locator, message_text="What is 6 × 7?")
+    assert reply == "The answer is 42."
+
+    await runtime.run_user_turn(locator=locator, message_text="How did you get that?")
+    _, follow_up = model.requests
+    request = build_chat_request(follow_up, model="google/gemini-2.5-flash")
+    assert {
+        "role": "assistant",
+        "content": "The answer is 42.",
+        "reasoning": "Test reasoning from the provider.",
+    } in request.messages

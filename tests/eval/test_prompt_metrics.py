@@ -31,26 +31,31 @@ def test_concise_response_metric_passes_short_answer() -> None:
     assert result.per_invocation_results[0].expected_invocation is invocation
 
 
-def test_concise_response_metric_rejects_long_or_thought_text() -> None:
+def test_concise_response_metric_scores_only_visible_text() -> None:
     long_invocation = _invocation(types.Part.from_text(text=" ".join(["word"] * 101)))
     thought_invocation = _invocation(
-        types.Part(text="Hidden thought", thought=True),
+        types.Part(text=" ".join(["thought"] * 101), thought=True),
         types.Part.from_text(text="Answer"),
     )
 
     result = concise_response_score(
         EvalMetric(metric_name="concise_response_score"),
-        [long_invocation, thought_invocation],
+        [
+            long_invocation,
+            thought_invocation,
+            _invocation(types.Part(text="Thought only", thought=True)),
+        ],
         None,
         None,
     )
 
-    assert result.overall_score == 0.0
+    assert result.overall_score == 1 / 3
     assert result.overall_eval_status is EvalStatus.FAILED
-    assert all(
-        invocation_result.eval_status is EvalStatus.FAILED
-        for invocation_result in result.per_invocation_results
-    )
+    assert [part.eval_status for part in result.per_invocation_results] == [
+        EvalStatus.FAILED,
+        EvalStatus.PASSED,
+        EvalStatus.FAILED,
+    ]
 
 
 def test_concise_response_metric_handles_no_invocations() -> None:

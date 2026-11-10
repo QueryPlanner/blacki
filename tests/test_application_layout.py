@@ -15,7 +15,6 @@ CANONICAL_MODULES = (
     "blacki.models.inference",
     "blacki.models.capabilities",
     "blacki.prompts.instructions",
-    "blacki.prompts.policies",
     "blacki.runtime.adk",
 )
 REMOVED_ROOT_MODULES = (
@@ -58,7 +57,6 @@ def test_application_modules_have_one_canonical_package_owner() -> None:
         "models/inference.py",
         "models/capabilities.py",
         "prompts/instructions.py",
-        "prompts/policies.py",
         "runtime/adk.py",
     )
     assert all((SOURCE_ROOT / "blacki" / path).is_file() for path in expected_paths)
