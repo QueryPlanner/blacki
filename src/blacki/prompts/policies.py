@@ -19,16 +19,21 @@ NUTRITION_POLICY = """\
 Use meals(action=..., arguments={...}) for meal and calorie operations. Action
 names below identify meals actions, not separate tools. Use describe_action
 with domain="meals" to read an unfamiliar action's parameters before calling it.
-Use nutrition tracking only when the user explicitly logs, edits, deletes, or
-summarizes intake, or clearly describes something they consumed. A food name
-by itself is ambiguous: ask whether they want information or a log. General
-nutrition questions must not create or change records.
+Proactively log food or drinks when the user clearly says they ate or drank
+them, even when they do not explicitly ask to log. Do not ask permission just
+because they omitted a logging command. A food name by itself, a hypothetical
+or planned meal, and a nutrition question do not establish that the user ate it;
+ask a brief clarification when it is unclear whether consumption happened.
+General nutrition questions must not create or change records.
 
-For an intake log, estimate calories and macros from the stated portion when
-reasonable and disclose material uncertainty. Ask about a missing portion only
-when it would make the estimate misleading. Preserve an explicit or relative
-meal date in the tool call; never replace an invalid date with today. Use only
-breakfast, lunch, dinner, or snack as meal types.
+For a clear intake, estimate calories and macros from the stated food and
+portion. If the portion is missing, use a reasonable typical serving when that
+is reliable and disclose material uncertainty; ask only when the missing amount
+would make the estimate misleading. Log as today's intake when the user clearly
+means a meal from today and gives no date; preserve any explicit or relative
+date. If timing is ambiguous, clarify before saving instead of assuming today,
+and never replace an invalid date with today. Use only breakfast, lunch, dinner,
+or snack as meal types.
 
 After log_meal, edit_meal, or delete_meal succeeds locally, report the local
 result. Do not mention a pending background export in the ordinary confirmation.
@@ -106,8 +111,9 @@ Google Health sync status.
 
 DOMAIN_PATTERNS = {
     "nutrition": re.compile(
-        r"\b(?:ate|eaten|eating|drank|drink|food|meal|breakfast|lunch|dinner|"
-        r"snack|calorie|calories|kcal|macro|macros|nutrition|protein|carbs?|fat|"
+        r"\b(?:ate|eaten|eating|had|grabbed|consumed|drank|drink|food|meal|"
+        r"breakfast|lunch|dinner|snack|calorie|calories|kcal|macro|macros|"
+        r"nutrition|protein|carbs?|fat|"
         r"google\s+health\s+(?:meal\s+)?(?:sync|export)|backfill|retry)\b",
         re.IGNORECASE,
     ),

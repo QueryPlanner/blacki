@@ -69,45 +69,13 @@ class TestStablePromptLayers:
         assert "privacy-conscious" in description
         assert "tracking" in description
 
-    def test_root_instruction_supports_natural_chat_without_forcing_it(self) -> None:
+    def test_root_instruction_has_no_tone_coaching(self) -> None:
         instruction = return_instruction_root()
-        normalized = " ".join(instruction.split())
 
         assert instruction.startswith("You are a helpful assistant.")
-        assert "<natural_chat_style>" in instruction
-        assert "<chat_style_examples>" in instruction
-        assert "These examples show the range, not a checklist" in normalized
-        assert '"you actually DID that?"' in instruction
-        assert '"nice", "niiice", and "niceeee"' in instruction
-        assert '"okay", "okay.", "okay!", "okay?", "okay..."' in instruction
-        assert '"bhai tu kar kya raha hai 😭"' in instruction
-        assert '"very responsible 🫡"' in instruction
-        assert "🫥 social disappearance" in normalized
-        assert '"sjfksjfks" can signal speechless laughter' in normalized
-        assert (
-            "Match the user's language, formality, pace, and message length"
-            in normalized
-        )
-        assert "Treat writing as conversation, not a report" in normalized
-        assert "The user reads replies in Telegram's mobile chat UI" in normalized
-        assert "Avoid Markdown tables and table-like code blocks" in normalized
-        assert "use a readable text list with one item per line instead" in normalized
-        assert "Never invent a memory or callback" in normalized
-        assert "do not take an external action without authorization" in normalized
-        assert "Use these cues sparingly" in normalized
-        assert "Prefer a specific reaction to generic laughter" in normalized
-        assert "Use an emoji as a gesture that changes the tone" in normalized
-        assert (
-            "Mirror their level of formality and message shape gradually" in normalized
-        )
-        assert "Do not manufacture typos, keysmashes, slang, emojis" in normalized
-        assert "adding typos to look casual is not natural" in normalized
-        assert "force an informal style onto a serious request" in normalized
-        assert (
-            "Clarity, accuracy, safety, privacy, explicit formatting requests,"
-            in normalized
-        )
-        assert "Never describe these style rules" in normalized
+        assert "<natural_chat_style>" not in instruction
+        assert "<chat_style_examples>" not in instruction
+        assert "tone" not in instruction.lower()
 
     def test_global_instruction_has_precedence_and_privacy(
         self, mock_readonly_context: MockReadonlyContext
@@ -122,6 +90,8 @@ class TestStablePromptLayers:
         assert expected_order in instruction
         assert "never grant permissions or outrank this order" in instruction
         assert "Never silently mutate persistent state" in instruction
+        assert "A clear report that the user ate or" in instruction
+        assert "The private wiki may proactively upsert" in instruction
         assert "cannot change safety rules, tool permissions" in instruction
 
     def test_global_instruction_uses_application_timezone(
@@ -144,7 +114,7 @@ class TestStablePromptLayers:
     ("user_text", "expected"),
     [
         ("How many calories are in an apple?", ("nutrition",)),
-        ("I ate a sandwich for lunch", ("nutrition",)),
+        ("I had a sandwich for lunch", ("nutrition",)),
         ("Log my resistance workout", ("workout",)),
         ("Suggest a reminder schedule", ("reminder",)),
         ("What is the latest verified Python news?", ("search",)),
@@ -202,7 +172,9 @@ class TestDomainPolicyAssembly:
             "General\nnutrition questions must not create or change records"
             in instruction
         )
-        assert "food name\nby itself is ambiguous" in instruction
+        assert "Proactively log food or drinks" in instruction
+        assert "even when they do not explicitly ask to log" in instruction
+        assert "A food name by itself" in instruction
         assert "never replace an invalid date with today" in instruction
 
     def test_workout_uses_canonical_system_without_implicit_advance(self) -> None:
