@@ -12,7 +12,6 @@ from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
-from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 
 from .models.factory import build_model, normalize_model_for_openrouter
 from .models.inference import (
@@ -25,14 +24,11 @@ from .models.inference import (
 from .observability.lifecycle import LoggingCallbacks
 from .observability.privacy_logging import PrivacyAwareLoggingPlugin
 from .prompts.instructions import (
+    TemporalContextPlugin,
     return_description_root,
-    return_global_instruction,
     return_instruction_root,
 )
-from .prompts.policies import (
-    DomainPolicyPlugin,
-    ResponsePolicyPlugin,
-)
+from .prompts.policies import ResponsePolicyPlugin
 from .security.tool_privacy import (
     configure_private_tool_privacy,
     private_tool_privacy_enabled,
@@ -212,6 +208,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
     from blacki.sandbox.config import sandbox_enabled
     from blacki.sandbox.images import SandboxMultimodalToolResultsPlugin
     from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
+    from blacki.wiki.tools import WikiPolicyPlugin, WikiToolset
 
     sandbox_tools_enabled = sandbox_enabled()
     plugins: list[BasePlugin] = [
@@ -221,17 +218,17 @@ def create_app(agent: LlmAgent | None = None) -> App:
             else []
         ),
         TelegramModelOverridePlugin(name="telegram_model_override"),
-        GlobalInstructionPlugin(return_global_instruction),
-        DomainPolicyPlugin(name="domain_policy"),
+        *(
+            [WikiPolicyPlugin(name="private_wiki")]
+            if any(isinstance(tool, WikiToolset) for tool in agent.tools)
+            else []
+        ),
+        TemporalContextPlugin(),
         DeclarativeDbPlugin(name="declarative_db"),
         StoredPreferencesPlugin(name="stored_preferences"),
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         ResponsePolicyPlugin(name="response_policy"),
     ]
-    from blacki.wiki.tools import WikiPolicyPlugin, WikiToolset
-
-    if any(isinstance(tool, WikiToolset) for tool in getattr(agent, "tools", ())):
-        plugins.append(WikiPolicyPlugin(name="private_wiki"))
     if not private_tool_privacy_enabled():
         plugins.append(PrivacyAwareLoggingPlugin())
     else:

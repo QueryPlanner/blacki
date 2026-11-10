@@ -25,7 +25,6 @@ from blacki.health.config import GOOGLE_HEALTH_NUTRITION_SCOPES
 from blacki.models.openrouter_request import build_chat_request
 from blacki.observability.lifecycle import LoggingCallbacks
 from blacki.observability.privacy_logging import PrivacyAwareLoggingPlugin
-from blacki.prompts.policies import DomainPolicyPlugin
 from blacki.security.tool_privacy import is_private_tool
 from blacki.telegram.progress import describe_tool
 from blacki.telegram.progress_callbacks import (
@@ -485,7 +484,7 @@ async def test_runner_continues_completed_legacy_history_with_compact_tools(
             ),
         )
     runner = Runner(
-        app=App(name="meals_test", root_agent=agent, plugins=[DomainPolicyPlugin()]),
+        app=App(name="meals_test", root_agent=agent),
         session_service=sessions,
     )
     events = [

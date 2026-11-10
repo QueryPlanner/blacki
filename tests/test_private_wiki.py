@@ -671,7 +671,7 @@ async def test_wiki_policy_filters_and_bounds_reminder_requests(tmp_path: Path) 
             callback_context=CallbackContext(invocation),
             llm_request=request,
         )
-        wiki_instruction = str(request.config.system_instruction)
+        wiki_instruction = " ".join(str(request.config.system_instruction).split())
         assert "personal knowledge base" in wiki_instruction
         assert "Proactively capture" in wiki_instruction
         assert "without waiting for an explicit" in wiki_instruction

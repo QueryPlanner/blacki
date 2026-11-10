@@ -1,11 +1,8 @@
 """Controlled local ADK replay; no model or provider API calls."""
 
-import ast
 import asyncio
 import importlib
 import json
-import shutil
-import subprocess
 import tempfile
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -14,20 +11,17 @@ from typing import Any
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.models import BaseLlm, LlmRequest, LlmResponse
-from google.adk.plugins.global_instruction_plugin import GlobalInstructionPlugin
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools import BaseTool, FunctionTool
 from google.genai import types
 
-import blacki.prompts.policies as policies
 from blacki.container import AppContainer, reset_container_for_tests, set_container
 from blacki.models.openrouter_request import build_chat_request
 from blacki.prompts.instructions import (
-    return_global_instruction,
+    TemporalContextPlugin,
     return_instruction_root,
 )
-from blacki.prompts.policies import NUTRITION_POLICY, DomainPolicyPlugin
 from blacki.tools.meals import MEAL_ACTIONS, create_meal_tools
 from blacki.tools.registry import ToolConfig, build_tools
 
@@ -40,26 +34,6 @@ encs = {name: tiktoken.get_encoding(name) for name in ("cl100k_base", "o200k_bas
 def tokens(value: Any) -> dict[str, int]:
     text = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
     return {name: len(encoding.encode(text)) for name, encoding in encs.items()}
-
-
-git_path = shutil.which("git")
-if git_path is None:
-    raise RuntimeError("Git is required to read the benchmark baseline")
-base_source = subprocess.run(  # noqa: S603
-    [git_path, "show", "4e10c3f:src/blacki/prompts/policies.py"],
-    capture_output=True,
-    text=True,
-    check=True,
-).stdout
-base_policy = next(
-    ast.literal_eval(node.value)
-    for node in ast.parse(base_source).body
-    if isinstance(node, ast.Assign)
-    and any(
-        isinstance(target, ast.Name) and target.id == "NUTRITION_POLICY"
-        for target in node.targets
-    )
-)
 
 
 class ReplayLlm(BaseLlm):
@@ -105,7 +79,6 @@ class ReplayLlm(BaseLlm):
 
 
 async def run(case: tuple[str, dict[str, Any], str], mode: str) -> dict[str, Any]:
-    policies.NUTRITION_POLICY = base_policy if mode == "flat" else NUTRITION_POLICY
     with tempfile.TemporaryDirectory(prefix="blacki-meals-benchmark-") as directory:
         container = await AppContainer.create(Path(directory) / "meals.db")
         await container.initialize_all_storages()
@@ -149,10 +122,7 @@ async def run(case: tuple[str, dict[str, Any], str], mode: str) -> dict[str, Any
             app = App(
                 name="blacki",
                 root_agent=agent,
-                plugins=[
-                    DomainPolicyPlugin(),
-                    GlobalInstructionPlugin(return_global_instruction),
-                ],
+                plugins=[TemporalContextPlugin()],
             )
             sessions = InMemorySessionService()
             session = await sessions.create_session(

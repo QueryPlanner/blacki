@@ -53,7 +53,7 @@ def validate_markdown_v2(text: str) -> None:
 
 def test_describe_tool_known_search_tools() -> None:
     """Search tools interpolate query and escape markdown."""
-    res1 = describe_tool("brave_search", {"query": "high protein foods"}, private=False)
+    res1 = describe_tool("web_search", {"query": "high protein foods"}, private=False)
     assert res1 == "Searching the web for *high protein foods*…"
     validate_markdown_v2(res1)
 

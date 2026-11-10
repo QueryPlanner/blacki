@@ -1,10 +1,10 @@
 {
   "eval_set_id": "exa_primary_search",
-  "name": "Exa primary web search",
-  "description": "Verifies that Exa is selected before Brave for web search.",
+  "name": "Web search tool selection",
+  "description": "Verifies that the agent calls the configured web search tool.",
   "eval_cases": [
     {
-      "eval_id": "uses_exa_before_brave",
+      "eval_id": "uses_web_search",
       "conversation": [
         {
           "invocation_id": "exa-primary-1",
@@ -12,14 +12,14 @@
             "role": "user",
             "parts": [
               {
-                "text": "Call your primary web search tool with the exact query 'official Python 3.13 release information' and five results, then summarize what you find."
+                "text": "Call your web search tool with the exact query 'official Python 3.13 release information' and five results, then summarize what you find."
               }
             ]
           },
           "intermediate_data": {
             "tool_uses": [
               {
-                "name": "exa_search",
+                "name": "web_search",
                 "args": {
                   "query": "official Python 3.13 release information",
                   "num_results": 5

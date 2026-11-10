@@ -78,8 +78,7 @@ class TestAppIntegration:
 
         assert plugin_names == [
             "telegram_model_override",
-            "global_instruction",
-            "domain_policy",
+            "temporal_context",
             "declarative_db",
             "stored_preferences",
             "response_policy",
