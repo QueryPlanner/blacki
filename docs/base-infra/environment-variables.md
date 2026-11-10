@@ -50,6 +50,7 @@ surface on every host interface.
 | `SERVE_WEB_INTERFACE` | `false` | Enable the ADK development web interface |
 | `RELOAD_AGENTS` | `false` | Reload agent definitions; development only |
 | `ALLOW_ORIGINS` | local origins JSON | JSON array of CORS origins |
+| `BLACKI_DASHBOARD_PRIVATE_HOSTS` | unset | Exact hostnames that enable read-only prompt and wiki views on the private dashboard |
 | `AGENT_ENGINE` | unset | Optional Agent Engine identifier |
 | `SQLITE_PATH` | `{AGENT_DIR}/.adk/tools.db` | SQLite file for application tools |
 | `BLACKI_COST_LEDGER_PATH` | `{AGENT_DIR}/.adk/costs.db` | Content-free model usage and cost ledger |

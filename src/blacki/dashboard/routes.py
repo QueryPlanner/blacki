@@ -19,8 +19,9 @@ from collections.abc import Mapping
 from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, TypeVar
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 
@@ -35,6 +36,7 @@ from .models import (
     MAX_SEARCH_LENGTH,
     JsonObject,
 )
+from .private_data import DashboardPrivateStore, valid_capture_id
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +163,9 @@ def _asset_path(asset_name: str) -> Any:
     ):
         raise FileNotFoundError
 
+    if asset_name == "miniapp.css":
+        return resources.files("blacki.miniapp").joinpath("static", "styles.css")
+
     package_root = resources.files("blacki.dashboard")
     roots = (
         (package_root.joinpath("templates"),)
@@ -190,7 +195,7 @@ def _asset_response(asset_name: str) -> Response:
 
 
 async def _store_response(
-    store: DashboardStoreProtocol | None,
+    store: DashboardStoreProtocol | DashboardPrivateStore | None,
     method_name: str,
     *args: object,
 ) -> JSONResponse:
@@ -227,6 +232,38 @@ def _tools_db_path(env: ServerEnv) -> Path:
     )
 
 
+def _private_access(
+    request: Request, allowed_hosts: frozenset[str]
+) -> JSONResponse | None:
+    # Loopback or tailnet ACLs remain the access boundary. Check Host and
+    # browser headers here for DNS rebinding and cross-origin reads.
+    if request.headers.get("origin") is not None or request.headers.get(
+        "sec-fetch-site"
+    ) in {"cross-site", "same-site"}:
+        return _error_response(403, "Open this view from the dashboard directly.")
+    if not allowed_hosts:
+        return _json_response({"status": "disabled"})
+    hosts = request.headers.getlist("host")
+    try:
+        # Starlette can fall back to the server address for a malformed Host.
+        # Check the raw browser authority before considering any fallback.
+        authority = urlsplit(f"//{hosts[0]}") if len(hosts) == 1 else None
+        valid_host = (
+            authority is not None
+            and authority.hostname in allowed_hosts
+            and authority.username is None
+            and not (authority.path or authority.query or authority.fragment)
+            and authority.port != 0
+        )
+    except ValueError:
+        valid_host = False
+    if not valid_host:
+        return _error_response(
+            403, "This host is not enabled for private dashboard views."
+        )
+    return None
+
+
 def create_dashboard_router(
     env: ServerEnv,
     store: DashboardStoreProtocol | None = None,
@@ -252,6 +289,20 @@ def create_dashboard_router(
             logger.exception("Dashboard store initialization failed")
             dashboard_store = None
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+    allowed_hosts = frozenset(
+        host.strip().lower()
+        for host in env.dashboard_private_hosts.split(",")
+        if host.strip()
+    )
+    private_store = (
+        DashboardPrivateStore(
+            _session_db_path(env),
+            get_log_dir() / "blacki-traces.log",
+            _tools_db_path(env).with_name("wiki.db"),
+        )
+        if allowed_hosts
+        else None
+    )
 
     @router.get("")
     async def dashboard_page() -> Response:
@@ -362,6 +413,75 @@ def create_dashboard_router(
             "get_session",
             user_value,
             session_value,
+        )
+
+    @router.get("/api/context")
+    async def dashboard_context(
+        request: Request,
+        user_id: str = "",
+        session_id: str = "",
+        trace_id: str = "",
+        span_id: str = "",
+        offset: str = "0",
+    ) -> JSONResponse:
+        """List captures, or read one captured prompt and its tool descriptions."""
+        if (denial := _private_access(request, allowed_hosts)) is not None:
+            return denial
+        try:
+            user = _parse_text(user_id, required=True)
+            session = _parse_text(session_id, required=True)
+            start = _parse_int(offset, default=0, minimum=0, maximum=_MAX_OFFSET)
+            key = None
+            if trace_id or span_id:
+                if not valid_capture_id(trace_id, span_id):
+                    raise _InvalidDashboardQueryError
+                key = (trace_id, span_id)
+        except _InvalidDashboardQueryError:
+            return _invalid_query()
+        return await _store_response(
+            private_store, "get_context", user, session, _DEFAULT_LIMIT, start, key
+        )
+
+    @router.get("/api/wiki")
+    async def dashboard_wiki(
+        request: Request,
+        user_id: str = "",
+        page: str = "",
+        revision: str = "",
+        offset: str = "0",
+        claim_offset: str = "0",
+    ) -> JSONResponse:
+        """Read one owner-scoped wiki page without exposing evidence excerpts."""
+        if (denial := _private_access(request, allowed_hosts)) is not None:
+            return denial
+        try:
+            user = _parse_text(user_id, required=True)
+            selected = (
+                _parse_int(page, default=0, minimum=0, maximum=_MAX_OFFSET)
+                if page
+                else None
+            )
+            known_revision = (
+                _parse_int(revision, default=0, minimum=0, maximum=2**63 - 1)
+                if revision
+                else None
+            )
+            if selected is not None and known_revision is None:
+                raise _InvalidDashboardQueryError
+            start = _parse_int(offset, default=0, minimum=0, maximum=_MAX_OFFSET)
+            claim_start = _parse_int(
+                claim_offset, default=0, minimum=0, maximum=_MAX_OFFSET
+            )
+        except _InvalidDashboardQueryError:
+            return _invalid_query()
+        return await _store_response(
+            private_store,
+            "get_wiki",
+            user,
+            selected,
+            known_revision,
+            start,
+            claim_start,
         )
 
     @router.get("/api/logs")

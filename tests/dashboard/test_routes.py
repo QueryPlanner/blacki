@@ -115,6 +115,12 @@ def test_page_assets_and_unknown_dashboard_paths_are_local_and_protected(
     assert "text/css" in css.headers["content-type"]
     _assert_dashboard_headers(css)
 
+    miniapp_css = client.get("/dashboard/static/miniapp.css")
+    assert miniapp_css.status_code == 200
+    assert "text/css" in miniapp_css.headers["content-type"]
+    assert "[data-theme=blacki]" in miniapp_css.text
+    _assert_dashboard_headers(miniapp_css)
+
     missing = client.get("/dashboard/static/missing.js")
     assert missing.status_code == 404
     assert "path" not in missing.text.lower()

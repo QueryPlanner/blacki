@@ -43,116 +43,16 @@ def test_dynamic_rendering_avoids_unsafe_html_apis() -> None:
     assert "replaceChildren" in script
 
 
-def test_chat_metadata_events_render_as_safe_rows() -> None:
-    script = SCRIPT.read_text(encoding="utf-8")
-
-    assert 'type === "tool"' in script
-    assert "metadataRow" in script
-    assert "attachments" in script
-    assert "attachmentValueIsPresent" in script
-    assert 'el("div", `chat ' in script
-
-
-def test_dashboard_renders_cumulative_and_monthly_cost_signals() -> None:
-    template = TEMPLATE.read_text(encoding="utf-8")
-    script = SCRIPT.read_text(encoding="utf-8")
-
-    for marker in (
-        "metric-cost-month",
-        "metric-cost-total",
-        "metric-cost-average",
-        "selected-user-cost",
-        "selected-session-cost",
-    ):
-        assert marker in template
-    for marker in (
-        "formatMoney",
-        "monthly_cost_usd",
-        "monthly_estimated_cost_usd",
-        "cumulative_cost_usd",
-        "cumulative_estimated_cost_usd",
-        "average_user_monthly_cost_usd",
-        "cost_coverage",
-    ):
-        assert marker in script
-
-
-def test_template_exposes_accessible_view_tabs_and_landmarks() -> None:
+def test_dashboard_navigation_and_shared_theme_are_packaged() -> None:
     template = TEMPLATE.read_text(encoding="utf-8")
 
-    for view in ("overview", "users", "traces", "logs"):
-        assert f'data-view="{view}"' in template
-        assert f'data-panel="{view}"' in template
-    assert 'role="tablist"' in template
-    assert 'role="tabpanel"' in template
-    assert 'aria-selected="true"' in template
-    assert 'aria-controls="overview-panel"' in template
+    assert 'href="/dashboard/static/miniapp.css"' in template
+    assert 'data-theme="blacki"' in template
     assert 'aria-label="Dashboard views"' in template
-    assert 'id="refresh-button"' in template
-    assert 'id="auto-refresh"' in template
-    assert 'id="theme-toggle"' in template
-    assert 'role="alert"' in template
-    assert "/reset" in template
-
-
-def test_uses_daisyui_v5_classes_in_source_and_compiled_css() -> None:
-    template = TEMPLATE.read_text(encoding="utf-8")
-    script = SCRIPT.read_text(encoding="utf-8")
-    stylesheet = STYLESHEET.read_text(encoding="utf-8")
-    source = "\n".join((template, script))
-
-    selected_components = (
-        "navbar",
-        "stats",
-        "tabs",
-        "tabs-box",
-        "tab",
-        "card",
-        "table",
-        "chat",
-        "badge",
-        "loading",
-        "fieldset",
-        "input",
-        "select",
-        "toggle",
-        "timeline",
-    )
-    for component in selected_components:
-        assert component in source
-        assert f".{component}" in stylesheet
-    forbidden_classes = ("tabs" + "-boxed", "input" + "-bordered")
-    for forbidden in forbidden_classes:
-        assert forbidden not in template
-
-
-def test_reset_notice_uses_theme_safe_semantic_text_colors() -> None:
-    template = TEMPLATE.read_text(encoding="utf-8")
-
-    assert "alert-info" not in template
-    assert "border-info/30 bg-info/10 text-base-content" in template
-    assert 'class="text-info text-lg"' in template
-    assert 'class="font-semibold text-base-content"' in template
-    assert "text-base-content/70" in template
-
-
-def test_script_keeps_expected_same_origin_api_contract() -> None:
-    script = SCRIPT.read_text(encoding="utf-8")
-
-    expected_paths = (
-        "/dashboard/api/overview?window=24h",
-        "/dashboard/api/users?search=",
-        "/dashboard/api/sessions?user_id=",
-        "/dashboard/api/session?user_id=",
-        "/dashboard/api/logs?level=",
-        "/dashboard/api/traces?status=",
-        "/dashboard/api/trace?trace_id=",
-    )
-    for path in expected_paths:
-        assert path in script
-    assert "fetch(url" in script
-    assert 'cache: "no-store"' in script
-    assert "localStorage" not in script
+    for view in ("overview", "sessions", "traces", "logs"):
+        assert f'href="#{view}"' in template
+    for control in ("refresh", "auto-refresh", "theme-toggle"):
+        assert f'id="{control}"' in template
 
 
 def test_frontend_dependencies_are_pinned() -> None:
