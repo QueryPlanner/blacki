@@ -620,28 +620,6 @@ class TestTrainingRegistryAndPrompt:
         for name in new_tool_names:
             assert name in tool_names
 
-    def test_prompt_guidance_for_training(self) -> None:
-        """A workout request should load the training-program policy."""
-        from blacki.prompts.policies import build_domain_instruction
-
-        tool_names = {
-            "set_training_program",
-            "get_todays_training",
-            "log_training",
-            "advance_training_cycle",
-            "get_training_history",
-            "get_training_metrics",
-            "update_training_metrics",
-        }
-        prompt = build_domain_instruction("Show today's workout", tool_names)
-        assert "training-program" in prompt
-        assert "set_training_program" in prompt
-        assert "get_todays_training" in prompt
-        assert "log_training" in prompt
-        assert "advance_training_cycle" in prompt
-        assert "get_training_metrics" in prompt
-        assert "update_training_metrics" in prompt
-
 
 class TestTrainingEdgeCasesAndCoverage:
     """Additional tests to reach 100% test coverage across training storage and tools."""

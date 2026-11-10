@@ -65,13 +65,8 @@ def build_tools(
     """
     tools: list[Any] = []
 
-    if config.exa_api_key:
-        tools.extend(_build_exa_search_tools())
-        logger.info("Exa Search tool enabled")
-
-    if config.brave_search_api_key:
-        tools.extend(_build_brave_search_tools())
-        logger.info("Brave Search tool enabled")
+    if config.exa_api_key or config.brave_search_api_key:
+        tools.extend(_build_search_tools(config))
 
     if config.sqlite_path:
         tools.extend(_build_reminder_tools())
@@ -136,26 +131,20 @@ def _build_miniapp_tools() -> list[Any]:
         return []
 
 
-def _build_exa_search_tools() -> list[Any]:
-    """Build Exa Search tools."""
+def _build_search_tools(config: ToolConfig) -> list[Any]:
+    """Build one web search tool with the configured providers."""
     try:
-        from blacki.tools.search import exa_search
-
-        return [exa_search]
-    except ImportError as e:
-        logger.warning("Failed to load Exa Search tool: %s", e)
+        from blacki.tools.search import create_web_search_tool
+    except ImportError as exc:
+        logger.warning("Failed to load web search tool: %s", exc)
         return []
 
-
-def _build_brave_search_tools() -> list[Any]:
-    """Build Brave Search tools."""
-    try:
-        from blacki.tools.brave_search import brave_search
-
-        return [brave_search]
-    except ImportError as e:
-        logger.warning("Failed to load Brave Search tool: %s", e)
-        return []
+    return [
+        create_web_search_tool(
+            exa_enabled=bool(config.exa_api_key),
+            brave_enabled=bool(config.brave_search_api_key),
+        )
+    ]
 
 
 def _build_reminder_tools() -> list[Any]:

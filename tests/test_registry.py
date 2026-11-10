@@ -76,25 +76,19 @@ class TestBuildTools:
 
         assert len(tools) == 2
 
-    def test_brave_search_tools_added(self) -> None:
-        """Should add Brave Search tools when API key provided."""
-        config = ToolConfig(brave_search_api_key="test-key")
-
-        tools = build_tools(config)
-
-        assert len(tools) == 3
-
-    def test_exa_search_tools_added_first(self) -> None:
-        """Should register Exa before Brave when both keys are provided."""
-        config = ToolConfig(
-            exa_api_key="exa-key",
-            brave_search_api_key="brave-key",
+    @pytest.mark.parametrize(
+        ("exa_key", "brave_key"),
+        [("key", None), (None, "key"), ("key", "key")],
+    )
+    def test_one_web_search_tool_for_any_provider_configuration(
+        self, exa_key: str | None, brave_key: str | None
+    ) -> None:
+        tools = build_tools(
+            ToolConfig(exa_api_key=exa_key, brave_search_api_key=brave_key)
         )
 
-        tools = build_tools(config)
-
-        assert [tool.__name__ for tool in tools[:2]] == ["exa_search", "brave_search"]
-        assert len(tools) == 4
+        assert tools[0].name == "web_search"
+        assert len(tools) == 3
 
     def test_database_tools_added(self) -> None:
         """Should add database-backed tools when sqlite path provided."""
@@ -348,20 +342,11 @@ class TestBuildTools:
         assert not any(isinstance(tool, McpSkillToolset) for tool in tools)
         create.assert_called_once()
 
-    def test_build_brave_search_tools_import_error(self) -> None:
-        """Should handle ImportError gracefully."""
-        with patch.dict("sys.modules", {"blacki.tools.brave_search": None}):
-            config = ToolConfig(brave_search_api_key="test-key")
-            tools = build_tools(config)
-
-            assert len(tools) == 2
-
-    def test_build_exa_search_tools_import_error(self) -> None:
-        """Should omit Exa Search if its module cannot be imported."""
-        from blacki.tools.registry import _build_exa_search_tools
-
+    def test_build_search_tools_import_error(self) -> None:
         with patch.dict("sys.modules", {"blacki.tools.search": None}):
-            tools = _build_exa_search_tools()
+            tools = build_tools(
+                ToolConfig(exa_api_key="test-key", weather_enabled=False)
+            )
 
         assert tools == []
 
@@ -561,38 +546,6 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
         assert config.kokoro_tts_voice == "af_heart"
-
-
-class TestBuildBraveSearchTools:
-    """Tests for _build_brave_search_tools."""
-
-    def test_returns_tool_when_available(self) -> None:
-        """Should return brave_search tool when available."""
-        from blacki.tools.registry import _build_brave_search_tools
-
-        tools = _build_brave_search_tools()
-
-        assert len(tools) == 1
-
-    def test_returns_empty_on_import_error(self) -> None:
-        """Should return empty list on ImportError."""
-        from blacki.tools.registry import _build_brave_search_tools
-
-        with patch.dict("sys.modules", {"blacki.tools.brave_search": None}):
-            assert _build_brave_search_tools() == []
-
-
-class TestBuildExaSearchTools:
-    """Tests for _build_exa_search_tools."""
-
-    def test_returns_tool_when_available(self) -> None:
-        """Should return the Exa Search tool when available."""
-        from blacki.tools.registry import _build_exa_search_tools
-
-        tools = _build_exa_search_tools()
-
-        assert len(tools) == 1
-        assert tools[0].__name__ == "exa_search"
 
 
 class TestBuildReminderTools:

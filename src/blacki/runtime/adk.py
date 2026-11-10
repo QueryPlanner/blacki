@@ -18,6 +18,7 @@ from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
 from ..models.inference import InferenceProfile, inference_profile_context
+from ..models.openrouter import OpenRouterLlm
 from ..utils.config import ServerEnv
 from ..wiki import wiki_configured
 from ..wiki.tools import wiki_origin
@@ -316,6 +317,22 @@ class AdkRuntime:
             auto_create_session=False,
         )
 
+    def _turn_config(
+        self, session: Session, *, streaming_mode: StreamingMode = StreamingMode.NONE
+    ) -> RunConfig:
+        model = getattr(self.app.root_agent, "model", None)
+        http_options = None
+        if isinstance(model, OpenRouterLlm):
+            affinity_id = model.session_affinity_id(
+                app=session.app_name, user=session.user_id, session=session.id
+            )
+            http_options = types.HttpOptions(headers={"x-session-id": affinity_id})
+        return RunConfig(
+            streaming_mode=streaming_mode,
+            custom_metadata=wiki_origin() if wiki_configured() else None,
+            http_options=http_options,
+        )
+
     def wiki_history_path(self) -> Path | None:
         if isinstance(self.session_service, DatabaseSessionService):
             url = self.session_service.db_engine.url
@@ -461,9 +478,7 @@ class AdkRuntime:
                 user_id=locator.user_id,
                 session_id=session.id,
                 new_message=new_message,
-                run_config=RunConfig(custom_metadata=wiki_origin())
-                if wiki_configured()
-                else None,
+                run_config=self._turn_config(session),
                 state_delta=state,
             ):
                 if event.invocation_id:
@@ -580,10 +595,7 @@ class AdkRuntime:
             parts=[types.Part.from_text(text=message_text)],
         )
 
-        streaming_config = RunConfig(
-            streaming_mode=StreamingMode.SSE,
-            custom_metadata=wiki_origin() if wiki_configured() else None,
-        )
+        streaming_config = self._turn_config(session, streaming_mode=StreamingMode.SSE)
         pending_error: RuntimeError | None = None
         tool_calls_seen = False
 

@@ -18,7 +18,7 @@ def concise_response_score(
     expected_invocations: list[Invocation] | None,
     conversation_scenario: ConversationScenario | None,
 ) -> EvaluationResult:
-    """Pass responses with at most 100 words and no exposed thought text."""
+    """Score the visible answer, which should contain 1 to 100 words."""
     del eval_metric, conversation_scenario
     per_invocation_results = []
 
@@ -29,11 +29,10 @@ def concise_response_score(
             else None
         )
         parts = actual.final_response.parts if actual.final_response else []
-        word_count = sum(len((part.text or "").split()) for part in parts or [])
-        has_exposed_thought = any(
-            bool(part.text and part.thought) for part in parts or []
+        word_count = sum(
+            len((part.text or "").split()) for part in parts or [] if not part.thought
         )
-        score = float(word_count <= 100 and not has_exposed_thought)
+        score = float(0 < word_count <= 100)
         per_invocation_results.append(
             PerInvocationResult(
                 actual_invocation=actual,

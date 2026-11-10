@@ -44,18 +44,17 @@ Token counts below sum compact JSON representations of **all input request
 payloads**, including tools, instructions, conversation history, and tool
 results. They use `cl100k_base`; `o200k_base` showed the same direction.
 
-From the repository root, reproduce the replay and both tokenizer counts with:
+Run the current replay from the repository root.
 
 ```bash
 uv run --with tiktoken==0.12.0 python scripts/benchmark_meal_tools.py
 ```
 
-The tokenizer is an isolated measurement dependency, not an application
-dependency. Its first run may download public tokenizer vocabularies. The
-harness reads the original policy with `git show 4e10c3f:src/blacki/prompts/policies.py`,
-so that base commit must be available locally. It creates and closes temporary
-databases and never reads deployment credentials. Temporal context can cause
-small count differences on later dates.
+The tokenizer is an isolated measurement dependency. Its first run may
+download public tokenizer vocabularies. The harness uses temporary databases.
+The current harness runs both variants with the same fixed behavior prompt
+and current search schema, so its counts differ from the historical results
+below.
 
 | Workflow | Flat input tokens | Compact direct input tokens | Compact cold input tokens |
 | --- | ---: | ---: | ---: |

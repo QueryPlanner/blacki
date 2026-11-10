@@ -333,8 +333,11 @@ even for narrow dates because version selection precedes date filtering.
 
 ## Private wiki
 
-Memory is enabled by default in private Telegram chats. Blacki can search eligible past conversations and keep
-source-backed wiki claims about durable preferences and decisions.
+Memory is enabled by default in private Telegram chats. Blacki proactively
+maintains a source-backed personal knowledge base with useful durable context
+such as preferences, goals, relationships, ongoing projects, decisions,
+commitments, and recurring procedures. It can also search eligible past
+conversations.
 `/memory off` pauses access and `/memory on` resumes it. Use `/memory list` to find claim keys and
 `/memory forget <path> <fact>` to start a confirmed removal. Forgetting
 suppresses known source messages from memory retrieval. Original chat

@@ -61,7 +61,7 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
     can_interpolate = not private and bool(args)
 
     # 1. Search tools
-    if tool_name in ("brave_search", "exa_search"):
+    if tool_name in ("web_search", "brave_search", "exa_search"):
         if can_interpolate and (query := _format_salient_arg(args.get("query"))):
             return f"Searching the web for *{query}*…"
         return "Searching the web…"

@@ -38,6 +38,10 @@ class UsageRecord:
     cost_kind: str
     cost_source: str
     currency: str = "USD"
+    cached_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    resolved_model: str | None = None
+    provider: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +126,23 @@ def _schema_sql() -> str:
     """
 
 
+def _ensure_usage_schema(connection: sqlite3.Connection) -> None:
+    connection.execute(_schema_sql())
+    columns = {
+        row[1] for row in connection.execute(f"PRAGMA table_info({LEDGER_TABLE})")
+    }
+    for name, sql_type in (
+        ("cached_tokens", "INTEGER"),
+        ("cache_write_tokens", "INTEGER"),
+        ("resolved_model", "TEXT"),
+        ("provider", "TEXT"),
+    ):
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE {LEDGER_TABLE} ADD COLUMN {name} {sql_type}"
+            )  # noqa: S608
+
+
 def write_usage_record(path: Path, record: UsageRecord) -> None:
     """Upsert one usage record, preserving provider-response idempotency."""
     path = Path(path)
@@ -143,21 +164,27 @@ def write_usage_record(path: Path, record: UsageRecord) -> None:
         record.cost_kind,
         record.cost_source,
         record.currency,
+        record.cached_tokens,
+        record.cache_write_tokens,
+        record.resolved_model,
+        record.provider,
     )
     connection = sqlite3.connect(path, timeout=5.0)
     try:
         with connection:
             connection.execute("PRAGMA busy_timeout = 5000")
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute(_schema_sql())
+            connection.execute("BEGIN IMMEDIATE")
+            _ensure_usage_schema(connection)
             connection.execute(  # noqa: S608
                 f"""
             INSERT INTO {LEDGER_TABLE} (
                 dedupe_key, observed_at, user_id, session_id, invocation_id,
                 model, provider_response_id, input_tokens, output_tokens,
                 total_tokens, cost_nano_usd, upstream_cost_nano_usd,
-                estimated_cost_nano_usd, cost_kind, cost_source, currency
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                estimated_cost_nano_usd, cost_kind, cost_source, currency,
+                cached_tokens, cache_write_tokens, resolved_model, provider
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(dedupe_key) DO UPDATE SET
                 provider_response_id = COALESCE(
                     excluded.provider_response_id,
@@ -183,6 +210,16 @@ def write_usage_record(path: Path, record: UsageRecord) -> None:
                     excluded.estimated_cost_nano_usd,
                     {LEDGER_TABLE}.estimated_cost_nano_usd
                 ),
+                cached_tokens = COALESCE(
+                    excluded.cached_tokens, {LEDGER_TABLE}.cached_tokens
+                ),
+                cache_write_tokens = COALESCE(
+                    excluded.cache_write_tokens, {LEDGER_TABLE}.cache_write_tokens
+                ),
+                resolved_model = COALESCE(
+                    excluded.resolved_model, {LEDGER_TABLE}.resolved_model
+                ),
+                provider = COALESCE(excluded.provider, {LEDGER_TABLE}.provider),
                 cost_kind = CASE
                     WHEN {LEDGER_TABLE}.cost_kind = 'reported'
                     THEN {LEDGER_TABLE}.cost_kind

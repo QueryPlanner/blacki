@@ -138,7 +138,7 @@
       }
     },
     {
-      "eval_id": "current_news_uses_one_primary_search",
+      "eval_id": "current_news_uses_one_web_search",
       "conversation": [
         {
           "invocation_id": "prompt-search-1",
@@ -146,14 +146,14 @@
             "role": "user",
             "parts": [
               {
-                "text": "Use the primary search tool once with the exact query 'latest verified Python 3.13 news' and five results, then answer concisely."
+                "text": "Use the web search tool once with the exact query 'latest verified Python 3.13 news' and five results, then answer concisely."
               }
             ]
           },
           "intermediate_data": {
             "tool_uses": [
               {
-                "name": "exa_search",
+                "name": "web_search",
                 "args": {
                   "query": "latest verified Python 3.13 news",
                   "num_results": 5

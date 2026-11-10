@@ -1,18 +1,21 @@
-"""Exa-backed web search tool."""
+"""Web search with Exa and Brave providers."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
 import httpx
-from google.adk.tools import ToolContext
+from google.adk.tools import FunctionTool, ToolContext
+
+from .brave_search import brave_search
 
 logger = logging.getLogger(__name__)
 
 EXA_SEARCH_API_URL = "https://api.exa.ai/search"
+_TURN_SEARCH_KEY = "temp:blacki_web_search"
 
 _exa_search_lock = asyncio.Lock()
 _exa_search_client: httpx.AsyncClient | None = None
@@ -176,3 +179,38 @@ async def exa_search(
 def exa_search_api_key_available() -> bool:
     """Return whether EXA_API_KEY is configured in the environment."""
     return bool(os.environ.get("EXA_API_KEY", "").strip())
+
+
+def create_web_search_tool(*, exa_enabled: bool, brave_enabled: bool) -> FunctionTool:
+    """Expose one declaration and keep provider selection inside the tool."""
+
+    async def web_search(
+        query: str, tool_context: ToolContext, num_results: int = 5
+    ) -> dict[str, Any]:
+        """Search the public web for current information and original source URLs."""
+        query = query.strip()
+        if not query:
+            return _error_result(query, "Search query must be a non-empty string.")
+
+        state = tool_context.state
+        if _TURN_SEARCH_KEY in state:
+            previous = state[_TURN_SEARCH_KEY]
+            if previous is not None and previous["request"] == [query, num_results]:
+                return cast(dict[str, Any], previous["result"])
+            return _error_result(query, "A web search was already requested this turn.")
+
+        # Reserve the turn before awaiting a provider. ADK tool calls in the
+        # same invocation share state, including calls emitted in parallel.
+        state[_TURN_SEARCH_KEY] = None
+        if exa_enabled:
+            result = await exa_search(query, num_results, tool_context)
+            if brave_enabled and (
+                result["status"] != "success" or not result["results"]
+            ):
+                result = await brave_search(query, tool_context, count=num_results)
+        else:
+            result = await brave_search(query, tool_context, count=num_results)
+        state[_TURN_SEARCH_KEY] = {"request": [query, num_results], "result": result}
+        return result
+
+    return FunctionTool(web_search)

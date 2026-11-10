@@ -76,9 +76,11 @@ metadata at the provider boundary.
 
 `runtime/adk.py` owns the shared ADK runner, session versioning, confirmation
 handling, and Telegram-facing turn orchestration. `prompts/instructions.py`
-contains root and worker instruction text. `prompts/policies.py` contains
-domain routing and response-policy plugins. These packages remain separate so
-model and prompt code do not import the application composition entry point.
+defines the fixed root instructions and appends the application date and
+timezone after the other prompt context. The Telegram runtime derives an opaque
+OpenRouter routing ID from each versioned ADK session. Tool calls reuse that ID
+and `/reset` starts a new one. The cost ledger records cache reads and writes,
+the resolved model, and the selected provider when OpenRouter reports them.
 
 Keep `blacki.agent`, `blacki.server:main`, and `python -m blacki.server` as the
 stable discovery and execution interfaces. New internal imports should point to
@@ -95,7 +97,8 @@ the owning package rather than recreating root-level modules.
    groups become one ordered, separately labelled multimodal turn. Native image
    uploads never require sandbox materialization; R2 cataloging is best-effort.
 4. The agent calls the configured model and tools.
-5. The response is sent back through Telegram's API. When the private Kokoro
+5. Telegram receives the answer text. ADK retains provider-marked reasoning in
+   session history so it can carry forward to later turns. When the private Kokoro
    tool is enabled and selected, it synthesizes a bounded MP3 in memory and
    sends it directly to the same chat or topic through Telegram `sendAudio`.
 
