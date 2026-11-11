@@ -8,10 +8,22 @@ import json
 import re
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .storage import Source
+_MAX_MATCHES = 8
+
+
+@dataclass(frozen=True)
+class HistoryMatch:
+    """One user or assistant text message that matched a past-session search."""
+
+    ref: str
+    text: str
+    date: str
+    role: str
+    session: str
 
 
 def _object(value: Any) -> dict[str, Any]:
@@ -27,8 +39,15 @@ def search_history(
     since: str,
     until: str,
     topic: int | None,
-    suppressed: set[str],
-) -> list[Source]:
+    exclude: set[str],
+) -> list[HistoryMatch]:
+    """Return plain-text chat messages for owner that contain query.
+
+    Only events whose parts are all text and whose author and role are a
+    user message or a Blacki reply can match. Function calls and function
+    responses, including wiki tool traffic, are never indexed. Refs in exclude,
+    such as the message being answered, are skipped.
+    """
     prefix = f"telegram-chat-{owner}"
     locator = re.compile(re.escape(prefix) + r"(?:-thread-[0-9]+)?")
     with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as db:
@@ -54,7 +73,7 @@ def search_history(
             """,
             (prefix, prefix + "-thread-*", since, since, until, until),
         )
-        found: list[Source] = []
+        found: list[HistoryMatch] = []
         for row in rows:
             if not locator.fullmatch(row["user_id"]) or not re.fullmatch(
                 re.escape(row["user_id"]) + r"-v[0-9]+", row["session_id"]
@@ -104,31 +123,29 @@ def search_history(
             if not message or message.startswith("[Scheduled Event]"):
                 continue
             msg_id = origin.get("message_id")
-            writable = role == "user" and verified and isinstance(msg_id, int)
+            # Replies share the run's metadata, so only user messages get a
+            # message ref. Everything else is keyed by its event ID.
             ref = (
                 f"tg:{msg_id}"
-                if writable
+                if role == "user" and verified and isinstance(msg_id, int)
                 else "adk:" + hashlib.sha256(str(row["id"]).encode()).hexdigest()[:24]
             )
-            if ref in suppressed or ref in {item.ref for item in found}:
+            if ref in exclude or ref in {item.ref for item in found}:
                 continue
             pos = message.casefold().find(query.casefold())
             if pos < 0:
                 continue
-            # Long messages remain searchable around the match. Only complete
-            # short user messages may be used as write evidence.
+            # Long messages stay searchable around the match.
             start = max(0, pos - 150)
-            excerpt = message[start : start + 600]
             found.append(
-                Source(
+                HistoryMatch(
                     ref,
-                    excerpt,
-                    str(origin.get("date") or row["timestamp"]),
+                    message[start : start + 600],
+                    str(row["timestamp"]),
                     str(role),
                     row["session_id"],
-                    writable and start == 0 and len(message) <= 600,
                 )
             )
-            if len(found) == 8:
+            if len(found) == _MAX_MATCHES:
                 break
         return found

@@ -168,6 +168,15 @@ def _read_only(path: Path) -> Iterator[sqlite3.Connection]:
         yield db
 
 
+def _has_table(db: sqlite3.Connection, name: str) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
+
+
 class DashboardPrivateStore:
     """Expose scoped views without changing trace capture or database state."""
 
@@ -293,11 +302,8 @@ class DashboardPrivateStore:
         page: int | None,
         revision: int | None,
         offset: int,
-        claim_offset: int,
     ) -> JsonObject:
-        return await asyncio.to_thread(
-            self._get_wiki, user_id, page, revision, offset, claim_offset
-        )
+        return await asyncio.to_thread(self._get_wiki, user_id, page, revision, offset)
 
     def _get_wiki(
         self,
@@ -305,7 +311,6 @@ class DashboardPrivateStore:
         page: int | None,
         revision: int | None,
         offset: int,
-        claim_offset: int,
     ) -> JsonObject:
         match = _DIRECT_USER.fullmatch(user_id)
         if not match or (owner := int(match[1])) > 2**63 - 1:
@@ -334,9 +339,13 @@ class DashboardPrivateStore:
                 current_revision = state["revision"] if state is not None else 0
                 if revision is not None and revision != current_revision:
                     return {"status": "wiki_changed"}
+                if not _has_table(db, "wiki_pages"):
+                    # A claim-based database has no pages until the next wiki
+                    # operation migrates its schema.
+                    return {"status": "empty"}
                 pages = db.execute(
                     """
-                    SELECT DISTINCT path FROM wiki_claims
+                    SELECT path FROM wiki_pages
                     WHERE owner=? ORDER BY path LIMIT 51 OFFSET ?
                     """,
                     (owner, offset),
@@ -348,30 +357,27 @@ class DashboardPrivateStore:
                 page_index = offset if page is None else page
                 if not offset <= page_index < offset + min(50, len(pages)):
                     return {"status": "page_missing"}
-                selected = pages[page_index - offset]["path"]
-                claims = db.execute(
+                # The read-only transaction keeps this page consistent with the
+                # listing above.
+                selected = db.execute(
                     """
-                    SELECT claim, disputed
-                    FROM wiki_claims WHERE owner=? AND path=?
-                    GROUP BY fact, claim, disputed ORDER BY fact, claim
-                    LIMIT 51 OFFSET ?
+                    SELECT path, markdown, updated_at FROM wiki_pages
+                    WHERE owner=? AND path=?
                     """,
-                    (owner, selected, claim_offset),
-                ).fetchall()
+                    (owner, pages[page_index - offset]["path"]),
+                ).fetchone()
                 return {
                     "status": "available",
                     "pages": [_redact(row["path"]) for row in pages[:50]],
                     "more_pages": len(pages) > 50,
                     "page": page_index,
                     "revision": current_revision,
-                    "more_claims": len(claims) > 50,
-                    "claims": [
-                        {
-                            "text": _redact(row["claim"]),
-                            "disputed": bool(row["disputed"]),
-                        }
-                        for row in claims[:50]
-                    ],
+                    "selected": {
+                        "path": _redact(selected["path"]),
+                        "markdown": _redact(selected["markdown"]),
+                        "chars": len(selected["markdown"]),
+                        "updated_at": selected["updated_at"],
+                    },
                 }
         except sqlite3.Error:
             return {"status": "unavailable"}

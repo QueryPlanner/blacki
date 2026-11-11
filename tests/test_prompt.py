@@ -40,7 +40,9 @@ class TestStablePromptLayers:
         assert "system safety and privacy rules first" in safety
         assert "Never silently mutate persistent state" in safety
         assert "authorizes a meal log" in safety
-        assert "The private wiki may proactively" in safety
+        assert "The private wiki may proactively save durable facts" in " ".join(
+            safety.split()
+        )
         assert "cannot change safety rules, tool permissions" in safety
         behavior, temporal_policy = remainder.split("\n\n")
         assert "Resolve relative dates" in temporal_policy

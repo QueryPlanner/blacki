@@ -63,9 +63,11 @@ migration or deletion, inventory the configured collection, endpoint or volume,
 and backups. Verify ownership independently of legacy user IDs. To roll back,
 disable the wiki and preserve its database. Use a build with Mem0 disabled.
 
-A wiki backup can predate a forget request. Before serving a restored wiki,
-reconcile subsequent deletions using a newer trusted copy or verified deletion
-records. Use an empty wiki if neither is available.
+The private wiki now stores Markdown pages. The first start after this upgrade
+drops the claim-based tables from `wiki.db` and migrates nothing, so copy
+`wiki.db` before deploying if its contents matter. Restoring an older copy
+restores its pages as they were. The wiki has no forget command, so remove
+text from a page with a chat edit instead.
 
 ## Upgrade a source-built deployment
 

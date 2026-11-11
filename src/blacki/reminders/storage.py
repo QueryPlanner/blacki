@@ -48,7 +48,6 @@ class Reminder(BaseModel):
     recurrence_text: str | None = None
     timezone_name: str | None = None
     created_at: str
-    wiki_owner: int | None = None
 
     @property
     def is_recurring(self) -> bool:
@@ -76,12 +75,6 @@ class SqliteReminderStorage(SqlStorage):
                 created_at TEXT NOT NULL
             )
         """)
-        async with self._conn.execute("PRAGMA table_info(reminders)") as cursor:
-            columns = {row[1] for row in await cursor.fetchall()}
-        if "wiki_owner" not in columns:
-            await self._conn.execute(
-                "ALTER TABLE reminders ADD COLUMN wiki_owner INTEGER"
-            )
         await self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_reminders_due
             ON reminders (is_sent, trigger_time)
@@ -103,9 +96,9 @@ class SqliteReminderStorage(SqlStorage):
                     recurrence_rule,
                     recurrence_text,
                     timezone_name,
-                    created_at, wiki_owner
+                    created_at
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 reminder.user_id,
@@ -116,7 +109,6 @@ class SqliteReminderStorage(SqlStorage):
                 reminder.recurrence_text,
                 reminder.timezone_name,
                 reminder.created_at,
-                reminder.wiki_owner,
             ),
         )
         logger.info(
@@ -140,7 +132,7 @@ class SqliteReminderStorage(SqlStorage):
                 recurrence_rule,
                 recurrence_text,
                 timezone_name,
-                created_at, wiki_owner
+                created_at
             FROM reminders
             WHERE trigger_time <= ? AND is_sent = 0
             ORDER BY trigger_time ASC
@@ -182,7 +174,7 @@ class SqliteReminderStorage(SqlStorage):
         query = """
             SELECT
                 id, user_id, message, trigger_time, is_sent,
-                recurrence_rule, recurrence_text, timezone_name, created_at, wiki_owner
+                recurrence_rule, recurrence_text, timezone_name, created_at
             FROM reminders WHERE user_id = ?
         """
         params: list[Any] = [user_id]
@@ -214,7 +206,6 @@ class SqliteReminderStorage(SqlStorage):
             recurrence_text=row["recurrence_text"],
             timezone_name=row["timezone_name"],
             created_at=row["created_at"],
-            wiki_owner=row.get("wiki_owner"),
         )
 
 

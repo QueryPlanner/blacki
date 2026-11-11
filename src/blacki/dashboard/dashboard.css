@@ -131,6 +131,7 @@ details[open] > summary .caret { transform: rotate(225deg); }
 .wiki-page ul { padding-left: 1.15rem; margin-top: .65rem; }
 .wiki-page li { padding: .4rem 0; }
 .wiki-page small { color: var(--subtle); }
+.wiki-markdown { margin-top: .65rem; font-family: var(--font-mono); font-size: .85rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .report-toolbar { display: flex; flex-wrap: wrap; align-items: end; gap: .65rem; margin-bottom: 1rem; }
 .report-toolbar label:first-child { min-width: min(100%, 245px); }

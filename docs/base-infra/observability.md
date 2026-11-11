@@ -127,9 +127,10 @@ uses existing local captures. Blacki's normal private-tool settings suppress
 content capture, so recent requests can have conversation history and trace
 metadata with no captured system instructions.
 
-The User wiki tab reads saved claims for the selected direct Telegram user
-and respects the user's memory setting. It uses the same local `wiki.db` as
-Telegram, beside the tools database.
+The User wiki tab lists the saved Markdown pages for the selected direct
+Telegram user and shows the selected page as plain text. It respects the
+user's memory setting. It uses the same local `wiki.db` as Telegram, beside the
+tools database.
 
 Both views are available by default. Open the dashboard at a loopback address,
 a Tailscale device IP, or the full hostname provided by Tailscale Serve.

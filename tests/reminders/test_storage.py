@@ -337,3 +337,65 @@ class TestGetStorage:
         assert result is container.reminder_storage
 
         reset_container_for_tests()
+
+
+class TestWikiReviewColumnRetirement:
+    """Reminders no longer carry the retired scheduled wiki review owner."""
+
+    def test_reminder_model_has_no_wiki_owner(self) -> None:
+        assert "wiki_owner" not in Reminder.model_fields
+
+    async def test_initialize_is_idempotent(self, storage) -> None:
+        await storage.initialize()
+
+    async def test_new_schema_has_no_wiki_owner_column(self, storage, conn) -> None:
+        async with conn.execute("PRAGMA table_info(reminders)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        assert "wiki_owner" not in columns
+
+    async def test_legacy_column_is_left_alone_and_nullable(
+        self, lock, tmp_path
+    ) -> None:
+        """A database created before the retirement keeps its nullable column."""
+        legacy = await aiosqlite.connect(tmp_path / "tools.db", isolation_level=None)
+        legacy.row_factory = aiosqlite.Row
+        try:
+            await legacy.execute("""
+                CREATE TABLE reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    trigger_time TEXT NOT NULL,
+                    is_sent INTEGER NOT NULL DEFAULT 0,
+                    recurrence_rule TEXT,
+                    recurrence_text TEXT,
+                    timezone_name TEXT,
+                    created_at TEXT NOT NULL,
+                    wiki_owner INTEGER
+                )
+            """)
+            await legacy.execute(
+                "INSERT INTO reminders (user_id, message, trigger_time, created_at, "
+                "wiki_owner) VALUES ('telegram-chat-12', 'Old review', "
+                "'2026-11-09T18:00:00+00:00', '2026-11-09T12:00:00+00:00', 12)"
+            )
+            storage = SqliteReminderStorage(legacy, lock)
+            await storage.initialize()
+            reminders = await storage.get_user_reminders("telegram-chat-12")
+            assert [reminder.message for reminder in reminders] == ["Old review"]
+            new_id = await storage.add_reminder(
+                Reminder(
+                    user_id="telegram-chat-12",
+                    message="New reminder",
+                    trigger_time="2026-11-10T18:00:00+00:00",
+                    created_at="2026-11-09T12:00:00+00:00",
+                )
+            )
+            async with legacy.execute(
+                "SELECT wiki_owner FROM reminders WHERE id = ?", (new_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            assert row is not None
+            assert row[0] is None
+        finally:
+            await legacy.close()

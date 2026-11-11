@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 
 from blacki.dashboard.routes import create_dashboard_router
 from blacki.utils.config import ServerEnv
-from blacki.wiki.storage import Source, WikiStore
+from blacki.wiki.storage import WikiStore
 
 USER = "telegram-chat-12"
 OTHER = "telegram-chat-34"
@@ -260,7 +260,7 @@ def test_private_routes_enforce_host_and_browser_boundary(client: TestClient) ->
     )
 
 
-def test_wiki_reads_exact_owner_revision_and_honors_memory_off(
+def test_wiki_lists_owner_pages_and_reads_the_selected_page(
     client: TestClient, files: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     url = "/dashboard/api/wiki"
@@ -270,38 +270,19 @@ def test_wiki_reads_exact_owner_revision_and_honors_memory_off(
     assert not path.exists()
 
     wiki = WikiStore(path)
-    assert (
-        wiki.write(
-            12,
-            "profile/preferences.md",
-            "format",
-            "Use bullet points.",
-            Source("tg:12", "Use bullet points.", "2026-01-01"),
-            0,
-            False,
-        )
-        == "saved"
-    )
-    assert (
-        wiki.write(
-            34,
-            "profile/private.md",
-            "format",
-            "Use prose.",
-            Source("tg:34", "Use prose.", "2026-01-02"),
-            0,
-            False,
-        )
-        == "saved"
-    )
+    wiki.edit(12, "profile/preferences.md", "Use bullet points.", "", read=False)
+    wiki.edit(34, "profile/private.md", "Use prose.", "", read=False)
     original = path.read_bytes()
 
     result = client.get(url, params=params)
     data = result.json()
     assert data["pages"] == ["profile/preferences.md"]
-    assert data["claims"] == [{"text": "Use bullet points.", "disputed": False}]
-    assert "tg:12" not in result.text
+    assert data["page"] == 0
+    assert data["selected"]["path"] == "profile/preferences.md"
+    assert data["selected"]["markdown"] == "Use bullet points."
+    assert data["selected"]["chars"] == len("Use bullet points.")
     assert "profile/private.md" not in result.text
+    assert "Use prose." not in result.text
     assert client.get(
         url, params=params | {"page": "1", "revision": str(data["revision"])}
     ).json() == {"status": "page_missing"}
@@ -318,6 +299,49 @@ def test_wiki_reads_exact_owner_revision_and_honors_memory_off(
     ).json() == {"status": "wiki_changed"}
     monkeypatch.setenv("BLACKI_WIKI_ENABLED", "false")
     assert client.get(url, params=params).json() == {"status": "wiki_disabled"}
+
+
+def test_wiki_markdown_is_returned_as_data_and_redacted(
+    client: TestClient, files: Path
+) -> None:
+    WikiStore(files / "wiki.db").edit(
+        12,
+        "notes.md",
+        "<script>alert('x')</script>\n- note: sk-or-v1-" + "a" * 24,
+        "",
+        read=False,
+    )
+    data = client.get("/dashboard/api/wiki", params={"user_id": USER}).json()
+    markdown = data["selected"]["markdown"]
+    assert "<script>alert('x')</script>" in markdown
+    assert "sk-or-v1-" not in markdown
+    assert "[REDACTED]" in markdown
+
+
+def test_wiki_from_a_claim_based_database_reads_as_empty(
+    client: TestClient, files: Path
+) -> None:
+    with closing(sqlite3.connect(files / "wiki.db")) as db, db:
+        db.executescript(
+            """
+            CREATE TABLE wiki_owners (
+                owner INTEGER PRIMARY KEY, enabled INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE wiki_claims (
+                owner INTEGER NOT NULL, path TEXT NOT NULL, fact TEXT NOT NULL,
+                claim TEXT NOT NULL, source TEXT NOT NULL, excerpt TEXT NOT NULL,
+                source_date TEXT NOT NULL, disputed INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (owner, path, fact, source)
+            );
+            INSERT INTO wiki_owners VALUES (12, 1, 3);
+            INSERT INTO wiki_claims VALUES
+                (12, 'old.md', 'k', 'Old claim.', 'tg:1', 'Old claim.',
+                 '2026-01-01', 0);
+            """
+        )
+    data = client.get("/dashboard/api/wiki", params={"user_id": USER}).json()
+    assert data == {"status": "empty"}
 
 
 def test_trace_tail_can_read_multipart_prompt_but_rejects_broken_ancestry(
