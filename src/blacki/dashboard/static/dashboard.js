@@ -342,8 +342,7 @@ async function renderSessions(signal) {
 }
 
 const privateStatus = {
-  disabled: "Private views require an enabled dashboard host.",
-  forbidden: "This host is not enabled for private dashboard views.",
+  forbidden: "Open private views from a loopback or Tailscale dashboard URL.",
   trace_missing: "The local trace file is unavailable.",
   session_missing: "This saved session is no longer available.",
   capture_missing: "This request capture is no longer available.",

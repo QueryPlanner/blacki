@@ -1,4 +1,4 @@
-"""Integration tests for the dashboard's opt-in private data views."""
+"""Integration tests for the dashboard's private data views."""
 
 import json
 import sqlite3
@@ -52,19 +52,18 @@ def files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _client(path: Path, *, enabled: bool = True) -> TestClient:
+def _client(path: Path) -> TestClient:
     env = ServerEnv.model_validate(
         {
             "AGENT_NAME": "test",
             "AGENT_DIR": str(path),
             "SQLITE_PATH": str(path / "tools.db"),
-            "BLACKI_DASHBOARD_PRIVATE_HOSTS": "dashboard.example" if enabled else "",
         }
     )
     app = FastAPI()
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
     app.include_router(create_dashboard_router(env))
-    return TestClient(app, base_url="https://dashboard.example")
+    return TestClient(app, base_url="http://localhost:8080")
 
 
 @pytest.fixture
@@ -196,22 +195,52 @@ def test_structured_capture_and_incomplete_tool_list(
     assert capture["partial_tools"] is True
 
 
-def test_private_routes_enforce_host_and_browser_boundary(
-    client: TestClient, files: Path
+@pytest.mark.parametrize(
+    "host",
+    (
+        "localhost:8080",
+        "127.0.0.1",
+        "[::1]:8080",
+        "100.64.0.1:8080",
+        "[fd7a:115c:a1e0::1]",
+        "blacki.example-tailnet.ts.net",
+    ),
+)
+def test_private_routes_available_by_default_on_supported_hosts(
+    client: TestClient, host: str
 ) -> None:
+    headers = {"Host": host, "Sec-Fetch-Site": "same-origin"}
+    prompt = client.get(
+        "/dashboard/api/context",
+        params={"user_id": USER, "session_id": "session-v1"},
+        headers=headers,
+    )
+    wiki = client.get("/dashboard/api/wiki", params={"user_id": USER}, headers=headers)
+    assert prompt.status_code == wiki.status_code == 200
+    assert prompt.json() == {"status": "trace_missing"}
+    assert wiki.json() == {"status": "missing"}
+
+
+def test_private_routes_enforce_host_and_browser_boundary(client: TestClient) -> None:
     for path in ("context", "wiki"):
         url = "/dashboard/api/" + path
         for headers in (
-            {"Host": "foreign.example", "X-Forwarded-Host": "dashboard.example"},
+            {"Host": "foreign.example", "X-Forwarded-Host": "localhost"},
             {"Origin": "https://foreign.example"},
             {"Origin": "null"},
             {"Host": "[malformed"},
+            {"Host": "localhost:0"},
+            {"Host": "localhost/path"},
+            {"Host": "user@localhost"},
+            {"Host": "blacki.example-tailnet.ts.net.foreign.example"},
+            {"Host": "blacki.-example-tailnet.ts.net"},
+            {"Host": "100.128.0.1"},
+            {"Host": "[fd7a:115c:a1e1::1]"},
             {"Sec-Fetch-Site": "cross-site"},
             {"Sec-Fetch-Site": "same-site"},
+            [("Host", "localhost"), ("Host", "foreign.example")],
         ):
             assert client.get(url, headers=headers).status_code == 403
-        with _client(files, enabled=False) as disabled:
-            assert disabled.get(url).json() == {"status": "disabled"}
     assert (
         client.get("/dashboard/api/context", params={"user_id": USER}).status_code
         == 422

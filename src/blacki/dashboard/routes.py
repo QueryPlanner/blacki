@@ -17,6 +17,7 @@ import mimetypes
 import re
 from collections.abc import Mapping
 from importlib import resources
+from ipaddress import ip_address, ip_network
 from pathlib import Path, PurePosixPath
 from typing import Any, Protocol, TypeVar
 from urllib.parse import urlsplit
@@ -46,6 +47,11 @@ _MAX_QUERY_TEXT = MAX_SEARCH_LENGTH
 _DEFAULT_LIMIT = DEFAULT_PAGE_SIZE
 _DEFAULT_WINDOW = "24h"
 _WINDOW_RE = re.compile(r"^(?:all|[1-9][0-9]{0,3}[hdw])$")
+_SERVE_HOST_RE = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2}ts\.net")
+_TAILSCALE_NETWORKS = (
+    ip_network("100.64.0.0/10"),
+    ip_network("fd7a:115c:a1e0::/48"),
+)
 _ResponseT = TypeVar("_ResponseT", bound=Response)
 
 _SECURITY_HEADERS: Mapping[str, str] = {
@@ -232,17 +238,24 @@ def _tools_db_path(env: ServerEnv) -> Path:
     )
 
 
-def _private_access(
-    request: Request, allowed_hosts: frozenset[str]
-) -> JSONResponse | None:
+def _private_dashboard_host(hostname: str) -> bool:
+    hostname = hostname.removesuffix(".")
+    if hostname == "localhost" or _SERVE_HOST_RE.fullmatch(hostname):
+        return True
+    try:
+        address = ip_address(hostname)
+    except ValueError:
+        return False
+    return address.is_loopback or any(address in net for net in _TAILSCALE_NETWORKS)
+
+
+def _private_access(request: Request) -> JSONResponse | None:
     # Loopback or tailnet ACLs remain the access boundary. Check Host and
     # browser headers here for DNS rebinding and cross-origin reads.
     if request.headers.get("origin") is not None or request.headers.get(
         "sec-fetch-site"
     ) in {"cross-site", "same-site"}:
         return _error_response(403, "Open this view from the dashboard directly.")
-    if not allowed_hosts:
-        return _json_response({"status": "disabled"})
     hosts = request.headers.getlist("host")
     try:
         # Starlette can fall back to the server address for a malformed Host.
@@ -250,16 +263,16 @@ def _private_access(
         authority = urlsplit(f"//{hosts[0]}") if len(hosts) == 1 else None
         valid_host = (
             authority is not None
-            and authority.hostname in allowed_hosts
             and authority.username is None
             and not (authority.path or authority.query or authority.fragment)
             and authority.port != 0
+            and _private_dashboard_host(authority.hostname or "")
         )
     except ValueError:
         valid_host = False
     if not valid_host:
         return _error_response(
-            403, "This host is not enabled for private dashboard views."
+            403, "Open private views from a loopback or Tailscale dashboard URL."
         )
     return None
 
@@ -289,19 +302,10 @@ def create_dashboard_router(
             logger.exception("Dashboard store initialization failed")
             dashboard_store = None
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
-    allowed_hosts = frozenset(
-        host.strip().lower()
-        for host in env.dashboard_private_hosts.split(",")
-        if host.strip()
-    )
-    private_store = (
-        DashboardPrivateStore(
-            _session_db_path(env),
-            get_log_dir() / "blacki-traces.log",
-            _tools_db_path(env).with_name("wiki.db"),
-        )
-        if allowed_hosts
-        else None
+    private_store = DashboardPrivateStore(
+        _session_db_path(env),
+        get_log_dir() / "blacki-traces.log",
+        _tools_db_path(env).with_name("wiki.db"),
     )
 
     @router.get("")
@@ -425,7 +429,7 @@ def create_dashboard_router(
         offset: str = "0",
     ) -> JSONResponse:
         """List captures, or read one captured prompt and its tool descriptions."""
-        if (denial := _private_access(request, allowed_hosts)) is not None:
+        if (denial := _private_access(request)) is not None:
             return denial
         try:
             user = _parse_text(user_id, required=True)
@@ -452,7 +456,7 @@ def create_dashboard_router(
         claim_offset: str = "0",
     ) -> JSONResponse:
         """Read one owner-scoped wiki page without exposing evidence excerpts."""
-        if (denial := _private_access(request, allowed_hosts)) is not None:
+        if (denial := _private_access(request)) is not None:
             return denial
         try:
             user = _parse_text(user_id, required=True)

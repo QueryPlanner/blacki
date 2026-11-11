@@ -143,12 +143,6 @@ class ServerEnv(BaseModel):
         description="JSON array string of allowed CORS origins",
     )
 
-    dashboard_private_hosts: str = Field(
-        default="",
-        alias="BLACKI_DASHBOARD_PRIVATE_HOSTS",
-        description="Exact dashboard hostnames for private prompt and wiki views",
-    )
-
     host: str = Field(
         default="127.0.0.1",
         alias="HOST",

@@ -131,14 +131,11 @@ The User wiki tab reads saved claims for the selected direct Telegram user
 and respects the user's memory setting. It uses the same local `wiki.db` as
 Telegram, beside the tools database.
 
-Both views are disabled by default. For an existing private dashboard, set
-`BLACKI_DASHBOARD_PRIVATE_HOSTS` to the exact hostnames or IP addresses operators
-use in their browser, without schemes or ports. For example, use `127.0.0.1`
-for a loopback-only dashboard or the server's exact Tailscale Serve hostname.
-Use a comma to separate multiple hosts. For GitHub-managed deployments, set
-the `BLACKI_DASHBOARD_PRIVATE_HOSTS` secret in the production environment.
-Restrict access to the dashboard with the loopback or Tailscale controls below.
-The host setting protects browser access and does not authenticate operators.
+Both views are available by default. Open the dashboard at a loopback address,
+a Tailscale device IP, or the full hostname provided by Tailscale Serve.
+The application checks the browser's request host and blocks cross-origin
+reads for both views. Operator access still depends on the loopback or
+Tailscale controls below.
 
 For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with

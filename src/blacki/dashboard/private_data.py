@@ -1,4 +1,4 @@
-"""Read-only prompt and wiki data for explicitly enabled operator dashboards."""
+"""Read-only prompt and wiki data for the private operator dashboard."""
 
 from __future__ import annotations
 
