@@ -207,7 +207,9 @@ def create_app(agent: LlmAgent | None = None) -> App:
     from blacki.sandbox.config import sandbox_enabled
     from blacki.sandbox.images import SandboxMultimodalToolResultsPlugin
     from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
-    from blacki.wiki.tools import WikiPolicyPlugin, WikiToolset
+    from blacki.wiki.tools import WikiMemoryPlugin, WikiPolicyPlugin, WikiToolset
+
+    wiki_tools_enabled = any(isinstance(tool, WikiToolset) for tool in agent.tools)
 
     sandbox_tools_enabled = sandbox_enabled()
     plugins: list[BasePlugin] = [
@@ -217,14 +219,11 @@ def create_app(agent: LlmAgent | None = None) -> App:
             else []
         ),
         TelegramModelOverridePlugin(name="telegram_model_override"),
-        *(
-            [WikiPolicyPlugin(name="private_wiki")]
-            if any(isinstance(tool, WikiToolset) for tool in agent.tools)
-            else []
-        ),
+        *([WikiPolicyPlugin(name="private_wiki")] if wiki_tools_enabled else []),
         DeclarativeDbPlugin(name="declarative_db"),
         StoredPreferencesPlugin(name="stored_preferences"),
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
+        *([WikiMemoryPlugin(name="owner_memory")] if wiki_tools_enabled else []),
         TemporalContextPlugin(),
     ]
     if not private_tool_privacy_enabled():
