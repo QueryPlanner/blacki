@@ -120,6 +120,26 @@ Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
+The Sessions view can show the recorded system instructions and tool
+descriptions for an individual model request. It verifies each capture against
+the selected ADK session and filters common credential patterns. The dashboard
+uses existing local captures. Blacki's normal private-tool settings suppress
+content capture, so recent requests can have conversation history and trace
+metadata with no captured system instructions.
+
+The User wiki tab reads saved claims for the selected direct Telegram user
+and respects the user's memory setting. It uses the same local `wiki.db` as
+Telegram, beside the tools database.
+
+Both views are disabled by default. For an existing private dashboard, set
+`BLACKI_DASHBOARD_PRIVATE_HOSTS` to the exact hostnames or IP addresses operators
+use in their browser, without schemes or ports. For example, use `127.0.0.1`
+for a loopback-only dashboard or the server's exact Tailscale Serve hostname.
+Use a comma to separate multiple hosts. For GitHub-managed deployments, set
+the `BLACKI_DASHBOARD_PRIVATE_HOSTS` secret in the production environment.
+Restrict access to the dashboard with the loopback or Tailscale controls below.
+The host setting protects browser access and does not authenticate operators.
+
 For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with
 `BLACKI_COST_LEDGER_PATH`). The ledger stores identity, model, token, provider

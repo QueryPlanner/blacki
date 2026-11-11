@@ -1,821 +1,834 @@
-(() => {
-  "use strict";
+"use strict";
 
-  const API = Object.freeze({
-    overview: "/dashboard/api/overview?window=24h",
-    users: "/dashboard/api/users?search=",
-    sessions: "/dashboard/api/sessions?user_id=",
-    session: "/dashboard/api/session?user_id=",
-    logs: "/dashboard/api/logs?level=",
-    traces: "/dashboard/api/traces?status=",
-    trace: "/dashboard/api/trace?trace_id=",
+const root = document.getElementById("view");
+const refresh = document.getElementById("refresh");
+const pageSize = 50;
+const maxPageSize = 200;
+const views = {
+  sessions: ["Sessions", "Read conversations, inspect captured model context, and browse a user’s wiki."],
+  overview: ["Overview", "Review activity, token use, and reported costs in the local files."],
+  traces: ["Traces", "Inspect recorded spans, timing, and trace status."],
+  logs: ["Logs", "Search the application log by message or severity."],
+};
+const state = {
+  view: "sessions", user: "", session: "", pane: "transcript", wikiSelection: {},
+  userSearch: "", userLimit: pageSize, sessionLimit: pageSize, window: "all",
+  traces: { search: "", status: "", limit: 50 }, logs: { search: "", level: "", limit: 50 },
+};
+let currentView;
+let currentDetail;
+const numbers = new Intl.NumberFormat("en-IN");
+const dates = new Intl.DateTimeFormat("en-IN", {
+  timeZone: "Asia/Kolkata", day: "numeric", month: "short", year: "numeric",
+});
+const clocks = new Intl.DateTimeFormat("en-IN", {
+  timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+const date = (value) => value ? dates.format(new Date(value)) : "Date unavailable";
+const clock = (value) => value ? clocks.format(new Date(value)) : "";
+const dateTime = (value) => value ? `${date(value)} · ${clock(value)} IST` : "Date unavailable";
+const count = (value) => numbers.format(value ?? 0);
+const formatCost = (value) => value == null ? "Unavailable" : "$" + value.toFixed(4);
+const formatPercent = (value) => value == null ? "Unavailable" : (value * 100).toFixed(1) + "%";
+const formatMs = (value) => value == null ? "Unavailable" : count(Math.round(value)) + " ms";
+
+function costValue(reported, estimated) {
+  if (reported != null) return formatCost(reported);
+  return estimated == null ? "Unavailable" : formatCost(estimated) + " estimated";
+}
+
+function costDescription(item) {
+  const month = costValue(item.monthly_cost_usd, item.monthly_estimated_cost_usd);
+  const total = costValue(item.cumulative_cost_usd, item.cumulative_estimated_cost_usd);
+  return "Cost this month " + month + " · Cumulative " + total;
+}
+
+const plural = (n, word) => `${count(n)} ${word}${n === 1 ? "" : "s"}`;
+
+function el(tag, classes = "", value) {
+  const node = document.createElement(tag);
+  if (classes) node.className = classes;
+  if (value !== undefined && value !== null) node.textContent = value;
+  return node;
+}
+
+function action(label, classes, onClick) {
+  const node = el("button", classes, label);
+  node.type = "button";
+  node.addEventListener("click", onClick);
+  return node;
+}
+
+function labelControl(label, control) {
+  const node = el("label", "field-label", label);
+  node.append(control);
+  return node;
+}
+
+function options(items, selected) {
+  const node = el("select", "field");
+  items.forEach(([value, label]) => node.append(new Option(label, value, false, value === selected)));
+  return node;
+}
+
+function notice(value, role = "") {
+  const node = el("p", "empty", value);
+  if (role) node.setAttribute("role", role);
+  return node;
+}
+
+function warnings(parent, data) {
+  for (const warning of data.warnings ?? []) parent.append(el("p", "warning", warning));
+}
+
+function error(target) {
+  target.replaceChildren(notice("Couldn’t read the local data. Try refreshing the dashboard.", "alert"));
+}
+
+async function api(endpoint, params, signal) {
+  const query = new URLSearchParams(params);
+  const response = await fetch(`/dashboard/api/${endpoint}?${query}`, { signal, cache: "no-store" });
+  if (response.status === 403) return { status: "forbidden" };
+  if (!response.ok) throw new Error(`Local response ${response.status}`);
+  const data = await response.json();
+  signal.throwIfAborted();
+  return data;
+}
+
+async function loadVisibleRange(endpoint, params, limit, signal) {
+  const result = await api(endpoint, { ...params, offset: 0, limit: Math.min(limit, maxPageSize) }, signal);
+  // Refresh the range the operator has already loaded, in API-sized pages.
+  while (result.items.length < Math.min(limit, result.total)) {
+    const offset = result.items.length;
+    const next = await api(endpoint, { ...params, offset, limit: Math.min(limit - offset, maxPageSize) }, signal);
+    if (!next.items.length) break;
+    result.items.push(...next.items);
+    result.total = next.total;
+  }
+  return result;
+}
+
+function dateNode(value, full = false) {
+  const node = el("time", "", full ? dateTime(value) : clock(value));
+  if (value) node.dateTime = value;
+  return node;
+}
+
+function facts(items, classes, itemClass = "") {
+  const list = el("dl", classes);
+  for (const [label, value] of items) {
+    const item = el("div", itemClass);
+    item.append(el("dt", "", label), el("dd", "", value));
+    list.append(item);
+  }
+  return list;
+}
+
+function sessionTitle(row) {
+  return row.version == null ? "Session" : `Session v${row.version}`;
+}
+
+function ownerName(owner) {
+  return owner.display_name || owner.username || owner.user_id;
+}
+
+async function renderSessions(signal) {
+  const rail = el("aside", "session-rail");
+  const panel = el("div", "inspector");
+  const bench = el("div", "workbench");
+  bench.append(rail, panel);
+  const users = await loadVisibleRange("users", { search: state.userSearch }, state.userLimit, signal);
+  root.replaceChildren(bench);
+  const listedUsers = [...users.items];
+  const searchForm = el("form", "owner-search");
+  const search = el("input", "field");
+  search.type = "search";
+  search.maxLength = 128;
+  search.value = state.userSearch;
+  search.placeholder = "Name or ID";
+  const apply = el("button", "control", "Find");
+  apply.type = "submit";
+  searchForm.append(labelControl("Find user", search), apply);
+  searchForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    state.userSearch = search.value.trim();
+    state.user = "";
+    state.session = "";
+    state.userLimit = pageSize;
+    state.sessionLimit = pageSize;
+    state.wikiSelection = {};
+    render();
+  });
+  rail.append(searchForm);
+  if (!listedUsers.length) {
+    panel.append(notice(state.userSearch ? "No users match this search." : "No local ADK sessions are available."));
+    warnings(panel, users);
+    return;
+  }
+  const chooser = options([], "");
+  const railHead = el("div", "rail-head");
+  const totalLabel = el("span");
+  const list = el("div", "session-list");
+  let sessionPage;
+  let sessionRows = [];
+  let selectedOwner;
+
+  function setUserOptions() {
+    const entries = listedUsers.map((u) => [u.user_id, ownerName(u)]);
+    const visible = listedUsers.some((u) => u.user_id === state.user);
+    if (!visible) entries.unshift(["", "Choose a user"]);
+    const next = options(entries, visible ? state.user : "");
+    if (!visible) next.options[0].disabled = true;
+    chooser.replaceChildren(...next.options);
+    chooser.value = visible ? state.user : "";
+  }
+
+  function ownerMore(offset) {
+    const button = action("More users", "control more", async () => {
+      button.disabled = true;
+      try {
+        const result = await api("users", { search: state.userSearch, offset, limit: pageSize }, signal);
+        listedUsers.push(...result.items);
+        state.userLimit = Math.max(state.userLimit, listedUsers.length);
+        setUserOptions();
+        if (!selectedOwner && chooser.value) await loadSessions();
+        if (offset + result.items.length < result.total) {
+          button.replaceWith(ownerMore(offset + result.items.length));
+        } else {
+          button.remove();
+        }
+      } catch (reason) {
+        if (reason.name !== "AbortError") button.textContent = "Retry loading users";
+        button.disabled = false;
+      }
+    });
+    return button;
+  }
+
+  if (!state.user) state.user = listedUsers[0].user_id;
+  setUserOptions();
+  const ownerCost = el("p", "rail-note");
+  rail.append(labelControl("User", chooser), ownerCost);
+  if (listedUsers.length < users.total) rail.append(ownerMore(listedUsers.length));
+  railHead.append(el("h2", "", "Session history"), totalLabel);
+  rail.append(railHead, list);
+  const more = action("More sessions", "control more", () => loadSessions(true));
+  more.hidden = true;
+  const railWarnings = el("div");
+  rail.append(more, railWarnings, el("p", "rail-note", "Telegram /reset keeps older sessions. Times shown in IST."));
+
+  async function loadSessions(append = false) {
+    currentDetail?.abort();
+    const controller = new AbortController();
+    currentDetail = controller;
+    const detailSignal = AbortSignal.any([signal, controller.signal]);
+    const offset = append ? sessionRows.length : 0;
+    selectedOwner = listedUsers.find((user) => user.user_id === state.user);
+    if (!selectedOwner) {
+      ownerCost.textContent = "";
+      list.replaceChildren();
+      panel.replaceChildren(notice("The selected user is outside the loaded results. Choose a user to continue."));
+      return;
+    }
+    ownerCost.textContent = costDescription(selectedOwner);
+    if (!append) {
+      list.replaceChildren(notice("Reading sessions…", "status"));
+      panel.replaceChildren();
+    }
+    more.disabled = true;
+    try {
+      const params = { user_id: state.user };
+      sessionPage = append
+        ? await api("sessions", { ...params, offset, limit: pageSize }, detailSignal)
+        : await loadVisibleRange("sessions", params, state.sessionLimit, detailSignal);
+      sessionRows = append ? [...sessionRows, ...sessionPage.items] : sessionPage.items;
+      state.sessionLimit = Math.max(state.sessionLimit, sessionRows.length);
+      if (!state.session) state.session = sessionRows[0]?.session_id || "";
+      renderRail();
+      await renderDetail(detailSignal);
+    } catch (reason) {
+      if (reason.name !== "AbortError") error(list);
+    } finally {
+      more.disabled = false;
+    }
+  }
+
+  function renderRail() {
+    totalLabel.textContent = plural(sessionPage.total, "session");
+    list.replaceChildren();
+    for (const row of sessionRows) {
+      const key = action("", "session-key", () => {
+        state.session = row.session_id;
+        renderRail();
+        list.querySelector("[aria-current]")?.focus({ preventScroll: true });
+        selectDetail();
+      });
+      if (row.session_id === state.session) key.setAttribute("aria-current", "true");
+      const title = el("span", "key-title", sessionTitle(row));
+      if (row.is_current) title.append(el("span", "current-label", "Current"));
+      key.append(title, el("span", "key-meta", `${date(row.updated_at)} · ${plural(row.message_count, "message")}`));
+      list.append(key);
+    }
+    more.hidden = sessionRows.length >= sessionPage.total;
+    if (!sessionRows.length) list.append(notice("No sessions for this user."));
+    railWarnings.replaceChildren();
+    warnings(railWarnings, sessionPage);
+  }
+
+  chooser.addEventListener("change", () => {
+    state.user = chooser.value;
+    state.session = "";
+    state.sessionLimit = pageSize;
+    state.wikiSelection = {};
+    more.hidden = true;
+    loadSessions();
   });
 
-  const state = {
-    view: "overview",
-    selectedUser: "",
-    selectedSession: "",
-    selectedTrace: "",
-    users: [],
-    sessions: [],
-    traces: [],
-    lastUpdated: null,
-  };
+  function selectDetail() {
+    currentDetail?.abort();
+    const controller = new AbortController();
+    currentDetail = controller;
+    return renderDetail(AbortSignal.any([signal, controller.signal]));
+  }
 
-  const byId = (id) => document.getElementById(id);
-
-  const el = (tag, className, content) => {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (content !== undefined && content !== null) element.textContent = String(content);
-    return element;
-  };
-
-  const setText = (id, content) => {
-    const target = byId(id);
-    if (target) target.textContent = content === undefined || content === null ? "—" : String(content);
-  };
-
-  const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-
-  const rootOf = (payload) => {
-    if (isObject(payload) && isObject(payload.data)) return payload.data;
-    return payload;
-  };
-
-  const first = (object, keys, fallback = undefined) => {
-    if (!isObject(object)) return fallback;
-    for (const key of keys) {
-      const value = object[key];
-      if (value !== undefined && value !== null && value !== "") return value;
-    }
-    return fallback;
-  };
-
-  const listFrom = (payload, keys = []) => {
-    if (Array.isArray(payload)) return payload;
-    if (!isObject(payload)) return [];
-    for (const key of keys) {
-      if (Array.isArray(payload[key])) return payload[key];
-    }
-    if (isObject(payload.data)) return listFrom(payload.data, keys);
-    return [];
-  };
-
-  const formatCount = (value) => {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "—";
-    return new Intl.NumberFormat().format(number);
-  };
-
-  const formatMoney = (value) => {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "—";
-    const decimals = Math.abs(number) < 0.01 && number !== 0 ? 6 : 2;
-    return `$${number.toFixed(decimals)}`;
-  };
-
-  const formatPercent = (value) => {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "—";
-    const normalized = number <= 1 ? number * 100 : number;
-    return `${normalized.toFixed(normalized >= 10 ? 0 : 1)}%`;
-  };
-
-  const formatMs = (value) => {
-    const number = Number(value);
-    if (!Number.isFinite(number)) return "—";
-    return `${number >= 100 ? Math.round(number) : number.toFixed(1)} ms`;
-  };
-
-  const formatDate = (value) => {
-    if (value === undefined || value === null || value === "") return "—";
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value);
-    return date.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-  };
-
-  const normalizeStatus = (value) => String(value ?? "unknown").trim().toLowerCase();
-
-  const badgeFor = (value, kind = "status") => {
-    const status = normalizeStatus(value);
-    const map = {
-      ok: ["badge-success", "OK"],
-      success: ["badge-success", "Success"],
-      healthy: ["badge-success", "Healthy"],
-      running: ["badge-info", "Running"],
-      active: ["badge-info", "Active"],
-      info: ["badge-info", "Info"],
-      warning: ["badge-warning", "Warning"],
-      degraded: ["badge-warning", "Degraded"],
-      error: ["badge-error", "Error"],
-      failed: ["badge-error", "Failed"],
-      unavailable: ["badge-error", "Unavailable"],
-      debug: ["badge-ghost", "Debug"],
-      unknown: ["badge-ghost", kind === "source" ? "Unknown" : "Unknown"],
-    };
-    const [className, label] = map[status] || ["badge-ghost", String(value ?? "Unknown")];
-    return el("span", `badge badge-sm ${className}`, label);
-  };
-
-  const showEmpty = (container, title, description) => {
-    container.replaceChildren();
-    const box = el("div", "rounded-xl border border-dashed border-base-300 bg-base-200/40 p-6 text-center");
-    box.append(
-      el("p", "font-semibold", title),
-      el("p", "mt-1 text-sm leading-5 text-base-content/60", description),
-    );
-    container.append(box);
-  };
-
-  const showInlineError = (container, description) => {
-    container.replaceChildren();
-    const box = el("div", "alert alert-error border-error/20 bg-error/10 text-sm", description);
-    container.append(box);
-  };
-
-  const setConnection = (message, stateName = "ok") => {
-    setText("connection-state", message);
-    const status = document.querySelector("#connection-state")?.previousElementSibling;
-    if (!status) return;
-    status.className = `status ${stateName === "error" ? "status-error" : stateName === "pending" ? "status-warning" : "status-success"}`;
-  };
-
-  const setBusy = (busy) => {
-    const button = byId("refresh-button");
-    const loading = byId("loading-state");
-    if (button) {
-      button.disabled = busy;
-      button.setAttribute("aria-busy", String(busy));
-    }
-    if (loading && state.lastUpdated === null) loading.hidden = !busy;
-  };
-
-  const requestJson = async (url) => {
-    const response = await fetch(url, {
-      headers: { Accept: "application/json" },
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error(`Request returned HTTP ${response.status}`);
-    return response.json();
-  };
-
-  const clearGlobalError = () => {
-    const error = byId("global-error");
-    if (error) {
-      error.hidden = true;
-      error.replaceChildren();
-    }
-  };
-
-  const showGlobalError = (error) => {
-    const target = byId("global-error");
-    if (!target) return;
-    target.replaceChildren();
-    const box = el("div", "alert alert-error border-error/20 bg-error/10 shadow-sm");
-    box.append(
-      el("span", "text-lg", "!"),
-      el("div", "min-w-0", "Unable to read the selected local records. Check the server logs, then try Refresh."),
-    );
-    const detail = error instanceof Error ? error.message : "Unknown dashboard error";
-    const detailNode = el("p", "mt-1 break-words text-xs text-base-content/65", detail);
-    box.lastElementChild.append(detailNode);
-    target.append(box);
-    target.hidden = false;
-  };
-
-  const renderOverview = (payload) => {
-    const root = rootOf(payload);
-    const metrics = isObject(root?.metrics) ? root.metrics : isObject(root?.summary) ? root.summary : root;
-    const requestCount = first(metrics, ["requests", "request_count", "invocations", "invocation_count", "events", "event_count"]);
-    const errorCount = first(metrics, ["errors", "error_count"]);
-    const errorRate = first(metrics, ["error_rate", "errors_percent", "failure_rate"],
-      requestCount && Number(requestCount) > 0 && errorCount !== undefined
-        ? Number(errorCount) / Number(requestCount)
-        : undefined,
-    );
-    const activeUsers = first(metrics, ["active_users", "users", "user_count", "unique_users"]);
-    const sessions = first(metrics, ["sessions", "session_count", "total_sessions"]);
-    const traces = first(metrics, ["traces", "trace_count", "total_traces"]);
-
-    setText("metric-users", formatCount(activeUsers));
-    setText("metric-sessions", formatCount(sessions));
-    setText("metric-traces", formatCount(traces));
-    setText("metric-errors", formatPercent(errorRate));
-    setText("metric-users-desc", requestCount === undefined ? "Across the selected window" : `${formatCount(requestCount)} requests`);
-    setText("metric-sessions-desc", first(metrics, ["reset_sessions", "session_versions"]) === undefined ? "All retained versions" : `${formatCount(first(metrics, ["reset_sessions", "session_versions"]))} new versions`);
-    setText("metric-traces-desc", first(metrics, ["completed_traces"]) === undefined ? "Completed and in-flight" : `${formatCount(first(metrics, ["completed_traces"]))} completed`);
-    setText("metric-errors-desc", errorCount === undefined ? "Based on available logs" : `${formatCount(errorCount)} records marked error`);
-
-    setText("metric-tokens", formatCount(first(metrics, ["tokens", "tokens_processed", "total_tokens", "token_count"])));
-    const cost = isObject(metrics?.cost) ? metrics.cost : metrics;
-    const monthlyCost = first(metrics, ["monthly_cost_usd", "monthly_estimated_cost_usd"], first(cost, ["monthly_usd", "estimated_monthly_usd"]));
-    const cumulativeCost = first(metrics, ["cumulative_cost_usd", "cumulative_estimated_cost_usd", "estimated_cost_usd"], first(cost, ["cumulative_usd", "estimated_cumulative_usd"]));
-    const averageMonthlyCost = first(metrics, ["average_user_monthly_cost_usd"], first(cost, ["average_user_monthly_usd"]));
-    const costCoverage = first(metrics, ["cost_coverage"], first(cost, ["coverage"]));
-    setText("metric-cost-month", formatMoney(monthlyCost));
-    setText("metric-cost-total", formatMoney(cumulativeCost));
-    setText("metric-cost-average", formatMoney(averageMonthlyCost));
-    setText("metric-cost-coverage", formatPercent(costCoverage));
-    const costKind = first(metrics, ["cost_kind"], first(cost, ["kind"]));
-    if (costKind === "estimated") {
-      setText("performance-note", "Some historical costs are gateway estimates; provider-reported OpenRouter costs are preferred when available.");
-    } else if (costKind === "unavailable" || (monthlyCost === undefined && cumulativeCost === undefined)) {
-      setText("performance-note", "Exact cost is unavailable for records without provider cost metadata. New OpenRouter responses are recorded going forward.");
-    } else if (costCoverage !== undefined && Number(costCoverage) < 1) {
-      setText("performance-note", `Provider-reported cost coverage: ${formatPercent(costCoverage)}. Older or incomplete records remain unavailable.`);
-    }
-    const latency = isObject(first(metrics, ["latency_ms", "latency"])) ? first(metrics, ["latency_ms", "latency"]) : {};
-    setText("metric-latency", formatMs(first(metrics, ["avg_latency_ms", "average_latency_ms", "mean_latency_ms"], first(latency, ["average", "avg"]))));
-    setText("metric-p95", formatMs(first(metrics, ["p95_latency_ms", "latency_p95_ms", "p95_ms"], first(latency, ["p95", "percentile95"]))));
-    const note = first(root, ["note", "performance_note"]);
-    if (note !== undefined) setText("performance-note", note);
-    const window = first(root, ["window", "time_window"]);
-    if (window !== undefined) setText("activity-window", String(window).replace(/^24h$/, "Last 24 hours"));
-
-    renderActivity(listFrom(root, ["activity", "activity_buckets", "timeline", "series", "buckets"]));
-    renderSources(root);
-  };
-
-  const renderActivity = (items) => {
-    const target = byId("activity-chart");
-    if (!target) return;
-    if (!items.length) {
-      showEmpty(target, "No activity in this window", "New records will appear here as the bot receives traffic.");
+  async function renderDetail(detailSignal) {
+    const row = sessionRows.find((item) => item.session_id === state.session);
+    if (!row) {
+      const message = state.session
+        ? "The selected session is outside the loaded history. Choose a session to continue."
+        : "Select a session to read its transcript.";
+      panel.replaceChildren(notice(message));
       return;
     }
-    target.replaceChildren();
-    const rows = items.slice(0, 14).map((item) => ({
-      label: first(item, ["label", "bucket", "hour", "timestamp", "time"], "—"),
-      count: Number(first(item, ["count", "requests", "events", "messages", "invocations", "sessions", "value"], 0)) || 0,
-    }));
-    const max = Math.max(...rows.map((row) => row.count), 1);
-    const chart = el("div", "space-y-3");
-    rows.forEach((row) => {
-      const line = el("div", "grid grid-cols-[5rem_minmax(0,1fr)_3.5rem] items-center gap-3 text-xs");
-      line.append(el("span", "truncate text-base-content/60", row.label));
-      const progress = el("progress", "progress progress-info h-2.5 w-full", "");
-      progress.max = max;
-      progress.value = row.count;
-      progress.setAttribute("aria-label", `${row.label}: ${formatCount(row.count)} events`);
-      line.append(progress, el("span", "text-right font-semibold tabular-nums", formatCount(row.count)));
-      chart.append(line);
-    });
-    target.append(chart);
-  };
-
-  const sourceEntries = (root) => {
-    const sources = first(root, ["sources", "data_sources", "health", "source_health"]);
-    if (Array.isArray(sources)) return sources;
-    if (isObject(sources)) return Object.entries(sources).map(([name, value]) => (isObject(value) ? { name, ...value } : { name, status: value }));
-    const warnings = Array.isArray(root?.warnings) ? root.warnings.map((warning) => String(warning).toLowerCase()) : [];
-    const sourceDefinitions = [
-      ["Sessions", "session"],
-      ["Telemetry log", "telemetry"],
-      ["Trace log", "trace"],
-    ];
-    return sourceDefinitions.map(([name, keyword]) => {
-      const warning = warnings.find((item) => item.includes(keyword));
-      return {
-        name,
-        status: warning ? "degraded" : "healthy",
-        detail: warning || "Available to the dashboard",
-      };
-    });
-  };
-
-  const renderSources = (root) => {
-    const target = byId("source-health");
-    if (!target) return;
-    const items = sourceEntries(root);
-    if (!items.length) {
-      showEmpty(target, "Health data is not reported", "The API did not return source-level health details.");
-      return;
-    }
-    target.replaceChildren();
-    items.forEach((item) => {
-      const name = first(item, ["name", "source", "id"], "Local source");
-      const status = first(item, ["status", "state", "health"], "unknown");
-      const card = el("div", "rounded-xl border border-base-300 bg-base-200/50 p-4");
-      const head = el("div", "flex items-center justify-between gap-3");
-      head.append(el("p", "truncate font-semibold", name), badgeFor(status, "source"));
-      card.append(head);
-      const detail = first(item, ["detail", "message", "path", "description"]);
-      if (detail !== undefined) card.append(el("p", "mt-2 break-words text-xs leading-5 text-base-content/60", detail));
-      target.append(card);
-    });
-  };
-
-  const costDescription = (item) => {
-    const monthly = first(item, ["monthly_cost_usd", "monthly_estimated_cost_usd", "month_cost_usd"]);
-    const cumulative = first(item, ["cumulative_cost_usd", "cost_usd", "estimated_cost_usd"]);
-    if (monthly === undefined && cumulative === undefined) return "Cost unavailable for these records";
-    const source = first(item, ["cost_source"]);
-    const qualifier = source === "estimated" ? " · estimated" : "";
-    return `This month ${formatMoney(monthly)} · cumulative ${formatMoney(cumulative)}${qualifier}`;
-  };
-
-  const renderSelectedUserSummary = () => {
-    const item = state.users.find((candidate) => String(first(candidate, ["user_id", "userId", "chat_id", "chatId", "id"], "")) === state.selectedUser);
-    setText("selected-user-cost", item ? costDescription(item) : "Cost unavailable until a user is selected.");
-  };
-
-  const renderUsers = () => {
-    const target = byId("users-list");
-    const summary = byId("users-summary");
-    if (!target) return;
-    if (summary) summary.textContent = state.users.length ? `${formatCount(state.users.length)} user records` : "No users found";
-    renderSelectedUserSummary();
-    if (!state.users.length) {
-      showEmpty(target, "No matching users", "Try a different stored user or chat ID.");
-      return;
-    }
-    target.replaceChildren();
-    state.users.forEach((item) => {
-      const userId = String(first(item, ["user_id", "userId", "chat_id", "chatId", "id"], "—"));
-      const displayName = first(item, ["display_name", "displayName"]);
-      const username = first(item, ["username"]);
-      const button = el("button", "btn btn-ghost h-auto min-h-0 w-full justify-between gap-3 rounded-xl px-3 py-3 text-left normal-case hover:bg-base-200");
-      button.type = "button";
-      button.setAttribute("aria-label", `Inspect user ${userId}`);
-      const copy = el("span", "min-w-0");
-      copy.append(el("span", "block break-all font-mono text-xs font-semibold", displayName || userId));
-      if (displayName) {
-        copy.append(el("span", "mt-1 block break-all font-mono text-xs text-base-content/55", username ? `${userId} · @${username}` : userId));
-      }
-      const lastSeen = first(item, ["last_seen", "lastSeen", "updated_at", "updatedAt", "latest_update_at"]);
-      copy.append(el("span", "mt-1 block text-xs text-base-content/55", lastSeen === undefined ? "Stored user ID" : `Seen ${formatDate(lastSeen)}`));
-      const count = first(item, ["sessions", "session_count", "message_count", "messages"]);
-      const summary = el("span", "flex shrink-0 flex-col items-end gap-1");
-      summary.append(el("span", "badge badge-ghost", count === undefined ? "View" : formatCount(count)));
-      summary.append(el("span", "text-right text-[0.68rem] text-base-content/55", formatMoney(first(item, ["monthly_cost_usd"]))));
-      button.append(copy, summary);
-      button.addEventListener("click", () => selectUser(userId));
-      target.append(button);
-    });
-  };
-
-  const renderSessions = () => {
-    const target = byId("sessions-list");
-    const summary = byId("sessions-summary");
-    if (!target) return;
-    if (summary) summary.textContent = state.sessions.length ? `${formatCount(state.sessions.length)} retained` : "No sessions";
-    if (!state.sessions.length) {
-      showEmpty(target, "No sessions for this user", "A /reset creates a new version; it does not remove older history.");
-      return;
-    }
-    target.replaceChildren();
-    const wrapper = el("div", "overflow-x-auto rounded-xl border border-base-300");
-    const table = el("table", "table table-sm");
-    const head = el("thead");
-    const headerRow = el("tr");
-    ["Session", "Version", "Messages", "Tokens", "Total cost", "This month", "Last activity"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
-    head.append(headerRow);
-    const body = el("tbody");
-    state.sessions.forEach((item) => {
-      const sessionId = String(first(item, ["session_id", "sessionId", "id"], "—"));
-      const version = first(item, ["version", "session_version", "revision"]);
-      const row = el("tr", "hover");
-      const sessionCell = el("th", "max-w-56");
-      const button = el("button", "link link-hover break-all text-left font-mono text-xs font-medium");
-      button.type = "button";
-      button.textContent = sessionId;
-      button.setAttribute("aria-label", `Inspect session ${sessionId}`);
-      button.addEventListener("click", () => selectSession(sessionId));
-      sessionCell.append(button);
-      const versionCell = el("td", "whitespace-nowrap");
-      if (version !== undefined) versionCell.append(el("span", "badge badge-ghost badge-sm", `v${version}`));
-      const reset = first(item, ["reset", "is_reset", "was_reset", "reset_command"]);
-      const generation = Number(first(item, ["generation", "reset_generation"], 0));
-      if (reset === true || String(reset).toLowerCase() === "true" || Number(version) > 1 || generation > 0) versionCell.append(el("span", "badge badge-info badge-sm ml-1", "reset"));
-      row.append(sessionCell, versionCell);
-      row.append(el("td", "tabular-nums", formatCount(first(item, ["message_count", "messages", "turns"]))));
-      row.append(el("td", "tabular-nums", formatCount(first(item, ["tokens", "total_tokens", "token_count"]))));
-      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["cumulative_cost_usd", "cost_usd"]))));
-      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["monthly_cost_usd", "monthly_estimated_cost_usd", "month_cost_usd"]))));
-      row.append(el("td", "whitespace-nowrap text-xs text-base-content/60", formatDate(first(item, ["updated_at", "updatedAt", "last_seen", "lastSeen"]))));
-      body.append(row);
-    });
-    table.append(head, body);
-    wrapper.append(table);
-    target.append(wrapper);
-  };
-
-  const attachmentValueIsPresent = (value) => {
-    if (value === undefined || value === null || value === false || value === "") return false;
-    if (Array.isArray(value)) return value.length > 0;
-    return true;
-  };
-
-  const attachmentLabel = (value) => {
-    if (Array.isArray(value)) return value.length === 1 ? "Attachment" : `${value.length} attachments`;
-    if (isObject(value)) {
-      const name = first(value, ["name", "filename", "file_name", "mime_type", "mimeType"]);
-      return name === undefined ? "Attachment" : `Attachment · ${name}`;
-    }
-    if (typeof value === "string" && value !== "true") return value;
-    return "Attachment";
-  };
-
-  const metadataRow = (label, detail, status, timestamp) => {
-    const row = el("div", "flex flex-wrap items-center justify-center gap-2 rounded-lg border border-base-300 bg-base-100/70 px-3 py-2 text-xs");
-    row.setAttribute("role", "note");
-    row.append(el("span", "badge badge-ghost badge-sm", label));
-    row.append(el("span", "break-all font-mono text-base-content/70", detail));
-    if (status !== undefined) row.append(badgeFor(status));
-    if (timestamp !== undefined) row.append(el("span", "text-base-content/45", formatDate(timestamp)));
-    return row;
-  };
-
-  const renderChat = (payload) => {
-    const target = byId("chat-view");
-    if (!target) return;
-    const root = rootOf(payload);
-    const messages = listFrom(root, ["messages", "turns", "events", "conversation"]);
-    const summary = el("div", "mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-base-300 bg-base-100/70 px-3 py-2 text-xs");
-    summary.append(
-      el("span", "badge badge-ghost badge-sm", `Cost ${formatMoney(first(root, ["cumulative_cost_usd", "cost_usd", "estimated_cost_usd"]))}`),
-      el("span", "badge badge-ghost badge-sm", `This month ${formatMoney(first(root, ["monthly_cost_usd", "monthly_estimated_cost_usd"]))}`),
-      el("span", "badge badge-ghost badge-sm", `Tokens ${formatCount(first(root, ["tokens", "total_tokens", "token_count"]))}`),
-    );
-    target.replaceChildren(summary);
-    if (!messages.length) {
-      target.append(el("div", "rounded-xl border border-dashed border-base-300 bg-base-200/40 p-6 text-center", "No messages recorded. This session has no chat events available on disk."));
-      return;
-    }
-    messages.forEach((item) => {
-      const type = normalizeStatus(first(item, ["type", "kind"], ""));
-      const role = normalizeStatus(first(item, ["role", "author", "sender"], "assistant"));
-      const timestamp = first(item, ["timestamp", "created_at", "createdAt", "time"]);
-      const toolName = first(item, ["name", "tool_name", "toolName"]);
-      const toolStatus = first(item, ["status", "state", "outcome"]);
-      const isTool = type === "tool" || role === "tool";
-      if (isTool) {
-        target.append(metadataRow("Tool", toolName ?? "Unnamed tool", toolStatus, timestamp));
-        return;
-      }
-
-      let attachment = first(item, ["attachment", "attachments", "attachment_count", "has_attachment", "inline_data", "inlineData", "file", "image"]);
-      if (!attachmentValueIsPresent(attachment) && ["attachment", "file", "image", "photo", "document"].includes(type)) attachment = first(item, ["name", "filename", "file_name", "mime_type", "mimeType"], type);
-      if (attachmentValueIsPresent(attachment)) target.append(metadataRow("Attachment", attachmentLabel(attachment), "info", timestamp));
-
-      const isUser = role === "user" || role === "human" || role === "customer";
-      const rawContent = first(item, ["content", "text", "message", "body"]);
-      const content = isObject(rawContent) || Array.isArray(rawContent) ? JSON.stringify(rawContent) : rawContent === undefined || rawContent === null ? "" : String(rawContent);
-      if (!content) return;
-      const chat = el("div", `chat ${isUser ? "chat-end" : "chat-start"}`);
-      const header = el("div", "chat-header text-xs text-base-content/55", isUser ? "User" : "Assistant");
-      const bubble = el("div", `chat-bubble ${isUser ? "chat-bubble-neutral" : "chat-bubble-info"} max-w-[min(42rem,88vw)] whitespace-pre-wrap break-words text-sm leading-6`, content);
-      const footer = el("div", "chat-footer mt-1 text-[0.68rem] text-base-content/45", formatDate(timestamp));
-      chat.append(header, bubble, footer);
-      target.append(chat);
-    });
-    target.scrollTop = target.scrollHeight;
-  };
-
-  const renderTraces = () => {
-    const target = byId("traces-list");
-    if (!target) return;
-    if (!state.traces.length) {
-      showEmpty(target, "No matching traces", "Try another status or search term.");
-      return;
-    }
-    target.replaceChildren();
-    const wrapper = el("div", "overflow-x-auto rounded-xl border border-base-300");
-    const table = el("table", "table table-zebra table-sm");
-    const head = el("thead");
-    const headerRow = el("tr");
-    ["Trace", "Status", "Duration", "Spans", "Cost", "Started"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
-    head.append(headerRow);
-    const body = el("tbody");
-    state.traces.forEach((item) => {
-      const traceId = String(first(item, ["trace_id", "traceId", "id"], "—"));
-      const row = el("tr", "hover");
-      const traceCell = el("th", "max-w-64");
-      const button = el("button", "link link-hover break-all text-left font-mono text-xs font-medium");
-      button.type = "button";
-      button.textContent = traceId;
-      button.setAttribute("aria-label", `Inspect trace ${traceId}`);
-      button.addEventListener("click", () => selectTrace(traceId));
-      traceCell.append(button);
-      row.append(traceCell);
-      row.append(el("td", "whitespace-nowrap", ""));
-      row.cells[1].append(badgeFor(first(item, ["status", "state", "outcome"], "unknown")));
-      row.append(el("td", "whitespace-nowrap tabular-nums", formatMs(first(item, ["duration_ms", "latency_ms", "duration"]))));
-      row.append(el("td", "tabular-nums", formatCount(first(item, ["span_count", "spans", "events"]))));
-      row.append(el("td", "whitespace-nowrap tabular-nums", formatMoney(first(item, ["cost_usd", "estimated_cost_usd"]))));
-      row.append(el("td", "whitespace-nowrap text-xs text-base-content/60", formatDate(first(item, ["start_time", "started_at", "timestamp", "created_at"]))));
-      body.append(row);
-    });
-    table.append(head, body);
-    wrapper.append(table);
-    target.append(wrapper);
-  };
-
-  const renderTraceDetail = (payload) => {
-    const target = byId("trace-detail");
-    if (!target) return;
-    const root = rootOf(payload);
-    const spans = listFrom(root, ["spans", "span_events", "events", "timeline"]);
-    if (!spans.length && isObject(root) && (root.trace_id || root.span_id)) spans.push(root);
-    if (!spans.length) {
-      showEmpty(target, "No spans recorded", "The selected trace has no child spans available.");
-      return;
-    }
-    target.replaceChildren();
-    const timeline = el("ul", "timeline timeline-vertical timeline-compact timeline-snap-icon");
-    const knownParents = new Set(spans.map((span) => String(first(span, ["span_id", "spanId", "id"], ""))));
-    spans.forEach((span) => {
-      const spanId = String(first(span, ["span_id", "spanId", "id"], "—"));
-      const parentId = String(first(span, ["parent_span_id", "parentSpanId", "parent_id"], ""));
-      const depth = parentId && knownParents.has(parentId) ? 1 : 0;
-      const item = el("li");
-      const start = el("div", "timeline-start w-24 text-right text-[0.68rem] text-base-content/55", formatDate(first(span, ["start_time", "started_at", "timestamp"])));
-      const middle = el("div", "timeline-middle");
-      middle.append(el("span", "size-2 rounded-full bg-info", ""));
-      const end = el("div", "timeline-end w-full pb-5 pl-4");
-      const card = el("div", "rounded-xl border border-base-300 bg-base-200/50 p-4");
-      card.dataset.depth = String(depth);
-      const title = el("div", "flex flex-wrap items-center gap-2");
-      title.append(el("p", "break-all font-mono text-xs font-semibold", first(span, ["name", "operation", "span_name"], spanId)));
-      title.append(badgeFor(first(span, ["status", "state", "outcome"], "unknown")));
-      card.append(title);
-      const details = el("div", "mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-base-content/60");
-      details.append(el("span", "font-mono", spanId), el("span", "tabular-nums", formatMs(first(span, ["duration_ms", "latency_ms", "duration"]))));
-      details.append(el("span", "tabular-nums", `Cost ${formatMoney(first(span, ["cost_usd", "estimated_cost_usd"]))}`));
-      const service = first(span, ["service", "component", "source"]);
-      if (service !== undefined) details.append(el("span", "break-all", service));
-      card.append(details);
-      const error = first(span, ["error", "error_message", "message"]);
-      if (error !== undefined && error !== "") card.append(el("p", "mt-2 break-words text-xs text-error", error));
-      end.append(card);
-      item.append(start, middle, end);
-      timeline.append(item);
-    });
-    target.append(timeline);
-  };
-
-  const renderLogs = (payload) => {
-    const target = byId("logs-list");
-    if (!target) return;
-    const logs = listFrom(rootOf(payload), ["logs", "records", "entries", "items"]);
-    if (!logs.length) {
-      showEmpty(target, "No matching logs", "Try a different level or search term.");
-      return;
-    }
-    target.replaceChildren();
-    const wrapper = el("div", "overflow-x-auto rounded-xl border border-base-300");
-    const table = el("table", "table table-zebra table-sm");
-    const head = el("thead");
-    const headerRow = el("tr");
-    ["Time", "Level", "Source", "Message", "Fields"].forEach((label) => headerRow.append(el("th", "whitespace-nowrap", label)));
-    head.append(headerRow);
-    const body = el("tbody");
-    logs.forEach((item) => {
-      const row = el("tr", "align-top hover");
-      row.append(el("td", "whitespace-nowrap text-xs text-base-content/60", formatDate(first(item, ["timestamp", "time", "created_at", "createdAt"]))));
-      const levelCell = el("td", "whitespace-nowrap");
-      levelCell.append(badgeFor(first(item, ["level", "severity", "status"], "unknown")));
-      row.append(levelCell);
-      row.append(el("td", "max-w-40 break-all font-mono text-xs", first(item, ["source", "logger", "module", "component"], "—")));
-      row.append(el("td", "min-w-64 max-w-xl whitespace-pre-wrap break-words text-sm leading-5", first(item, ["message", "text", "body"], "—")));
-      const fields = first(item, ["attributes", "fields", "metadata", "context"]);
-      const fieldsText = isObject(fields) || Array.isArray(fields) ? JSON.stringify(fields) : fields;
-      row.append(el("td", "max-w-72 whitespace-pre-wrap break-all font-mono text-[0.68rem] text-base-content/55", fieldsText ?? "—"));
-      body.append(row);
-    });
-    table.append(head, body);
-    wrapper.append(table);
-    target.append(wrapper);
-  };
-
-  const loadOverview = async () => {
-    const payload = await requestJson(API.overview);
-    renderOverview(payload);
-  };
-
-  const loadUsers = async () => {
-    const search = byId("user-search")?.value.trim() || "";
-    const payload = await requestJson(`${API.users}${encodeURIComponent(search)}&limit=50&offset=0`);
-    state.users = listFrom(rootOf(payload), ["users", "items", "results", "records"]);
-    renderUsers();
-    if (state.selectedUser && !state.users.some((item) => String(first(item, ["user_id", "userId", "chat_id", "chatId", "id"], "")) === state.selectedUser)) {
-      state.selectedUser = "";
-      state.selectedSession = "";
-      setText("selected-user", "Choose a user");
-      setText("selected-session", "Select a session to inspect messages.");
-      showEmpty(byId("sessions-list"), "Select a user", "Choose a stored user or chat ID to see retained sessions.");
-      showEmpty(byId("chat-view"), "No session selected", "Choose a session to inspect its conversation.");
-    }
-  };
-
-  const loadSessions = async () => {
-    if (!state.selectedUser) return;
-    const payload = await requestJson(`${API.sessions}${encodeURIComponent(state.selectedUser)}&limit=50&offset=0`);
-    state.sessions = listFrom(rootOf(payload), ["sessions", "items", "results", "records"]);
-    renderSessions();
-  };
-
-  const loadSessionDetail = async () => {
-    if (!state.selectedUser || !state.selectedSession) return;
-    const payload = await requestJson(`${API.session}${encodeURIComponent(state.selectedUser)}&session_id=${encodeURIComponent(state.selectedSession)}`);
-    setText("selected-session-cost", costDescription(rootOf(payload)));
-    renderChat(payload);
-  };
-
-  const loadTraces = async () => {
-    const status = byId("trace-status")?.value || "";
-    const search = byId("trace-search")?.value.trim() || "";
-    const payload = await requestJson(`${API.traces}${encodeURIComponent(status)}&search=${encodeURIComponent(search)}&limit=80`);
-    state.traces = listFrom(rootOf(payload), ["traces", "items", "results", "records"]);
-    renderTraces();
-  };
-
-  const loadTraceDetail = async () => {
-    if (!state.selectedTrace) return;
-    const payload = await requestJson(`${API.trace}${encodeURIComponent(state.selectedTrace)}`);
-    renderTraceDetail(payload);
-  };
-
-  const loadLogs = async () => {
-    const level = byId("log-level")?.value || "";
-    const search = byId("log-search")?.value.trim() || "";
-    const payload = await requestJson(`${API.logs}${encodeURIComponent(level)}&search=${encodeURIComponent(search)}&limit=100`);
-    renderLogs(payload);
-  };
-
-  const refreshActiveView = async (quiet = false) => {
-    if (!quiet) setBusy(true);
-    clearGlobalError();
-    setConnection("Refreshing local data", "pending");
-    try {
-      if (state.view === "overview") await loadOverview();
-      if (state.view === "users") {
-        await loadUsers();
-        if (state.selectedUser) await loadSessions();
-        if (state.selectedUser && state.selectedSession) await loadSessionDetail();
-      }
-      if (state.view === "traces") {
-        await loadTraces();
-        if (state.selectedTrace) await loadTraceDetail();
-      }
-      if (state.view === "logs") await loadLogs();
-      state.lastUpdated = new Date();
-      setText("last-updated", state.lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-      setConnection("Local data connected", "ok");
-    } catch (error) {
-      showGlobalError(error);
-      setConnection("Local data unavailable", "error");
-      const panelTarget = state.view === "users" ? byId("users-list") : state.view === "traces" ? byId("traces-list") : state.view === "logs" ? byId("logs-list") : byId("activity-chart");
-      if (panelTarget) showInlineError(panelTarget, "This view could not load. Try Refresh after checking the server.");
-    } finally {
-      setBusy(false);
-      const loading = byId("loading-state");
-      if (loading) loading.hidden = true;
-    }
-  };
-
-  const selectUser = async (userId) => {
-    state.selectedUser = String(userId);
-    state.selectedSession = "";
-    setText("selected-user", state.selectedUser);
-    renderSelectedUserSummary();
-    setText("selected-session", "Select a session to inspect messages.");
-    setText("selected-session-cost", "Cost details will appear with the session.");
-    showEmpty(byId("chat-view"), "No session selected", "Choose a session to inspect its conversation.");
-    try {
-      setConnection("Loading user sessions", "pending");
-      await loadSessions();
-      setConnection("Local data connected", "ok");
-    } catch (error) {
-      showGlobalError(error);
-      showInlineError(byId("sessions-list"), "Sessions could not load for this user.");
-      setConnection("Local data unavailable", "error");
-    }
-  };
-
-  const selectSession = async (sessionId) => {
-    state.selectedSession = String(sessionId);
-    setText("selected-session", state.selectedSession);
-    setText("selected-session-cost", "Loading session cost…");
-    showEmpty(byId("chat-view"), "Loading conversation", "Reading this session's messages…");
-    try {
-      await loadSessionDetail();
-    } catch (error) {
-      showGlobalError(error);
-      showInlineError(byId("chat-view"), "This session's conversation could not load.");
-    }
-  };
-
-  const selectTrace = async (traceId) => {
-    state.selectedTrace = String(traceId);
-    setText("selected-trace", state.selectedTrace);
-    showEmpty(byId("trace-detail"), "Loading trace", "Reading the span timeline…");
-    try {
-      await loadTraceDetail();
-    } catch (error) {
-      showGlobalError(error);
-      showInlineError(byId("trace-detail"), "This trace's span detail could not load.");
-    }
-  };
-
-  const setView = (view, focus = false) => {
-    state.view = view;
-    document.querySelectorAll("[role=tab]").forEach((tab) => {
-      const active = tab.dataset.view === view;
-      tab.classList.toggle("tab-active", active);
-      tab.setAttribute("aria-selected", String(active));
-      tab.setAttribute("tabindex", active ? "0" : "-1");
-      if (active && focus) tab.focus();
-    });
-    document.querySelectorAll("[data-panel]").forEach((panel) => {
-      panel.hidden = panel.dataset.panel !== view;
-    });
-    refreshActiveView();
-  };
-
-  const setupTabs = () => {
-    const tabs = Array.from(document.querySelectorAll("[role=tab]"));
-    tabs.forEach((tab, index) => {
-      tab.addEventListener("click", () => setView(tab.dataset.view || "overview"));
-      tab.addEventListener("keydown", (event) => {
-        let nextIndex = index;
-        if (event.key === "ArrowRight" || event.key === "ArrowDown") nextIndex = (index + 1) % tabs.length;
-        if (event.key === "ArrowLeft" || event.key === "ArrowUp") nextIndex = (index - 1 + tabs.length) % tabs.length;
-        if (event.key === "Home") nextIndex = 0;
-        if (event.key === "End") nextIndex = tabs.length - 1;
-        if (nextIndex !== index || event.key === "Home" || event.key === "End") {
-          event.preventDefault();
-          setView(tabs[nextIndex].dataset.view || "overview", true);
-        }
+    const header = el("div", "session-heading");
+    const line = el("div", "session-line");
+    const title = el("div");
+    title.append(el("h2", "", sessionTitle(row)), el("p", "", "Last active " + dateTime(row.updated_at)));
+    title.append(el("p", "", costDescription(row)));
+    line.append(title, facts([
+      ["Messages", count(row.message_count)],
+      ["Invocations", count(row.invocation_count)],
+      ["Tokens", count(row.tokens)],
+    ], "session-facts"));
+    const tabs = el("nav", "detail-tabs");
+    tabs.setAttribute("aria-label", "Session and user details");
+    const body = el("div", "inspector-body");
+    for (const [id, text] of [["transcript", "Transcript"], ["wiki", "User wiki"]]) {
+      const tab = action(text, "", () => {
+        state.pane = id;
+        selectDetail();
+        panel.querySelector("[aria-current]")?.focus({ preventScroll: true });
       });
-    });
-  };
+      if (id === state.pane) tab.setAttribute("aria-current", "true");
+      tabs.append(tab);
+    }
+    header.append(line, tabs);
+    body.append(notice(state.pane === "wiki" ? "Reading the user wiki…" : "Reading the transcript…", "status"));
+    panel.replaceChildren(header, body);
+    try {
+      if (state.pane === "wiki") {
+        await renderWiki(body, selectedOwner, state.wikiSelection, detailSignal);
+      } else {
+        const params = { user_id: state.user, session_id: state.session };
+        const transcript = await api("session", params, detailSignal);
+        renderTranscript(body, transcript, params, detailSignal);
+      }
+    } catch (reason) {
+      if (reason.name !== "AbortError") error(body);
+    }
+  }
 
-  const setupFilters = () => {
-    byId("user-filter-form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      state.selectedUser = "";
-      state.selectedSession = "";
-      setText("selected-user", "Choose a user");
-      setText("selected-session", "Select a session to inspect messages.");
-      showEmpty(byId("sessions-list"), "Select a user", "Choose a stored user or chat ID to see retained sessions.");
-      showEmpty(byId("chat-view"), "No session selected", "Choose a session to inspect its conversation.");
-      refreshActiveView();
-    });
-    byId("user-clear")?.addEventListener("click", () => {
-      const input = byId("user-search");
-      if (input) input.value = "";
-      byId("user-filter-form")?.requestSubmit();
-    });
-    byId("trace-filter-form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      refreshActiveView();
-    });
-    byId("log-filter-form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      refreshActiveView();
-    });
-  };
+  await loadSessions();
+}
 
-  const setupTheme = () => {
-    const toggle = byId("theme-toggle");
-    const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-    document.documentElement.dataset.theme = prefersDark ? "dark" : "light";
-    const update = () => {
-      const dark = document.documentElement.dataset.theme === "dark";
-      toggle?.setAttribute("aria-pressed", String(dark));
-      toggle?.setAttribute("aria-label", dark ? "Use light theme" : "Use dark theme");
-    };
-    toggle?.addEventListener("click", () => {
-      document.documentElement.dataset.theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      update();
+const privateStatus = {
+  disabled: "Private views require an enabled dashboard host.",
+  forbidden: "This host is not enabled for private dashboard views.",
+  trace_missing: "The local trace file is unavailable.",
+  session_missing: "This saved session is no longer available.",
+  capture_missing: "This request capture is no longer available.",
+  missing: "No wiki database was found in local storage.",
+  empty: "This user has no saved wiki pages.",
+  wiki_disabled: "Wiki memory is disabled.",
+  unsupported_user: "Wiki data is available for direct Telegram users.",
+  user_missing: "This user has no local sessions.",
+  page_missing: "This wiki page is no longer available.",
+  wiki_changed: "The wiki changed. Reload its pages to continue.",
+  unavailable: "The local data could not be read.",
+};
+
+function requestContext(params, signal) {
+  const context = el("details", "context");
+  const summary = el("summary");
+  const mark = el("span", "context-mark");
+  mark.setAttribute("aria-hidden", "true");
+  const caret = el("span", "caret");
+  caret.setAttribute("aria-hidden", "true");
+  const title = el("span", "context-title", "System prompt & tools");
+  const subtitle = el("span", "context-subtitle", "Inspect the context recorded for a model request");
+  title.append(subtitle);
+  summary.append(mark, title, caret);
+  const contents = el("div", "context-body");
+  context.append(summary, contents);
+  let loading;
+
+  context.addEventListener("toggle", () => {
+    loading?.abort();
+    if (!context.open) {
+      contents.replaceChildren();
+      return;
+    }
+    loading = new AbortController();
+    const openSignal = AbortSignal.any([signal, loading.signal]);
+    loadCaptures(contents, subtitle, params, openSignal);
+  });
+  return context;
+}
+
+async function loadCaptures(contents, subtitle, params, signal) {
+  contents.replaceChildren(notice("Reading request captures…", "status"));
+  try {
+    const first = await api("context", params, signal);
+    if (first.status !== "available" || !first.items.length) {
+      contents.replaceChildren(el("p", "help", privateStatus[first.status]
+        || "The local traces have no recorded system prompt for this session."));
+      if (first.limited_scan) contents.append(el("p", "warning", "The scan skipped some trace records."));
+      return;
+    }
+    const captures = [...first.items];
+    subtitle.textContent = plural(first.total, "captured model request");
+    const label = (capture, index) => dateTime(capture.timestamp) + " · Request " + (first.total - index);
+    const request = options(captures.map((capture, index) => [String(index), label(capture, index)]), "0");
+    const captureBody = el("div", "capture-body");
+    let selectedSection = "prompt";
+    let detailRequest;
+    async function showCapture() {
+      detailRequest?.abort();
+      detailRequest = new AbortController();
+      const captureSignal = AbortSignal.any([signal, detailRequest.signal]);
+      const selected = captures[Number(request.value)];
+      captureBody.replaceChildren(notice("Reading model context…", "status"));
+      try {
+        const response = await api("context", {
+          ...params, trace_id: selected.trace_id, span_id: selected.span_id,
+        }, captureSignal);
+        if (response.status === "available") {
+          renderCapture(captureBody, response.capture, selectedSection, (section) => {
+            selectedSection = section;
+          });
+        } else {
+          captureBody.replaceChildren(notice(privateStatus[response.status]));
+        }
+      } catch (reason) {
+        if (reason.name !== "AbortError") error(captureBody);
+      }
+    }
+    let nextOffset = captures.length;
+    const more = action("More captured requests", "control more", async () => {
+      more.disabled = true;
+      try {
+        const next = await api("context", { ...params, offset: nextOffset }, signal);
+        if (next.status !== "available") {
+          more.textContent = privateStatus[next.status] || "Captures unavailable";
+          return;
+        }
+        const keys = new Set(captures.map((c) => c.trace_id + c.span_id));
+        for (const item of next.items) {
+          if (keys.has(item.trace_id + item.span_id)) continue;
+          const index = captures.length;
+          captures.push(item);
+          request.append(new Option(label(item, index), String(index)));
+        }
+        nextOffset += next.items.length;
+        more.hidden = nextOffset >= next.total || !next.items.length;
+      } catch (reason) {
+        if (reason.name !== "AbortError") more.textContent = "Retry loading requests";
+      } finally {
+        more.disabled = false;
+      }
     });
+    more.hidden = nextOffset >= first.total;
+    contents.replaceChildren(labelControl("Captured model request", request), more, captureBody);
+    contents.append(el("p", "help", "Captured trace text may already be incomplete. The dashboard filters credential patterns."));
+    if (first.limited_scan) contents.append(el("p", "warning", "The scan skipped some trace records."));
+    request.addEventListener("change", showCapture);
+    await showCapture();
+  } catch (reason) {
+    if (reason.name !== "AbortError") error(contents);
+  }
+}
+
+function renderTranscript(body, transcript, params, signal) {
+  const contextPanel = requestContext(params, signal);
+  const heading = el("div", "thread-title");
+  heading.append(el("h3", "", "Conversation"), el("span", "", "Oldest first"));
+  body.replaceChildren(contextPanel, heading);
+  if (!transcript.messages.length) {
+    body.append(notice("This session has no saved conversation events."));
+  } else {
+    const timeline = el("ol", "message-list");
+    for (const message of transcript.messages) timeline.append(renderMessage(message));
+    body.append(timeline);
+  }
+  warnings(body, transcript);
+}
+
+function renderCapture(container, capture, selectedSection, onSelect) {
+  const controls = el("nav", "detail-tabs capture-tabs");
+  controls.setAttribute("aria-label", "Captured request sections");
+  const output = el("div", "capture-output");
+  const buttons = new Map();
+
+  function showSection(section) {
+    onSelect(section);
+    for (const [id, button] of buttons) {
+      if (id === section) button.setAttribute("aria-current", "true");
+      else button.removeAttribute("aria-current");
+    }
+    if (section === "prompt") {
+      output.replaceChildren(el("pre", "prompt", capture.system_prompt));
+      return;
+    }
+    const toolList = el("div", "tool-list");
+    for (const tool of capture.tools) {
+      const item = el("details", "tool");
+      const title = el("summary", "", tool.name);
+      const caret = el("span", "caret");
+      caret.setAttribute("aria-hidden", "true");
+      title.append(caret);
+      item.append(title, el("p", "message-text", tool.description));
+      toolList.append(item);
+    }
+    output.replaceChildren();
+    if (capture.tools.length) output.append(toolList);
+    else output.append(el("p", "help", "This request did not record tool descriptions."));
+    if (capture.partial_tools) output.append(el("p", "warning", "Some tool declarations were missing or could not be read."));
+  }
+
+  for (const [id, label] of [["prompt", "System prompt"], ["tools", `Tool descriptions (${count(capture.tools.length)})`]]) {
+    const button = action(label, "", () => showSection(id));
+    buttons.set(id, button);
+    controls.append(button);
+  }
+  container.replaceChildren();
+  if (capture.model) container.append(el("p", "help", capture.model));
+  container.append(controls, output);
+  showSection(selectedSection);
+}
+
+function renderMessage(message) {
+  const isText = typeof message.text === "string";
+  const role = isText ? (message.role === "human" ? "human" : "model") : "meta";
+  const marker = el("span", "message-icon", { human: "U", model: "B", meta: "·" }[role]);
+  marker.setAttribute("aria-hidden", "true");
+  const item = el("li", `message ${role}`);
+  const details = el("div");
+  const header = el("div", "message-head");
+  const labels = { human: "User", model: "Blacki", meta: message.type === "tool" ? "Tool event" : "Attachment" };
+  const content = isText ? message.text : message.type === "tool"
+    ? `${message.name} · ${message.status}` : message.mime_type;
+  header.append(el("b", "", labels[role]), dateNode(message.timestamp));
+  details.append(header, el("p", "message-text", content));
+  item.append(marker, details);
+  return item;
+}
+
+async function renderWiki(container, owner, selection, signal, pageFocus = false) {
+  const data = await api("wiki", { user_id: owner.user_id, ...selection }, signal);
+  const wiki = el("div", "wiki");
+  wiki.append(el("h3", "", "User wiki"), el("p", "muted", ownerName(owner)));
+  let pageRequest;
+  function changePage(nextSelection) {
+    pageRequest?.abort();
+    pageRequest = new AbortController();
+    state.wikiSelection = nextSelection;
+    const pageSignal = AbortSignal.any([signal, pageRequest.signal]);
+    renderWiki(container, owner, nextSelection, pageSignal, true).catch((reason) => {
+      if (reason.name !== "AbortError") error(container);
+    });
+  }
+  if (data.status !== "available") {
+    wiki.append(el("p", "help", privateStatus[data.status] || "Wiki data is unavailable."));
+    if (["page_missing", "wiki_changed"].includes(data.status)) {
+      wiki.append(action("Reload wiki pages", "control", () => changePage({})));
+    }
+    container.replaceChildren(wiki);
+    return;
+  }
+
+  const offset = selection.offset || 0;
+  const claimOffset = selection.claim_offset || 0;
+  const layout = el("div", "wiki-split");
+  const pages = el("nav", "wiki-pages");
+  pages.setAttribute("aria-label", "Wiki pages");
+  const reader = el("div", "wiki-page");
+  data.pages.forEach((path, index) => {
+    const page = offset + index;
+    const button = action(path, "page-key", () => changePage({ page, offset, revision: data.revision }));
+    if (page === data.page) button.setAttribute("aria-current", "page");
+    pages.append(button);
+  });
+  const pageNavigation = el("div", "pagination");
+  if (offset > 0) pageNavigation.append(action("Previous pages", "control", () => changePage({
+    offset: Math.max(0, offset - 50), revision: data.revision,
+  })));
+  if (data.more_pages) pageNavigation.append(action("More pages", "control", () => changePage({
+    offset: offset + 50, revision: data.revision,
+  })));
+  pages.append(pageNavigation);
+  const list = el("ul");
+  for (const claim of data.claims) {
+    const item = el("li", "", claim.text);
+    if (claim.disputed) item.append(el("small", "", " · Disputed"));
+    list.append(item);
+  }
+  reader.append(el("h4", "", data.pages[data.page - offset]), el("p", "muted", "Revision " + count(data.revision)), list);
+  const claimNavigation = el("div", "pagination");
+  const showClaims = (claim_offset) => changePage({ page: data.page, offset, revision: data.revision, claim_offset });
+  if (claimOffset > 0) claimNavigation.append(action("Previous claims", "control", () => showClaims(Math.max(0, claimOffset - 50))));
+  if (data.more_claims) claimNavigation.append(action("More claims", "control", () => showClaims(claimOffset + 50)));
+  reader.append(claimNavigation);
+  layout.append(pages, reader);
+  wiki.append(layout);
+  container.replaceChildren(wiki);
+  if (pageFocus) pages.querySelector("[aria-current]")?.focus();
+}
+
+function chart(activity) {
+  const namespace = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(namespace, "svg");
+  svg.setAttribute("class", "chart");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `Message count by time bucket: ${activity.map((bucket) => count(bucket.messages)).join(", ")}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("viewBox", `0 0 ${activity.length * 10} 110`);
+  const max = Math.max(1, ...activity.map((bucket) => bucket.messages));
+  activity.forEach((bucket, index) => {
+    const bar = document.createElementNS(namespace, "rect");
+    const height = bucket.messages / max * 103;
+    bar.setAttribute("x", String(index * 10));
+    bar.setAttribute("width", "8");
+    bar.setAttribute("y", String(110 - height));
+    bar.setAttribute("height", String(height));
+    const title = document.createElementNS(namespace, "title");
+    title.textContent = `${dateTime(bucket.timestamp)} · ${plural(bucket.messages, "message")}`;
+    bar.append(title);
+    svg.append(bar);
+  });
+  return svg;
+}
+
+async function renderOverview(signal) {
+  const picker = options([["all", "All local activity"], ["24h", "Last 24 hours"], ["7d", "Last 7 days"], ["30d", "Last 30 days"]], state.window);
+  picker.addEventListener("change", () => {
+    state.window = picker.value;
+    render();
+  });
+  const toolbar = el("div", "report-toolbar");
+  toolbar.append(labelControl("Time window", picker));
+  root.replaceChildren(toolbar, notice("Reading activity…", "status"));
+  const data = await api("overview", { window: state.window }, signal);
+  const stats = data.stats;
+  root.lastChild.remove();
+  root.append(facts([
+    ["Sessions", count(stats.sessions)], ["Messages", count(stats.messages)],
+    ["Traces", count(stats.traces)], ["Tokens", count(stats.tokens)],
+  ], "metrics", "metric"));
+  const activity = el("div", "report");
+  activity.append(el("h2", "", "Conversation activity"));
+  if (data.activity?.some((bucket) => bucket.messages > 0)) {
+    const caption = el("div", "chart-caption");
+    caption.append(el("span", "", date(data.activity[0].timestamp)), el("span", "", date(data.activity.at(-1).timestamp)));
+    activity.append(chart(data.activity), caption);
+  } else {
+    activity.append(el("p", "muted", "No messages in this time window."));
+  }
+  const details = el("div", "report");
+  details.append(el("h2", "", "Usage and health"), facts([
+    ["Active users", count(stats.users)],
+    ["Average trace latency", formatMs(stats.avg_latency_ms)],
+    ["95th-percentile trace latency", formatMs(stats.p95_latency_ms)],
+    ["Request error rate", formatPercent(stats.error_rate)],
+    ["Trace errors", count(stats.trace_errors)],
+    ["Reported model cost", formatCost(stats.cost?.window_usd)],
+    ["Estimated model cost", formatCost(stats.cost?.estimated_window_usd)],
+    ["Log errors", count(stats.log_errors)],
+    ["Monthly model cost", costValue(stats.monthly_cost_usd, stats.monthly_estimated_cost_usd)],
+    ["Cumulative model cost", costValue(stats.cumulative_cost_usd, stats.cumulative_estimated_cost_usd)],
+    ["Average monthly cost per user", formatCost(stats.average_user_monthly_cost_usd)],
+    ["Provider-reported cost coverage", formatPercent(stats.cost_coverage)],
+  ], "report-stats"));
+  const sources = el("div", "report");
+  sources.append(el("h2", "", "Local sources"), facts([
+    ["Application log records", count(stats.log_records)],
+    ["Trace spans", count(stats.trace_spans)],
+    ["Conversation requests", count(stats.requests)],
+  ], "report-stats"));
+  root.append(activity, details, sources);
+  warnings(root, data);
+}
+
+function filterBar(view, signal, update) {
+  const toolbar = el("form", "report-toolbar");
+  const search = el("input", "field");
+  search.type = "search";
+  search.maxLength = 128;
+  search.placeholder = view === "traces" ? "Find a trace" : "Find a log entry";
+  search.value = state[view].search;
+  const field = view === "traces" ? "status" : "level";
+  const values = view === "traces" ? ["OK", "ERROR", "UNSET"] : ["INFO", "WARNING", "ERROR", "CRITICAL", "DEBUG"];
+  const picker = options([["", "All"], ...values.map((value) => [value, value])], state[view][field]);
+  const submit = el("button", "control", "Apply filters");
+  submit.type = "submit";
+  toolbar.append(labelControl("Search", search), labelControl(view === "traces" ? "Status" : "Level", picker), submit);
+  toolbar.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (signal.aborted) return;
+    state[view] = { search: search.value.trim(), [field]: picker.value, limit: 50 };
     update();
-  };
+  });
+  return toolbar;
+}
 
-  const setupRefresh = () => {
-    byId("refresh-button")?.addEventListener("click", () => refreshActiveView());
-    window.setInterval(() => {
-      const autoRefresh = byId("auto-refresh");
-      if (autoRefresh?.checked && !document.hidden) refreshActiveView(true);
-    }, 60_000);
-  };
+async function renderRecords(view, signal) {
+  const target = el("div");
+  const detail = el("div", "trace-detail");
+  let request;
+  async function update() {
+    request?.abort();
+    request = new AbortController();
+    const localSignal = AbortSignal.any([request.signal, signal]);
+    target.replaceChildren(notice("Reading local records…", "status"));
+    detail.replaceChildren();
+    try {
+      const data = await api(view, state[view], localSignal);
+      target.replaceChildren(el("p", "result-count", `Showing ${count(data.items.length)} of ${count(data.total)} matching records`));
+      if (!data.items.length) target.append(notice("No records match these filters."));
+      for (const entry of data.items) {
+        if (view === "logs") {
+          target.append(renderLog(entry));
+        } else {
+          const node = action("", "trace-link", () => openTrace(detail, entry.trace_id, localSignal));
+          node.append(el("strong", "", entry.name), el("span", "", `${entry.status} · ${plural(entry.span_count, "span")}`), el("span", "", dateTime(entry.start_time) + " · " + formatMs(entry.duration_ms)));
+          target.append(node);
+        }
+      }
+      if (data.items.length < data.total && state[view].limit < 200) {
+        target.append(action("Show more records", "control more", () => {
+          state[view].limit = Math.min(state[view].limit + 50, 200);
+          update();
+        }));
+      }
+      warnings(target, data);
+    } catch (reason) {
+      if (reason.name !== "AbortError") error(target);
+    }
+  }
+  root.replaceChildren(filterBar(view, signal, update), detail, target);
+  await update();
+}
 
-  const boot = () => {
-    setupTheme();
-    setupTabs();
-    setupFilters();
-    setupRefresh();
-    showEmpty(byId("users-list"), "No users loaded", "Open the Users & sessions view to read stored user IDs.");
-    showEmpty(byId("sessions-list"), "Select a user", "Choose a stored user or chat ID to see retained sessions.");
-    showEmpty(byId("chat-view"), "No session selected", "Choose a session to inspect its conversation.");
-    showEmpty(byId("traces-list"), "No traces loaded", "Open the Traces view to read span records.");
-    showEmpty(byId("trace-detail"), "No trace selected", "Choose a trace to inspect its span timeline.");
-    showEmpty(byId("logs-list"), "No logs loaded", "Open the Logs view to read structured records.");
-    refreshActiveView();
-  };
+function renderLog(entry) {
+  const item = el("details", "log-entry");
+  const title = el("summary");
+  const level = el("span", "level", entry.level || "LOG");
+  if (["ERROR", "CRITICAL"].includes(entry.level)) level.setAttribute("data-error", "");
+  const message = typeof entry.message === "string" ? entry.message : "Structured log entry";
+  title.append(level, el("strong", "", message.length > 150 ? `${message.slice(0, 149)}…` : message), dateNode(entry.timestamp, true));
+  const body = el("div", "entry-body");
+  body.append(el("p", "muted", entry.logger), el("p", "message-text", message));
+  const fields = entry.attributes || entry.fields || entry.metadata || entry.context;
+  if (fields) body.append(el("pre", "prompt", JSON.stringify(fields, null, 2)));
+  item.append(title, body);
+  return item;
+}
 
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot, { once: true });
-  else boot();
-})();
+let traceRequest;
+async function openTrace(target, id, signal) {
+  traceRequest?.abort();
+  traceRequest = new AbortController();
+  const traceSignal = AbortSignal.any([traceRequest.signal, signal]);
+  target.replaceChildren(notice("Reading trace spans…", "status"));
+  try {
+    const trace = await api("trace", { trace_id: id }, traceSignal);
+    const report = el("div", "report");
+    const title = el("h2", "", trace.name);
+    title.tabIndex = -1;
+    const list = el("ul", "trace-rows");
+    const ids = new Set(trace.spans.map((span) => span.span_id));
+    for (const span of trace.spans) {
+      const row = el("li", ids.has(span.parent_span_id) ? "trace-child" : "");
+      const expandable = el("details", "log-entry");
+      const summary = el("summary");
+      summary.append(el("strong", "", span.name), el("span", "level", span.status + " · " + formatMs(span.duration_ms)));
+      const body = el("div", "entry-body");
+      body.append(el("p", "muted", span.span_id), el("p", "muted", dateTime(span.start_time) + " · Cost " + costValue(span.cost_usd, span.estimated_cost_usd)));
+      if (Object.keys(span.attributes || {}).length) body.append(el("pre", "prompt", JSON.stringify(span.attributes, null, 2)));
+      if (span.events?.length) body.append(el("pre", "prompt", JSON.stringify(span.events, null, 2)));
+      expandable.append(summary, body);
+      row.append(expandable);
+      list.append(row);
+    }
+    report.append(title, el("p", "help", trace.status + " · " + dateTime(trace.start_time) + " · " + plural(trace.span_count, "span")),
+      el("p", "help", "Trace " + trace.trace_id + " · Cost " + costValue(trace.cost_usd, trace.estimated_cost_usd)), list);
+    report.append(action("Close trace", "control", () => target.replaceChildren()));
+    warnings(report, trace);
+    target.replaceChildren(report);
+    title.focus();
+  } catch (reason) {
+    if (reason.name !== "AbortError") error(target);
+  }
+}
+
+async function render() {
+  currentView?.abort();
+  currentDetail?.abort();
+  const controller = new AbortController();
+  currentView = controller;
+  const hash = location.hash.slice(1);
+  if (Object.hasOwn(views, hash)) state.view = hash;
+  const view = state.view;
+  const [title, description] = views[view];
+  document.getElementById("view-title").textContent = title;
+  document.getElementById("view-description").textContent = description;
+  for (const link of document.querySelectorAll(".main-nav a")) {
+    if (link.hash === `#${view}`) link.setAttribute("aria-current", "page");
+    else link.removeAttribute("aria-current");
+  }
+  refresh.disabled = true;
+  root.setAttribute("aria-busy", "true");
+  root.replaceChildren(notice("Reading local files…", "status"));
+  try {
+    if (view === "sessions") await renderSessions(controller.signal);
+    else if (view === "overview") await renderOverview(controller.signal);
+    else await renderRecords(view, controller.signal);
+    controller.signal.throwIfAborted();
+    document.getElementById("last-updated").textContent = "Updated " + clock(new Date()) + " IST";
+  } catch (reason) {
+    if (reason.name !== "AbortError") error(root);
+  } finally {
+    if (currentView === controller) {
+      refresh.disabled = false;
+      root.setAttribute("aria-busy", "false");
+    }
+  }
+}
+
+window.addEventListener("hashchange", () => {
+  if (location.hash !== "#main") render();
+});
+refresh.addEventListener("click", render);
+const theme = document.getElementById("theme-toggle");
+theme.addEventListener("click", () => {
+  const light = document.documentElement.dataset.theme !== "light";
+  document.documentElement.dataset.theme = light ? "light" : "blacki";
+  theme.setAttribute("aria-pressed", String(light));
+});
+const autoRefresh = document.getElementById("auto-refresh");
+window.setInterval(() => {
+  if (!autoRefresh.checked || document.hidden || refresh.disabled || window.scrollY > 80) return;
+  if (root.contains(document.activeElement) || root.querySelector("details[open], .trace-rows")) return;
+  if (state.view === "sessions" && state.pane === "wiki") return;
+  render();
+}, 60_000);
+render();
