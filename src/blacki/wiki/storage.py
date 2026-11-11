@@ -1,28 +1,68 @@
-"""Owner-scoped wiki storage. Markdown is rendered from sourced claims."""
+"""SQLite storage for the private wiki's owner-scoped Markdown pages."""
 
 from __future__ import annotations
 
-import hashlib
-import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+
+from blacki.utils.timezone import now_utc
+
+from .pages import EditError, Page, apply_edit
+
+# Claim-based tables from the previous wiki design. No data is migrated.
+_DROP_LEGACY_TABLES = """
+DROP TABLE IF EXISTS wiki_claims;
+DROP TABLE IF EXISTS wiki_evidence;
+DROP TABLE IF EXISTS wiki_links;
+DROP TABLE IF EXISTS wiki_forgotten;
+"""
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS wiki_owners (
+    owner INTEGER PRIMARY KEY, enabled INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS wiki_pages (
+    owner INTEGER NOT NULL, path TEXT NOT NULL, markdown TEXT NOT NULL,
+    revision INTEGER NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner, path)
+);
+"""
+_UPSERT_PAGE = """
+INSERT INTO wiki_pages(owner, path, markdown, revision, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(owner, path) DO UPDATE SET
+    markdown=excluded.markdown,
+    revision=excluded.revision,
+    updated_at=excluded.updated_at
+"""
 
 
 @dataclass(frozen=True)
-class Source:
-    ref: str
-    text: str
-    date: str
-    role: str = "user"
-    session: str = ""
-    writable: bool = True
+class EditOutcome:
+    """Result of one edit attempt. Only saved and deleted change the wiki."""
+
+    status: str
+    path: str
+    chars: int = 0
+    revision: int = 0
+    hint: str = ""
+
+
+def _page(row: sqlite3.Row) -> Page:
+    return Page(
+        path=row["path"],
+        markdown=row["markdown"],
+        revision=row["revision"],
+        updated_at=row["updated_at"],
+    )
 
 
 class WikiStore:
+    """Owner-scoped page storage. Every page belongs to one Telegram chat ID."""
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
@@ -32,30 +72,7 @@ class WikiStore:
         with closing(sqlite3.connect(self.path)) as db, db:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA secure_delete=ON")
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS wiki_owners (
-                    owner INTEGER PRIMARY KEY, enabled INTEGER NOT NULL,
-                    revision INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS wiki_claims (
-                    owner INTEGER NOT NULL, path TEXT NOT NULL, fact TEXT NOT NULL,
-                    claim TEXT NOT NULL, source TEXT NOT NULL, excerpt TEXT NOT NULL,
-                    source_date TEXT NOT NULL, disputed INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (owner, path, fact, source)
-                );
-                CREATE TABLE IF NOT EXISTS wiki_evidence (
-                    owner INTEGER NOT NULL, path TEXT NOT NULL, fact TEXT NOT NULL,
-                    source TEXT NOT NULL, PRIMARY KEY(owner, path, fact, source)
-                );
-                CREATE TABLE IF NOT EXISTS wiki_links (
-                    owner INTEGER NOT NULL, path TEXT NOT NULL, fact TEXT NOT NULL,
-                    target TEXT NOT NULL, PRIMARY KEY(owner, path, fact, target)
-                );
-                CREATE TABLE IF NOT EXISTS wiki_forgotten (
-                    owner INTEGER NOT NULL, kind TEXT NOT NULL, value TEXT NOT NULL,
-                    PRIMARY KEY (owner, kind, value)
-                );
-                """)
+            db.executescript(_DROP_LEGACY_TABLES + _SCHEMA)
             yield db
 
     def enabled(self, owner: int) -> bool:
@@ -76,266 +93,101 @@ class WikiStore:
                 (owner, enabled),
             )
 
-    def read(self, owner: int, mode: str, value: str) -> dict[str, Any]:
+    def get_page(self, owner: int, path: str) -> Page | None:
         with self.connect() as db:
-            state = db.execute(
-                "SELECT enabled, revision FROM wiki_owners WHERE owner=?", (owner,)
-            ).fetchone()
-            if state is not None and not state["enabled"]:
-                return {"status": "disabled"}
-            revision = state["revision"] if state else 0
-            if mode == "page":
-                rows = db.execute(
-                    """
-                    SELECT fact, claim, group_concat(source, ' ') AS sources, disputed
-                    FROM wiki_claims WHERE owner=? AND path=?
-                    GROUP BY fact, claim, disputed ORDER BY fact, claim LIMIT 13
-                    """,
-                    (owner, value),
-                ).fetchall()
-                links = db.execute(
-                    """
-                    SELECT DISTINCT links.target FROM wiki_links links
-                    WHERE links.owner=? AND links.path=? AND EXISTS (
-                        SELECT 1 FROM wiki_claims c
-                        WHERE c.owner=links.owner AND c.path=links.target
-                    ) ORDER BY links.target LIMIT 8
-                    """,
-                    (owner, value),
-                ).fetchall()
-                return {
-                    "revision": revision,
-                    "markdown": "\n".join(
-                        [f"# {value}"]
-                        + [
-                            f"- {row['claim']} (key: {row['fact']}) "
-                            + " ".join(f"[{ref}]" for ref in row["sources"].split()[:4])
-                            + (" (disputed)" if row["disputed"] else "")
-                            for row in rows[:12]
-                        ]
-                        + [f"- Related: [[{link['target']}]]" for link in links]
-                    ),
-                    "truncated": len(rows) > 12,
-                }
-            if mode == "source":
-                row = db.execute(
-                    """
-                    SELECT excerpt, source_date FROM wiki_claims
-                    WHERE owner=? AND source=? AND NOT EXISTS (
-                        SELECT 1 FROM wiki_forgotten f
-                        WHERE f.owner=? AND f.kind='source' AND f.value=?
-                    ) ORDER BY path, fact LIMIT 1
-                    """,
-                    (owner, value, owner, value),
-                ).fetchone()
-                return {"revision": revision, "source": dict(row) if row else None}
-            db.create_function("casefold", 1, str.casefold, deterministic=True)
-            needle = value.casefold()
-            paths = db.execute(
+            row = db.execute(
                 """
-                SELECT DISTINCT path FROM wiki_claims WHERE owner=? AND (
-                    (?='prefix' AND instr(path, ?)=1)
-                    OR (?='search' AND (
-                        instr(path, ?)>0 OR (disputed=0 AND instr(casefold(claim), ?)>0)
-                    ))
-                ) ORDER BY path LIMIT 13
+                SELECT path, markdown, revision, updated_at FROM wiki_pages
+                WHERE owner=? AND path=?
                 """,
-                (owner, mode, needle, mode, needle, needle),
-            ).fetchall()
-            return {
-                "revision": revision,
-                "pages": [row["path"] for row in paths[:12]],
-                "truncated": len(paths) > 12,
-            }
+                (owner, path),
+            ).fetchone()
+        return None if row is None else _page(row)
 
-    def write(
+    def list_pages(self, owner: int) -> list[Page]:
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT path, markdown, revision, updated_at FROM wiki_pages
+                WHERE owner=? ORDER BY path
+                """,
+                (owner,),
+            ).fetchall()
+        return [_page(row) for row in rows]
+
+    def edit(
         self,
         owner: int,
         path: str,
-        fact: str,
-        claim: str,
-        source: Source,
-        revision: int,
-        explicit: bool,
-        links: tuple[str, ...] = (),
-    ) -> str:
-        if not re.fullmatch(r"(?:[\w-]+/)*[\w-]+\.md", path) or not re.fullmatch(
-            r"[\w-]+", fact
-        ):
-            return "invalid_path_or_fact"
-        key = hashlib.sha256(f"{path}:{fact}".encode()).hexdigest()
+        new_text: str,
+        old_text: str,
+        *,
+        read: bool,
+    ) -> EditOutcome:
+        """Apply one edit inside a single immediate write transaction.
+
+        read is True only when the caller fully read this page earlier in the
+        same turn. Editing an existing page without that read is refused. The
+        owner revision changes only when the stored wiki changes.
+        """
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             state = db.execute(
-                "SELECT enabled, revision FROM wiki_owners WHERE owner=?", (owner,)
+                "SELECT enabled FROM wiki_owners WHERE owner=?", (owner,)
             ).fetchone()
             if state is not None and not state["enabled"]:
-                return "disabled"
-            rows = db.execute(
-                """
-                SELECT claim, source, source_date, disputed FROM wiki_claims
-                WHERE owner=? AND path=? AND fact=?
-                """,
-                (owner, path, fact),
-            ).fetchall()
-            if any(row["source"] == source.ref for row in rows):
-                return "unchanged"
-            blocked = db.execute(
-                """
-                SELECT kind FROM wiki_forgotten WHERE owner=? AND (
-                    (kind='source' AND value=?) OR (kind='fact' AND value=?))
-                """,
-                (owner, source.ref, key),
-            ).fetchall()
-            if any(row["kind"] == "source" or not explicit for row in blocked):
-                return "forgotten"
-            if revision != (state["revision"] if state else 0):
-                return "stale_revision"
+                return EditOutcome("disabled", path)
+            row = db.execute(
+                "SELECT markdown, revision FROM wiki_pages WHERE owner=? AND path=?",
+                (owner, path),
+            ).fetchone()
+            if row is None and old_text:
+                return EditOutcome(
+                    "not_found",
+                    path,
+                    hint="No page exists at this path. Leave old_text empty to "
+                    "create it.",
+                )
+            if row is not None and not read:
+                return EditOutcome(
+                    "read_required",
+                    path,
+                    chars=len(row["markdown"]),
+                    hint="Read this page with wiki_read(path=...) in this turn "
+                    "before editing it.",
+                )
+            current = row["markdown"] if row is not None else ""
+            try:
+                markdown = apply_edit(current, new_text, old_text)
+            except EditError as error:
+                return EditOutcome(
+                    error.status, path, chars=len(current), hint=error.hint
+                )
+            if markdown == current:
+                return EditOutcome(
+                    "unchanged",
+                    path,
+                    chars=len(current),
+                    revision=row["revision"],
+                    hint="The page already has this text. Nothing was saved.",
+                )
+            if markdown.strip():
+                revision = (row["revision"] if row is not None else 0) + 1
+                timestamp = now_utc().isoformat(timespec="seconds")
+                db.execute(_UPSERT_PAGE, (owner, path, markdown, revision, timestamp))
+                outcome = EditOutcome(
+                    "saved", path, chars=len(markdown), revision=revision
+                )
+            else:
+                db.execute(
+                    "DELETE FROM wiki_pages WHERE owner=? AND path=?", (owner, path)
+                )
+                outcome = EditOutcome("deleted", path)
             db.execute(
                 "INSERT OR IGNORE INTO wiki_owners(owner, enabled) VALUES (?, 1)",
                 (owner,),
             )
-            # Replace only when the evidence is a newer, explicit correction.
-            correction = source.text.lstrip().casefold().startswith(
-                ("actually ", "actually,", "correction:", "update:", "remember ")
-            ) and all(source.date > row["source_date"] for row in rows)
-            different = any(row["claim"].casefold() != claim.casefold() for row in rows)
-            disputed = (
-                different or any(row["disputed"] for row in rows)
-            ) and not correction
-            if correction:
-                db.execute(
-                    "DELETE FROM wiki_claims WHERE owner=? AND path=? AND fact=?",
-                    (owner, path, fact),
-                )
-            elif disputed:
-                db.execute(
-                    """
-                    UPDATE wiki_claims SET disputed=1
-                    WHERE owner=? AND path=? AND fact=?
-                    """,
-                    (owner, path, fact),
-                )
-            db.execute(
-                """
-                INSERT INTO wiki_claims VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    owner,
-                    path,
-                    fact,
-                    claim,
-                    source.ref,
-                    source.text,
-                    source.date,
-                    disputed,
-                ),
-            )
-            db.execute(
-                "INSERT OR IGNORE INTO wiki_evidence VALUES (?, ?, ?, ?)",
-                (owner, path, fact, source.ref),
-            )
-            if correction:
-                db.execute(
-                    "DELETE FROM wiki_links WHERE owner=? AND path=? AND fact=?",
-                    (owner, path, fact),
-                )
-            db.executemany(
-                """
-                INSERT OR IGNORE INTO wiki_links
-                SELECT ?, ?, ?, ? WHERE EXISTS (
-                    SELECT 1 FROM wiki_claims WHERE owner=? AND path=?
-                )
-                """,
-                [
-                    (owner, path, fact, target, owner, target)
-                    for target in links
-                    if target != path
-                ],
-            )
-            if explicit:
-                db.execute(
-                    """
-                    DELETE FROM wiki_forgotten WHERE owner=? AND kind='fact' AND value=?
-                    """,
-                    (owner, key),
-                )
             db.execute(
                 "UPDATE wiki_owners SET revision=revision+1 WHERE owner=?", (owner,)
             )
-            return "disputed" if disputed else "saved"
-
-    def suppressed_sources(self, owner: int) -> set[str]:
-        with self.connect() as db:
-            return {
-                row["value"]
-                for row in db.execute(
-                    "SELECT value FROM wiki_forgotten WHERE owner=? AND kind='source'",
-                    (owner,),
-                )
-            }
-
-    def inspect(
-        self,
-        owner: int,
-        path: str | None = None,
-        fact: str | None = None,
-    ) -> tuple[int, list[tuple[str, str]]]:
-        with self.connect() as db:
-            row = db.execute(
-                "SELECT revision FROM wiki_owners WHERE owner=?", (owner,)
-            ).fetchone()
-            entries = db.execute(
-                """
-                SELECT DISTINCT path, fact FROM wiki_claims WHERE owner=?
-                AND (? IS NULL OR path=?) AND (? IS NULL OR fact=?)
-                ORDER BY path, fact LIMIT 24
-                """,
-                (owner, path, path, fact, fact),
-            ).fetchall()
-            return (
-                row["revision"] if row else 0,
-                [(entry["path"], entry["fact"]) for entry in entries],
-            )
-
-    def forget(self, owner: int, path: str, fact: str, revision: int) -> bool:
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            state = db.execute(
-                "SELECT revision FROM wiki_owners WHERE owner=?", (owner,)
-            ).fetchone()
-            if not state or state["revision"] != revision:
-                return False
-            sources = db.execute(
-                """
-                SELECT source FROM wiki_evidence WHERE owner=? AND path=? AND fact=?
-                """,
-                (owner, path, fact),
-            ).fetchall()
-            if not sources:
-                return False
-            db.executemany(
-                "INSERT OR IGNORE INTO wiki_forgotten VALUES (?, ?, ?)",
-                [(owner, "fact", hashlib.sha256(f"{path}:{fact}".encode()).hexdigest())]
-                + [(owner, "source", row["source"]) for row in sources],
-            )
-            db.execute(
-                "DELETE FROM wiki_claims WHERE owner=? AND path=? AND fact=?",
-                (owner, path, fact),
-            )
-            db.execute(
-                "UPDATE wiki_owners SET revision=revision+1 WHERE owner=?", (owner,)
-            )
-            db.execute(
-                "DELETE FROM wiki_evidence WHERE owner=? AND path=? AND fact=?",
-                (owner, path, fact),
-            )
-            db.execute(
-                "DELETE FROM wiki_links WHERE owner=? AND path=? AND fact=?",
-                (owner, path, fact),
-            )
-            db.executemany(
-                "UPDATE wiki_claims SET excerpt='' WHERE owner=? AND source=?",
-                [(owner, row["source"]) for row in sources],
-            )
-            return True
+            return outcome

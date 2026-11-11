@@ -8,9 +8,7 @@ import hashlib
 import hmac
 import logging
 import re
-import secrets
 import sqlite3
-import time
 from collections.abc import Coroutine, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -34,7 +32,8 @@ from blacki.models.inference import (
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.utils.preferences import get_preferences_storage
-from blacki.wiki.storage import Source, WikiStore
+from blacki.wiki.pages import Page
+from blacki.wiki.storage import WikiStore
 from blacki.wiki.tools import WikiTurn, wiki_turn
 
 from . import TelegramConfig
@@ -156,6 +155,34 @@ def _append_google_health_sync_counts(text: str, result: object) -> str:
     return f"{text}\n{counts}" if counts else text
 
 
+def _is_forwarded(message: Message) -> bool:
+    """Return True when Telegram attributes the message to another sender."""
+    return bool(
+        message.forward_origin
+        or message.forward_from
+        or message.forward_from_chat
+        or message.forward_sender_name
+        or message.sender_chat
+    )
+
+
+_MEMORY_LIST_CHARACTERS = 3500
+
+
+def _page_list_text(pages: Sequence[Page]) -> str:
+    """List page paths and sizes that fit in one Telegram message."""
+    lines: list[str] = []
+    used = 0
+    for index, page in enumerate(pages):
+        line = f"{page.path} ({len(page.markdown)} chars)"
+        if used + len(line) > _MEMORY_LIST_CHARACTERS:
+            lines.append(f"…and {len(pages) - index} more.")
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
 @dataclass(slots=True, frozen=True)
 class TelegramSessionIdentity:
     """Stable Telegram identifiers used to resolve ADK sessions."""
@@ -195,7 +222,6 @@ class TelegramBot:
         self.gmail_oauth_service = gmail_oauth_service
         self.access_storage = access_storage
         self.wiki_store = wiki_store
-        self._wiki_forget: dict[int, tuple[str, str, str, int, float]] = {}
         self._voice_transcriber = (
             voice_transcriber or CloudflareWhisperTranscriber.from_environment()
         )
@@ -407,6 +433,13 @@ class TelegramBot:
             ),
         ]
         commands.append(BotCommand(command="app", description="Open Blacki's app"))
+        if self.wiki_store is not None:
+            commands.append(
+                BotCommand(
+                    command="memory",
+                    description="Turn private wiki memory on or off, or list pages",
+                )
+            )
         if self.google_health_service is not None:
             commands.extend(
                 [
@@ -1012,7 +1045,7 @@ class TelegramBot:
                 await self._handle_command(message, user_message)
                 return
 
-            with wiki_turn(self._wiki_text_turn(message, user_message)):
+            with wiki_turn(self._wiki_text_turn(message)):
                 await self._handle_message(
                     chat_id=chat_id,
                     message_thread_id=message_thread_id,
@@ -1022,7 +1055,13 @@ class TelegramBot:
         finally:
             self._chat_type_context.reset(token)
 
-    def _wiki_text_turn(self, message: Message, text: str) -> WikiTurn | None:
+    def _wiki_text_turn(self, message: Message) -> WikiTurn | None:
+        """Return wiki access for the owner's own private chat message.
+
+        Forwarded messages still get a turn, without a message ref, so they
+        can read and search the wiki but are never attributed to the owner's
+        own message.
+        """
         if (
             self.wiki_store is None
             or message.chat.type != ChatType.PRIVATE
@@ -1033,99 +1072,20 @@ class TelegramBot:
         locator = self._build_session_identity(
             chat_id=str(message.chat.id), message_thread_id=message.message_thread_id
         )
-        source = None
-        if (
-            not (
-                message.forward_origin
-                or message.forward_from
-                or message.forward_from_chat
-                or message.forward_sender_name
-                or message.sender_chat
-            )
-            and len(text) <= 600
-        ):
-            source = Source(f"tg:{message.message_id}", text, message.date.isoformat())
         return WikiTurn(
             self.wiki_store,
             self.runtime.wiki_history_path(),
             message.chat.id,
             locator.user_id,
-            current=source,
-            request=text,
+            message_id=None if _is_forwarded(message) else message.message_id,
         )
 
     async def _handle_memory_command(self, message: Message, command: str) -> None:
-        turn = self._wiki_text_turn(message, command)
-        if not turn or not turn.current:
+        turn = self._wiki_text_turn(message)
+        if turn is None or _is_forwarded(message):
             return
-        args = command.split()
-        reply = (
-            "Use /memory on, /memory off, /memory list, "
-            "or /memory forget <path> <fact>."
-        )
         try:
-            if len(args) == 2 and args[1] in {"on", "off"}:
-                enabled = args[1] == "on"
-                await asyncio.to_thread(turn.store.set_enabled, turn.owner, enabled)
-                reply = (
-                    "Memory enabled. Blacki can search your private chats "
-                    "and store supported wiki claims."
-                    if enabled
-                    else "Memory paused."
-                )
-            elif len(args) == 2 and args[1] == "list":
-                _, entries = await asyncio.to_thread(turn.store.inspect, turn.owner)
-                reply = (
-                    "\n".join(f"{path} {fact}" for path, fact in entries)
-                    or "Your wiki is empty."
-                )
-            elif len(args) == 4 and args[1] == "forget":
-                revision, entries = await asyncio.to_thread(
-                    turn.store.inspect, turn.owner, args[2], args[3]
-                )
-                if entries:
-                    token = secrets.token_urlsafe(12)
-                    now = time.monotonic()
-                    self._wiki_forget = {
-                        owner: pending
-                        for owner, pending in self._wiki_forget.items()
-                        if pending[-1] > now
-                    }
-                    self._wiki_forget[turn.owner] = (
-                        token,
-                        args[2],
-                        args[3],
-                        revision,
-                        now + 300,
-                    )
-                    reply = (
-                        f"To forget {args[2]} {args[3]}, send /memory confirm "
-                        f"{token} within five minutes. "
-                        "The original chat remains in its transcript."
-                    )
-                else:
-                    reply = "No matching wiki claim."
-            elif len(args) == 3 and args[1] == "confirm":
-                pending = self._wiki_forget.get(turn.owner)
-                if pending and secrets.compare_digest(
-                    args[2].encode(), pending[0].encode()
-                ):
-                    self._wiki_forget.pop(turn.owner, None)
-                    _, path, fact, revision, expires = pending
-                    success = expires > time.monotonic() and await asyncio.to_thread(
-                        turn.store.forget,
-                        turn.owner,
-                        path,
-                        fact,
-                        revision,
-                    )
-                    reply = (
-                        "Forgot the wiki claim."
-                        if success
-                        else "Start a fresh forget request."
-                    )
-                else:
-                    reply = "No matching forget request."
+            reply = await self._memory_reply(turn, command.split())
         except (OSError, sqlite3.Error):
             reply = "Memory storage is unavailable."
         await self.api.send_message(
@@ -1134,6 +1094,21 @@ class TelegramBot:
             message_thread_id=message.message_thread_id,
             parse_mode=None,
         )
+
+    async def _memory_reply(self, turn: WikiTurn, args: list[str]) -> str:
+        if len(args) == 2 and args[1] in {"on", "off"}:
+            enabled = args[1] == "on"
+            await asyncio.to_thread(turn.store.set_enabled, turn.owner, enabled)
+            if enabled:
+                return (
+                    "Memory enabled. Blacki can search your private chats "
+                    "and keep wiki pages."
+                )
+            return "Memory paused."
+        if len(args) == 2 and args[1] == "list":
+            pages = await asyncio.to_thread(turn.store.list_pages, turn.owner)
+            return _page_list_text(pages) or "Your wiki is empty."
+        return "Use /memory on, /memory off, or /memory list."
 
     async def _route_non_text_message(self, message: Message) -> None:
         """Route a non-text message to the appropriate handler."""
@@ -2188,6 +2163,11 @@ class TelegramBot:
             "• /connect_gmail \\- Connect Gmail to search emails and prepare drafts\n"
             "• /disconnect_gmail \\- Disconnect Gmail and remove credentials\n"
         )
+        memory_commands = (
+            "• /memory on, /memory off, /memory list \\- Control private wiki memory\n"
+            if self.wiki_store is not None
+            else ""
+        )
         text = (
             "🤖 *blacki \\- AI Assistant*\n\n"
             "I'm powered by the same Google ADK runtime used by the HTTP app\\.\n\n"
@@ -2199,6 +2179,7 @@ class TelegramBot:
             "• /model default \\- Restore the configured default\n"
             "• /models \\- Show model and thinking settings\n"
             "• /thinking \\- Choose supported reasoning effort\n"
+            f"{memory_commands}"
             f"{gmail_commands}"
             f"{health_commands}\n"
             "*Features:*\n"
@@ -2559,29 +2540,9 @@ class TelegramBot:
                 message_thread_id=message_thread_id,
                 conversation_key=session_identity.conversation_key,
             )
-            review = None
-            if reminder.wiki_owner is not None:
-                store = self.wiki_store
-                if (
-                    store is None
-                    or reminder.wiki_owner != chat_id
-                    or not await self.miniapp_user_authorized(chat_id)
-                    or not await asyncio.to_thread(store.enabled, chat_id)
-                ):
-                    await self.api.send_message(
-                        chat_id=chat_id,
-                        message_thread_id=message_thread_id,
-                        text="Your scheduled wiki review could not access memory.",
-                    )
-                    return
-                review = WikiTurn(
-                    store,
-                    self.runtime.wiki_history_path(),
-                    chat_id,
-                    session_identity.user_id,
-                    review=True,
-                )
-            with wiki_turn(review):
+            # Scheduled events never get wiki tools. Only the owner's own chat
+            # messages reach the wiki.
+            with wiki_turn(None):
                 await self._run_turn_and_send_response(
                     session_identity=session_identity,
                     chat_id=chat_id,

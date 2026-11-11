@@ -333,19 +333,17 @@ even for narrow dates because version selection precedes date filtering.
 
 ## Private wiki
 
-Memory is enabled by default in private Telegram chats. Blacki proactively
-maintains a source-backed personal knowledge base with useful durable context
-such as preferences, goals, relationships, ongoing projects, decisions,
-commitments, and recurring procedures. It can also search eligible past
-conversations.
-`/memory off` pauses access and `/memory on` resumes it. Use `/memory list` to find claim keys and
-`/memory forget <path> <fact>` to start a confirmed removal. Forgetting
-suppresses known source messages from memory retrieval. Original chat
-transcripts and backups follow their own retention rules.
+Memory is enabled by default in private Telegram chats. Blacki keeps a personal
+knowledge base of Markdown pages, such as `people/<name>.md` or
+`projects/<name>.md`, with durable context like preferences, goals,
+relationships, projects, decisions, and routines. It can also search eligible
+past conversations.
 
-Ask "Review the Blacki wiki using this week's project discussions" to review
-in chat. To authorize an existing reminder to run the review, start the
-request with "Schedule wiki review" and specify a time and scope. For example,
-"Schedule wiki review every Friday at 18:00. Check the last seven days of
-Blacki project chats and update supported decisions." Delivery checks that
-the owner still has memory enabled.
+`/memory off` pauses access and `/memory on` resumes it. `/memory list` shows
+each page path with its size. Pages are edited in chat when you ask, or when
+Blacki saves a durable fact from your own messages. Scheduled reminders do not
+read or edit the wiki.
+
+Original chat transcripts and session events keep their normal retention.
+Wiki tool calls and results are stored with them, but they are not searchable
+through past-session search.

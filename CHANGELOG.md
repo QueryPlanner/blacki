@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Make Docker Compose private, persistent, and health-checked by default
 - Enable the same-privilege ADK task worker by default
 - Restrict owner infrastructure deployment to the QueryPlanner repository
+- Replace the claim-based private wiki with owner-scoped Markdown pages; existing wiki data is dropped on first start
+- Remove `/memory forget` and scheduled wiki review
 
 ## [0.1.0] - 2026-05-07
 

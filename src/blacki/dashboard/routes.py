@@ -453,9 +453,8 @@ def create_dashboard_router(
         page: str = "",
         revision: str = "",
         offset: str = "0",
-        claim_offset: str = "0",
     ) -> JSONResponse:
-        """Read one owner-scoped wiki page without exposing evidence excerpts."""
+        """Read one owner-scoped wiki page list position and its Markdown."""
         if (denial := _private_access(request)) is not None:
             return denial
         try:
@@ -473,9 +472,6 @@ def create_dashboard_router(
             if selected is not None and known_revision is None:
                 raise _InvalidDashboardQueryError
             start = _parse_int(offset, default=0, minimum=0, maximum=_MAX_OFFSET)
-            claim_start = _parse_int(
-                claim_offset, default=0, minimum=0, maximum=_MAX_OFFSET
-            )
         except _InvalidDashboardQueryError:
             return _invalid_query()
         return await _store_response(
@@ -485,7 +481,6 @@ def create_dashboard_router(
             selected,
             known_revision,
             start,
-            claim_start,
         )
 
     @router.get("/api/logs")

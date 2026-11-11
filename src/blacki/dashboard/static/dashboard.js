@@ -556,7 +556,6 @@ async function renderWiki(container, owner, selection, signal, pageFocus = false
   }
 
   const offset = selection.offset || 0;
-  const claimOffset = selection.claim_offset || 0;
   const layout = el("div", "wiki-split");
   const pages = el("nav", "wiki-pages");
   pages.setAttribute("aria-label", "Wiki pages");
@@ -575,18 +574,12 @@ async function renderWiki(container, owner, selection, signal, pageFocus = false
     offset: offset + 50, revision: data.revision,
   })));
   pages.append(pageNavigation);
-  const list = el("ul");
-  for (const claim of data.claims) {
-    const item = el("li", "", claim.text);
-    if (claim.disputed) item.append(el("small", "", " · Disputed"));
-    list.append(item);
-  }
-  reader.append(el("h4", "", data.pages[data.page - offset]), el("p", "muted", "Revision " + count(data.revision)), list);
-  const claimNavigation = el("div", "pagination");
-  const showClaims = (claim_offset) => changePage({ page: data.page, offset, revision: data.revision, claim_offset });
-  if (claimOffset > 0) claimNavigation.append(action("Previous claims", "control", () => showClaims(Math.max(0, claimOffset - 50))));
-  if (data.more_claims) claimNavigation.append(action("More claims", "control", () => showClaims(claimOffset + 50)));
-  reader.append(claimNavigation);
+  // The Markdown is shown as plain text. It is never parsed as HTML.
+  reader.append(
+    el("h4", "", data.selected.path),
+    el("p", "muted", `${plural(data.selected.chars, "character")} · updated ${dateTime(data.selected.updated_at)}`),
+    el("pre", "wiki-markdown", data.selected.markdown),
+  );
   layout.append(pages, reader);
   wiki.append(layout);
   container.replaceChildren(wiki);
