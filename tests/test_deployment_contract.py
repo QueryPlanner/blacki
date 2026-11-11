@@ -493,7 +493,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
 
 
 def test_production_deployment_serializes_host_bind_secret() -> None:
-    """Private dashboard settings must reach the remote Compose environment."""
+    """The private interface secret must reach the remote Compose environment."""
     workflow = _load_yaml(".github/workflows/docker-publish.yml")
     deploy_step = next(
         step
@@ -507,9 +507,6 @@ def test_production_deployment_serializes_host_bind_secret() -> None:
 
     assert deploy_step["env"]["HOST_BIND_IP"] == "${{ secrets.HOST_BIND_IP }}"
     assert "HOST_BIND_IP" in writer_names
-    private_hosts = "BLACKI_DASHBOARD_PRIVATE_HOSTS"
-    assert deploy_step["env"][private_hosts] == "${{ secrets." + private_hosts + " }}"
-    assert private_hosts in writer_names
     assert 'HOST_BIND_IP="$DEPLOY_HOST_BIND_IP"' in deploy_script
 
 

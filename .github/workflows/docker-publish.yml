@@ -102,7 +102,6 @@ jobs:
           IMAGE_DIGEST: ${{ needs.build.outputs.image-digest }}
           # Optional Compose host binding; defaults to the server's current value.
           HOST_BIND_IP: ${{ secrets.HOST_BIND_IP }}
-          BLACKI_DASHBOARD_PRIVATE_HOSTS: ${{ secrets.BLACKI_DASHBOARD_PRIVATE_HOSTS }}
           # App secrets for .env generation
           AGENT_NAME: ${{ secrets.AGENT_NAME }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -182,7 +181,6 @@ jobs:
           # Serialize secrets without interpolation or shell evaluation.
           python3 scripts/write_compose_env.py "$LOCAL_ENV_FILE" \
             HOST_BIND_IP \
-            BLACKI_DASHBOARD_PRIVATE_HOSTS \
             AGENT_NAME \
             OPENROUTER_API_KEY \
             ROOT_AGENT_MODEL \
