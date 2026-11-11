@@ -158,7 +158,7 @@ class WikiStore:
                 )
             current = row["markdown"] if row is not None else ""
             try:
-                markdown = apply_edit(current, new_text, old_text)
+                markdown = apply_edit(current, new_text, old_text, path=path)
             except EditError as error:
                 return EditOutcome(
                     error.status, path, chars=len(current), hint=error.hint

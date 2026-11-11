@@ -32,7 +32,7 @@ from blacki.models.inference import (
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.utils.preferences import get_preferences_storage
-from blacki.wiki.pages import Page
+from blacki.wiki.pages import MEMORY_PATH, Page
 from blacki.wiki.storage import WikiStore
 from blacki.wiki.tools import WikiTurn, wiki_turn
 
@@ -174,7 +174,8 @@ def _page_list_text(pages: Sequence[Page]) -> str:
     lines: list[str] = []
     used = 0
     for index, page in enumerate(pages):
-        line = f"{page.path} ({len(page.markdown)} chars)"
+        label = " (always loaded)" if page.path == MEMORY_PATH else ""
+        line = f"{page.path} ({len(page.markdown)} chars){label}"
         if used + len(line) > _MEMORY_LIST_CHARACTERS:
             lines.append(f"…and {len(pages) - index} more.")
             break
@@ -852,7 +853,15 @@ class TelegramBot:
         (``_process_flushed_album``) to resolve the future on its behalf.
         """
         try:
-            await self._run_album_turn(album)
+            messages = album.messages
+            turn = self._wiki_message_turn(messages[0]) if messages else None
+            if turn is not None:
+                if self._album_sender_user_id(messages) != turn.owner:
+                    turn = None
+                elif any(_is_forwarded(message) for message in messages):
+                    turn.message_id = None
+            with wiki_turn(turn):
+                await self._run_album_turn(album)
         finally:
             if album.future is not None and not album.future.done():
                 album.future.set_result(None)
@@ -1034,7 +1043,8 @@ class TelegramBot:
         token = self._chat_type_context.set(message.chat.type)
         try:
             if message.text is None:
-                await self._route_non_text_message(message)
+                with wiki_turn(self._wiki_message_turn(message)):
+                    await self._route_non_text_message(message)
                 return
 
             chat_id = message.chat.id
@@ -1045,7 +1055,7 @@ class TelegramBot:
                 await self._handle_command(message, user_message)
                 return
 
-            with wiki_turn(self._wiki_text_turn(message)):
+            with wiki_turn(self._wiki_message_turn(message)):
                 await self._handle_message(
                     chat_id=chat_id,
                     message_thread_id=message_thread_id,
@@ -1055,7 +1065,7 @@ class TelegramBot:
         finally:
             self._chat_type_context.reset(token)
 
-    def _wiki_text_turn(self, message: Message) -> WikiTurn | None:
+    def _wiki_message_turn(self, message: Message) -> WikiTurn | None:
         """Return wiki access for the owner's own private chat message.
 
         Forwarded messages still get a turn, without a message ref, so they
@@ -1081,7 +1091,7 @@ class TelegramBot:
         )
 
     async def _handle_memory_command(self, message: Message, command: str) -> None:
-        turn = self._wiki_text_turn(message)
+        turn = self._wiki_message_turn(message)
         if turn is None or _is_forwarded(message):
             return
         try:

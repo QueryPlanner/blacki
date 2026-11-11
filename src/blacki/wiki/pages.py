@@ -7,6 +7,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 PAGE_CHAR_LIMIT = 15_000
+MEMORY_PATH = "memory.md"
+MEMORY_CHAR_LIMIT = 5_000
 MAX_PATH_LENGTH = 160
 MAX_QUERY_LENGTH = 180
 SEARCH_RESULT_LIMIT = 10
@@ -69,7 +71,7 @@ def contains_secret(text: str) -> bool:
     return _SECRET_PATTERN.search(text) is not None
 
 
-def apply_edit(current: str, new_text: str, old_text: str) -> str:
+def apply_edit(current: str, new_text: str, old_text: str, *, path: str = "") -> str:
     """Return the page text after one edit, or raise EditError.
 
     An empty old_text appends new_text on its own line. A non-empty old_text
@@ -100,11 +102,13 @@ def apply_edit(current: str, new_text: str, old_text: str) -> str:
             )
         separator = "\n" if current and not current.endswith("\n") else ""
         markdown = current + separator + new_text
-    if len(markdown) > PAGE_CHAR_LIMIT:
+    is_memory = path == MEMORY_PATH
+    limit = MEMORY_CHAR_LIMIT if is_memory else PAGE_CHAR_LIMIT
+    if len(markdown) > limit and (not is_memory or len(markdown) > len(current)):
         raise EditError(
             "too_large",
             f"The page would be {len(markdown)} characters; the limit is "
-            f"{PAGE_CHAR_LIMIT}. Move details to another page or remove outdated "
+            f"{limit}. Move details to another page or remove outdated "
             "lines.",
         )
     return markdown

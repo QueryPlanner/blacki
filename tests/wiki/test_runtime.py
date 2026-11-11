@@ -12,7 +12,7 @@ from google.genai import types
 
 from blacki.agent import create_agent, create_app
 from blacki.runtime.adk import AdkRuntime, SessionLocator
-from blacki.wiki.history import search_history
+from blacki.wiki.history import list_history, read_history, search_history
 from blacki.wiki.storage import WikiStore
 from blacki.wiki.tools import TOOL_NAMES, WikiTurn, wiki_turn
 
@@ -107,7 +107,11 @@ async def test_a_turn_reads_and_writes_through_adk_and_history_ignores_tool_traf
     text = "Let's keep the wiki in SQLite."
     try:
         with wiki_turn(WikiTurn(store, db_path, 12, locator.user_id, message_id=99)):
-            response = await runtime.run_user_turn(locator=locator, message_text=text)
+            response = await runtime.run_user_turn(
+                locator=locator,
+                message_text=text,
+                state={"telegram_chat_type": "private", "telegram_chat_id": "12"},
+            )
         assert response == "Saved."
 
         page = store.get_page(12, PAGE)
@@ -126,6 +130,19 @@ async def test_a_turn_reads_and_writes_through_adk_and_history_ignores_tool_traf
         assert [(match.ref, match.text) for match in matches] == [("tg:99", text)]
         assert search_history(db_path, 12, "Store the wiki", "", "", None, set()) == []
         assert search_history(db_path, 34, "SQLite", "", "", None, set()) == []
+        reset = await runtime.create_next_session(
+            locator=locator,
+            state={"telegram_chat_type": "private", "telegram_chat_id": "12"},
+        )
+        assert reset.id != session.id
+        listed = list_history(db_path, 12, None, "")
+        assert {item["session_id"] for item in listed["sessions"]} == {
+            session.id,
+            reset.id,
+        }
+        transcript = read_history(db_path, 12, session.id, 0, 0)
+        assert [item["text"] for item in transcript["messages"]] == [text, "Saved."]
+        assert transcript["next_cursor"] is None
     finally:
         await session_service.close()
 
