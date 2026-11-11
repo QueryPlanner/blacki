@@ -22,7 +22,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
 
-from .history import search_history
+from .history import list_history, read_history, search_history
 from .pages import (
     MAX_QUERY_LENGTH,
     MEMORY_CHAR_LIMIT,
@@ -54,6 +54,7 @@ Before writing, search or read the relevant pages to avoid duplicates. Prefer
 small edits with old_text. Use clear paths such as people/<name>.md or
 projects/<name>.md, and [[path]] links when they help. Report a save only after
 it succeeds. Use search_past_sessions for details that are not in the wiki.
+List sessions to find a conversation or read one page at a time for its full transcript.
 """
 
 
@@ -251,18 +252,53 @@ def _write_payload(outcome: EditOutcome) -> dict[str, Any]:
 
 async def search_past_sessions(
     tool_context: ToolContext,
-    query: str,
+    query: str = "",
     since: str = "",
     until: str = "",
     topic: int | None = None,
+    action: str = "search",
+    session_id: str = "",
+    cursor: str = "",
 ) -> dict[str, Any]:
-    """Search private past chat text. Dates, when supplied, are inclusive YYYY-MM-DD."""
+    """Search, list, or read the owner's private Telegram sessions.
+
+    search: Pass query, inclusive YYYY-MM-DD dates, or both.
+    list: Pass action="list" to get session IDs across topics, including sessions
+    before /reset. Use topic to restrict the list.
+    read: Pass action="read" and a session_id from list or search to read its
+    stored transcript in chronological order.
+    For list and read, pass next_cursor back as cursor until it is null.
+    """
     turn = await _turn()
     if not turn or turn.history is None:
         return {"status": "unavailable"}
-    if len(query) > MAX_QUERY_LENGTH or not (query.strip() or since or until):
-        return {"status": "invalid_request"}
     try:
+        if action == "list" and not (query or session_id or since or until):
+            if cursor and len(cursor) > 128:
+                return {"status": "invalid_request"}
+            return await asyncio.to_thread(
+                list_history, turn.history, turn.owner, topic, cursor
+            )
+        if action == "read" and session_id and not (query or since or until or topic):
+            if cursor and not re.fullmatch(r"[0-9]{1,12}:[0-9]{1,12}", cursor):
+                return {"status": "invalid_request"}
+            row_offset, char_offset = map(int, (cursor or "0:0").split(":"))
+            return await asyncio.to_thread(
+                read_history,
+                turn.history,
+                turn.owner,
+                session_id,
+                row_offset,
+                char_offset,
+            )
+        if (
+            action != "search"
+            or cursor
+            or session_id
+            or len(query) > MAX_QUERY_LENGTH
+            or not (query.strip() or since or until)
+        ):
+            return {"status": "invalid_request"}
         if any(
             date.fromisoformat(value).isoformat() != value
             for value in (since, until)
@@ -311,6 +347,7 @@ class WikiPolicyPlugin(BasePlugin):
         if await _turn() is None:
             return
         llm_request.append_instructions([POLICY])
+
 
 class WikiMemoryPlugin(BasePlugin):
     """Load memory once per Telegram turn and reuse it across model calls."""

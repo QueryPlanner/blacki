@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from blacki.wiki.history import search_history
+from blacki.wiki.history import list_history, read_history, search_history
 
 OWNER_CHAT = "telegram-chat-12"
 
@@ -251,6 +251,7 @@ def test_legacy_history_is_read_only_and_filters_internal_events(
             "('blacki', ?, ?, 'broken', '2026-11-09', 'user', 'bad')",
             (owner, f"{owner}-v1"),
         )
+    assert read_history(path, 12, f"{owner}-v1", 0, 0)["status"] == "ok"
     hits = search_history(path, 12, "sqlite", "", "", None, set())
     assert {hit.text for hit in hits} == {"legacy SQLite note", "SQLite confirmed"}
     assert search_history(path, 12, "sqlite", "", "", 2, set()) == []
@@ -262,3 +263,92 @@ def test_legacy_history_is_read_only_and_filters_internal_events(
         db.execute("DROP TABLE events")
     with pytest.raises(ValueError, match="unsupported event schema"):
         search_history(path, 12, "sqlite", "", "", None, set())
+
+
+def test_list_history_includes_previous_versions_and_paginates(
+    make_history: Callable[[Any], Path],
+) -> None:
+    path = make_history([_text("first session")])
+    topic = f"{OWNER_CHAT}-thread-9"
+    with closing(sqlite3.connect(path)) as db, db:
+        state = db.execute("SELECT state FROM sessions").fetchone()[0]
+        sessions = [(OWNER_CHAT, f"{OWNER_CHAT}-v{i}", state) for i in range(2, 22)]
+        sessions += [
+            (topic, f"{topic}-v1", state),
+            (topic, f"{topic}-invalid", state),
+            (topic, f"{OWNER_CHAT}-v30", state),
+            (topic, f"{topic}-v2", "invalid JSON"),
+            ("telegram-chat-123", "telegram-chat-123-v1", state),
+        ]
+        db.executemany("INSERT INTO sessions VALUES ('blacki', ?, ?, ?)", sessions)
+
+    first = list_history(path, 12, None, "")
+    second = list_history(path, 12, None, first["next_cursor"])
+    listed = first["sessions"] + second["sessions"]
+    assert len(first["sessions"]) == 20
+    assert second["next_cursor"] is None
+    assert {item["session_id"] for item in listed} == {
+        *(f"{OWNER_CHAT}-v{i}" for i in range(1, 22)),
+        f"{topic}-v1",
+    }
+    original = next(item for item in listed if item["session_id"] == f"{OWNER_CHAT}-v1")
+    assert original["preview"] == "first session"
+    assert original["first_at"] == original["last_at"] == "2026-11-09"
+    assert [item["topic"] for item in list_history(path, 12, 9, "")["sessions"]] == [9]
+
+
+def test_read_history_reassembles_original_messages_and_captions(
+    make_history: Callable[[Any], Path],
+) -> None:
+    long_message = "x" * 16_001
+    path = make_history(
+        [
+            _text(long_message),
+            {
+                "author": "user",
+                "content": {
+                    "role": "user",
+                    "parts": [
+                        {"text": "a caption"},
+                        {"inline_data": {"data": "ignored"}},
+                    ],
+                },
+            },
+            _text("the reply", role="model", author="blacki"),
+            _text("other owner's text", **_origin(23, 1)),
+            _text("summary", actions={"compaction": {"start_timestamp": 1}}),
+        ]
+    )
+    session = f"{OWNER_CHAT}-v1"
+    first = read_history(path, 12, session, 0, 0)
+    assert "compacted" in first["history_note"]
+    assert read_history(path, 23, session, 0, 0) == {"status": "not_found"}
+    assert read_history(path, 12, f"{OWNER_CHAT}-v9", 0, 0) == {"status": "not_found"}
+    assert first["next_cursor"] == "0:8000"
+    assert first["messages"][0]["text"] == long_message[:8000]
+    second = read_history(path, 12, session, 0, 8000)
+    assert second["next_cursor"] == "0:16000"
+    third = read_history(path, 12, session, 0, 16000)
+    assert third["next_cursor"] is None
+    assert [item["text"] for item in third["messages"]] == [
+        "x",
+        "a caption",
+        "the reply",
+    ]
+
+
+def test_read_history_pages_by_message_count_and_skips_invalid_events(
+    make_history: Callable[[Any], Path],
+) -> None:
+    path = make_history(
+        [{"author": "user", "content": {"role": "user"}}, *[_text("hello")] * 31]
+    )
+    session = f"{OWNER_CHAT}-v1"
+    assert list_history(path, 12, None, "")["sessions"][0]["preview"] == "hello"
+    first = read_history(path, 12, session, 0, 0)
+    assert len(first["messages"]) == 30
+    offset, chars = map(int, first["next_cursor"].split(":"))
+    last = read_history(path, 12, session, offset, chars)
+    assert len(last["messages"]) == 1
+    assert last["next_cursor"] is None
+    assert read_history(path, 12, session, offset, 5)["messages"] == []

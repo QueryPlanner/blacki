@@ -397,3 +397,28 @@ async def test_policy_is_added_only_while_wiki_access_is_active(
 
 async def test_toolset_close_is_a_no_op() -> None:
     await WikiToolset().close()
+
+
+async def test_history_tool_lists_and_reads_previous_session(
+    store: WikiStore,
+    context: ToolContext,
+    make_history: Callable[[Any], Path],
+) -> None:
+    text = "previous session"
+    path = make_history(
+        [{"author": "user", "content": {"role": "user", "parts": [{"text": text}]}}]
+    )
+    with wiki_turn(_turn(store, path)):
+        listed = await search_past_sessions(context, action="list")
+        session_id = listed["sessions"][0]["session_id"]
+        result = await search_past_sessions(
+            context, action="read", session_id=session_id
+        )
+        assert result["messages"][0]["text"] == text
+        assert result["next_cursor"] is None
+        assert await search_past_sessions(
+            context, action="read", session_id=session_id, cursor="invalid"
+        ) == {"status": "invalid_request"}
+        assert await search_past_sessions(context, action="list", cursor="a" * 129) == {
+            "status": "invalid_request"
+        }

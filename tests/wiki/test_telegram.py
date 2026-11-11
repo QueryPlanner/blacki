@@ -14,9 +14,11 @@ from blacki.agent import create_agent, create_app
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import AdkRuntime
 from blacki.telegram import TelegramConfig
+from blacki.telegram.album_buffer import _BufferedAlbum
 from blacki.telegram.api import TelegramApiClient
 from blacki.telegram.bot import TelegramBot
-from blacki.telegram.types import Update
+from blacki.telegram.transcription import CloudflareWhisperTranscriber
+from blacki.telegram.types import ChatType, PhotoSize, Update, Voice
 from blacki.wiki.storage import WikiStore
 from blacki.wiki.tools import TOOL_NAMES, WikiTurn
 
@@ -164,7 +166,7 @@ async def test_text_turns_belong_only_to_the_owners_private_chat(
         "hello", 7, chat_type=chat_type, sender=sender, forwarded=forwarded
     ).message
     assert message is not None
-    turn = bot._wiki_text_turn(message)
+    turn = bot._wiki_message_turn(message)
     if expected_message_id == "none":
         assert turn is None
     else:
@@ -239,3 +241,75 @@ async def test_scheduled_reminders_run_without_wiki_tools(
     await bot.handle_scheduled_reminder(reminder)
     assert "Reminder delivered" in api.send_message.call_args.kwargs["text"]
     assert store.list_pages(OWNER) == []
+
+
+class MediaWikiModel(BaseLlm):
+    """Record the effective model request for a private media turn."""
+
+    request: LlmRequest | None = None
+
+    async def generate_content_async(
+        self, llm_request: LlmRequest, stream: bool = False
+    ) -> AsyncGenerator[LlmResponse, None]:
+        self.request = llm_request
+        yield LlmResponse(
+            content=types.Content(role="model", parts=[types.Part(text="Media read.")])
+        )
+
+
+@pytest.mark.parametrize("media", ["voice", "album", "forwarded_album", "mixed_album"])
+async def test_media_turn_wiki_tool_registration(
+    store: WikiStore, monkeypatch: pytest.MonkeyPatch, media: str
+) -> None:
+    monkeypatch.setenv("BLACKI_WIKI_ENABLED", "1")
+    monkeypatch.delenv("TELEGRAM_ACCESS_CODE", raising=False)
+    assert (
+        store.edit(OWNER, "memory.md", "A remembered detail.", "", read=False).status
+        == "saved"
+    )
+    agent = create_agent(include_user_scoped_tools=True)
+    model = MediaWikiModel(model="test")
+    agent.model = model
+    runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
+    bot, api = _bot(store, runtime)
+    api.get_file.return_value = {"file_path": "telegram-media"}
+    if media == "voice":
+        transcriber = create_autospec(
+            CloudflareWhisperTranscriber, spec_set=True, instance=True
+        )
+        transcriber.transcribe.return_value = "A voice transcript."
+        bot._voice_transcriber = transcriber
+        api.download_file.return_value = b"voice"
+        update = _update("unused", 1)
+        assert update.message is not None
+        update.message.text = None
+        update.message.voice = Voice(file_id="voice", file_unique_id="1", duration=1)
+        await bot._safe_handle_update(update)
+    else:
+        api.download_file.return_value = bytes.fromhex(
+            "ffd8ffc0000b080001000101011100ffd9"
+        )
+        first = _update("unused", 1).message
+        second = _update(
+            "unused",
+            2,
+            forwarded=media == "forwarded_album",
+            sender=99 if media == "mixed_album" else OWNER,
+        ).message
+        assert first is not None and second is not None
+        for message in (first, second):
+            message.photo = [
+                PhotoSize(file_id="photo", file_unique_id="1", width=1, height=1)
+            ]
+        await bot._handle_album_turn(
+            _BufferedAlbum(OWNER, None, "album", ChatType.PRIVATE, [first, second])
+        )
+
+    request = model.request
+    assert request is not None and request.config is not None
+    if media == "mixed_album":
+        assert TOOL_NAMES.isdisjoint(request.tools_dict)
+        assert "<owner_memory>" not in str(request.config.system_instruction)
+    else:
+        assert request.tools_dict.keys() >= TOOL_NAMES
+        assert "A remembered detail." in str(request.config.system_instruction)

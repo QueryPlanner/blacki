@@ -71,9 +71,7 @@ def contains_secret(text: str) -> bool:
     return _SECRET_PATTERN.search(text) is not None
 
 
-def apply_edit(
-    current: str, new_text: str, old_text: str, *, path: str = ""
-) -> str:
+def apply_edit(current: str, new_text: str, old_text: str, *, path: str = "") -> str:
     """Return the page text after one edit, or raise EditError.
 
     An empty old_text appends new_text on its own line. A non-empty old_text

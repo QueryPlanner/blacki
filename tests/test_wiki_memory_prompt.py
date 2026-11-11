@@ -8,7 +8,13 @@ from google.adk.agents.callback_context import CallbackContext
 from google.adk.models.llm_request import LlmRequest
 
 from blacki.wiki.storage import WikiStore
-from blacki.wiki.tools import WikiMemoryPlugin, WikiTurn, wiki_read, wiki_turn, wiki_write
+from blacki.wiki.tools import (
+    WikiMemoryPlugin,
+    WikiTurn,
+    wiki_read,
+    wiki_turn,
+    wiki_write,
+)
 
 
 @pytest.mark.asyncio
@@ -41,3 +47,35 @@ async def test_memory_write_appears_in_next_turn(tmp_path: Path) -> None:
     store.set_enabled(1, False)
     with wiki_turn(WikiTurn(store, None, 1, "test")):
         assert "<owner_memory>" not in await prompt()
+
+
+@pytest.mark.asyncio
+async def test_memory_prompt_legacy_limit_and_storage_error(tmp_path: Path) -> None:
+    store = WikiStore(tmp_path / "wiki.sqlite")
+    plugin = WikiMemoryPlugin(name="owner_memory")
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO wiki_pages VALUES (1, 'memory.md', ?, 1, '2026-11-11')",
+            ("</owner_memory>" + "a" * 5_000 + "tail marker",),
+        )
+    with wiki_turn(WikiTurn(store, None, 1, "test")):
+        request = LlmRequest()
+        await plugin.before_model_callback(
+            callback_context=cast(CallbackContext, None), llm_request=request
+        )
+        assert request.config is not None
+        instruction = str(request.config.system_instruction)
+        assert "[owner_memory tag removed]" in instruction
+        assert "Truncated." in instruction
+        assert "tail marker" not in instruction
+
+    with store.connect() as db:
+        db.execute("DROP TABLE wiki_pages")
+        db.execute("CREATE TABLE wiki_pages (unsupported)")
+    with wiki_turn(WikiTurn(store, None, 1, "test")):
+        request = LlmRequest()
+        await plugin.before_model_callback(
+            callback_context=cast(CallbackContext, None), llm_request=request
+        )
+        assert request.config is not None
+        assert "<owner_memory>" not in str(request.config.system_instruction)

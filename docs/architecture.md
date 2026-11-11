@@ -81,7 +81,14 @@ timezone after the other prompt context. Before the timezone, private Telegram
 turns with wiki access include up to 5,000 characters of the owner's
 `memory.md`. The first model call loads the page. Tool calls and retries reuse
 that copy for the turn, and the next Telegram turn loads the latest saved page.
-Use `wiki_read` before editing the page with `wiki_write`. The Telegram runtime derives an opaque
+Use `wiki_read` before editing the page with `wiki_write`.
+
+The private history tool `search_past_sessions` can search by query, list
+sessions across Telegram topics, or read a session's stored transcript in
+chronological order. List and read results provide a cursor for the next
+page. Sessions from before `/reset` remain available while retained in SQLite.
+
+The Telegram runtime derives an opaque
 OpenRouter routing ID from each versioned ADK session. Tool calls reuse that ID
 and `/reset` starts a new one. The cost ledger records cache reads and writes,
 the resolved model, and the selected provider when OpenRouter reports them.
