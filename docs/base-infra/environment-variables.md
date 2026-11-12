@@ -250,13 +250,24 @@ stored object remains available for a later restore.
 | `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental` | Use the experimental OpenTelemetry GenAI attributes |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `SPAN_ONLY` | Put prompts, messages, and tool definitions on spans |
 | `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` | ADK's legacy request and response attributes; off to avoid a second copy |
-| `OTEL_EXPORTER_OTLP_*` | Unset | Also export through ADK's OTLP exporters |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | Base OTLP/HTTP endpoint; also exports traces, logs, and metrics |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | Unset | Set to `http/protobuf` for OpenObserve and most OTLP/HTTP backends |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Unset | OTLP headers, for example `Authorization=Basic%20<token>` |
 
 Blacki sets the three GenAI defaults at startup unless the variable is already
 set. The dashboard's model-call views need `gen_ai_latest_experimental` and a
 span content mode (`SPAN_ONLY` or `SPAN_AND_EVENT`); startup logs a warning
 otherwise. `SPAN_AND_EVENT` also copies the content into
-`blacki-telemetry.log`. See [Observability](observability.md).
+`blacki-telemetry.log`.
+
+Setting `OTEL_EXPORTER_OTLP_ENDPOINT` enables ADK's OTLP exporters for all
+three signals and keeps the local files active. The exporter appends
+`/v1/traces`, `/v1/logs`, and `/v1/metrics`; do not add a trailing slash. To
+export only some signals, set the signal-specific
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` or `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`
+instead; those values are used verbatim and must include `/v1/...`. See
+[Observability](observability.md) for OpenObserve examples and the privacy
+boundary.
 
 ## Precedence
 

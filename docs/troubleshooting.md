@@ -70,8 +70,9 @@ permission problem, or an exception while an enabled integration starts.
 ## Startup fails with "no OTLP exporter package"
 
 An `OTEL_EXPORTER_OTLP_*` endpoint is set, so ADK tries to add its OTLP
-exporters, but the package is not installed. Remove the variables to keep the
-local files only, or install `opentelemetry-exporter-otlp-proto-http`.
+exporters, but `opentelemetry-exporter-otlp-proto-http` is missing. It is a
+declared dependency, so this normally means a custom image removed it. Reinstall
+the package or unset the endpoint variables to keep the local files only.
 
 ## The dashboard shows no model calls
 
