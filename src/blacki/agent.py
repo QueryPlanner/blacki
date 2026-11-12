@@ -12,6 +12,7 @@ from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
+from google.adk.plugins.logging_plugin import LoggingPlugin
 
 from .models.factory import build_model, normalize_model_for_openrouter
 from .models.inference import (
@@ -22,15 +23,10 @@ from .models.inference import (
     load_inference_profile,
 )
 from .observability.lifecycle import LoggingCallbacks
-from .observability.privacy_logging import PrivacyAwareLoggingPlugin
 from .prompts.instructions import (
     TemporalContextPlugin,
     return_description_root,
     return_instruction_root,
-)
-from .security.tool_privacy import (
-    configure_private_tool_privacy,
-    private_tool_privacy_enabled,
 )
 from .telegram.progress_callbacks import (
     block_telegram_tool_retry,
@@ -225,11 +221,8 @@ def create_app(agent: LlmAgent | None = None) -> App:
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         *([WikiMemoryPlugin(name="owner_memory")] if wiki_tools_enabled else []),
         TemporalContextPlugin(),
+        LoggingPlugin(),
     ]
-    if not private_tool_privacy_enabled():
-        plugins.append(PrivacyAwareLoggingPlugin())
-    else:
-        logger.info("ADK content logging plugin disabled in private-tool mode")
 
     return App(
         name="blacki",
@@ -247,7 +240,6 @@ def create_app(agent: LlmAgent | None = None) -> App:
 
 
 _find_and_load_dotenv()
-configure_private_tool_privacy()
 
 root_agent = create_agent(include_user_scoped_tools=False)
 

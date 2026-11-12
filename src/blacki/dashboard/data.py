@@ -22,11 +22,21 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from ..observability.attributes import TRACE_ATTRIBUTE_ALLOWLIST
 from ..observability.ledger import (
     LedgerSummary,
     UsageLedgerSnapshot,
     fixed_cost_to_usd,
     read_usage_ledger,
+)
+from ..observability.redaction import (
+    BEARER_RE as _BEARER_RE,
+)
+from ..observability.redaction import (
+    KEY_VALUE_SECRET_RE as _KEY_VALUE_SECRET_RE,
+)
+from ..observability.redaction import (
+    TELEGRAM_TOKEN_RE as _TELEGRAM_TOKEN_RE,
 )
 from .models import (
     DEGRADED_DATABASE_WARNING,
@@ -39,7 +49,6 @@ from .models import (
     MISSING_EVENTS_WARNING,
     MISSING_TELEMETRY_WARNING,
     MISSING_TRACES_WARNING,
-    TRACE_ATTRIBUTE_ALLOWLIST,
     JsonObject,
     bounded_search,
     clamp_limit,
@@ -51,14 +60,6 @@ _SESSION_VERSION_RE = re.compile(r"^(?P<prefix>.+)-v(?P<version>[0-9]+)$")
 _TELEGRAM_DIRECT_USER_ID_RE = re.compile(r"^telegram-chat-(?P<user_id>[0-9]+)$")
 _ABSOLUTE_PATH_RE = re.compile(
     r"(?<![A-Za-z0-9_])/(?:Users|home|var|tmp|private|app|workspace|opt|srv|etc)/[^\s\"']+"
-)
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
-_TELEGRAM_TOKEN_RE = re.compile(r"\b[0-9]{6,12}:[A-Za-z0-9_-]{20,}\b")
-_KEY_VALUE_SECRET_RE = re.compile(
-    r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
-    r"client[_-]?secret|password|passwd|secret|authorization|cookie|"
-    r"telegram[_-]?bot[_-]?token|bot[_-]?token|api[_-]?token|token)\b\s*[:=]\s*)"
-    r"(?:\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
 )
 _SENSITIVE_KEYS = frozenset(
     {

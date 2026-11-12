@@ -101,7 +101,9 @@ def _old_prompt(text: str, **attributes: object) -> dict[str, object]:
 
 
 def _write_spans(path: Path, spans: list[dict[str, object]]) -> None:
-    (path / "blacki-traces.log").write_text(
+    trace_dir = path / "traces"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    (trace_dir / "2024-10-26.jsonl").write_text(
         "\n".join(map(json.dumps, spans)) + "\n", encoding="utf-8"
     )
 
@@ -222,7 +224,7 @@ def test_private_routes_available_by_default_on_supported_hosts(
 
 
 def test_private_routes_enforce_host_and_browser_boundary(client: TestClient) -> None:
-    for path in ("context", "wiki"):
+    for path in ("context", "wiki", "logs"):
         url = "/dashboard/api/" + path
         for headers in (
             {"Host": "foreign.example", "X-Forwarded-Host": "localhost"},
@@ -416,3 +418,200 @@ def test_wiki_distinguishes_empty_unknown_owner_and_unreadable_data(
     }
     path.write_text("not a database", encoding="utf-8")
     assert client.get(url, params={"user_id": USER}).json() == {"status": "unavailable"}
+
+
+def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) -> None:
+    """The private view reads prompt and tools from ADK's native span attribute."""
+    request = {
+        "model": "openrouter/example",
+        "config": {
+            "system_instruction": {
+                "role": "system",
+                "parts": [{"text": "ADK system prompt."}],
+            },
+            "tools": [
+                {
+                    "function_declarations": [
+                        {
+                            "name": "read_file",
+                            "description": "Read a file.",
+                            "parameters": {"type": "object"},
+                        }
+                    ]
+                }
+            ],
+        },
+        "contents": [{"role": "user", "parts": [{"text": "User message."}]}],
+    }
+    _write_spans(
+        files,
+        [
+            _span(
+                1,
+                {
+                    "gcp.vertex.agent.invocation_id": "inv-a",
+                    "gcp.vertex.agent.session_id": "session-v1",
+                    "gcp.vertex.agent.llm_request": json.dumps(request),
+                },
+            )
+        ],
+    )
+    params = {"user_id": USER, "session_id": "session-v1"}
+    listing = client.get("/dashboard/api/context", params=params).json()
+    assert listing["total"] == 1
+
+    detail = client.get(
+        "/dashboard/api/context",
+        params=params | {"trace_id": TRACE, "span_id": f"{1:016x}"},
+    ).json()["capture"]
+    assert detail["system_prompt"] == "ADK system prompt."
+    assert detail["tools"] == [
+        {
+            "name": "read_file",
+            "description": "Read a file.",
+            "parameters": {"type": "object"},
+        }
+    ]
+    assert detail["partial_tools"] is False
+    assert "User message." not in json.dumps(detail)
+
+
+def test_adk_prompt_extraction_handles_all_content_shapes() -> None:
+    """ADK request content can be a string, content object, or list."""
+    from blacki.dashboard.private_data import _prompt
+
+    def attributes(request: object) -> dict[str, object]:
+        return {"gcp.vertex.agent.llm_request": json.dumps(request)}
+
+    assert _prompt(attributes({"config": {"system_instruction": "plain"}})) == "plain"
+    assert (
+        _prompt(attributes({"config": {"system_instruction": {"text": "flat"}}}))
+        == "flat"
+    )
+    assert (
+        _prompt(
+            attributes(
+                {
+                    "config": {
+                        "system_instruction": [
+                            {"parts": [{"text": "first"}]},
+                            {"text": "second"},
+                        ]
+                    }
+                }
+            )
+        )
+        == "first\nsecond"
+    )
+    assert (
+        _prompt(
+            attributes(
+                {
+                    "config": {"system_instruction": {}},
+                    "contents": [
+                        {"role": "user", "parts": [{"text": "ignored"}]},
+                        {"role": "system", "parts": [{"text": "system fallback"}]},
+                    ],
+                }
+            )
+        )
+        == "system fallback"
+    )
+
+
+def test_adk_tool_extraction_marks_partial_definitions() -> None:
+    """Malformed tool declarations are reported as a partial list."""
+    from blacki.dashboard.private_data import _tools
+
+    def attributes(tools: object) -> dict[str, object]:
+        return {
+            "gcp.vertex.agent.llm_request": json.dumps({"config": {"tools": tools}})
+        }
+
+    assert _tools(attributes({"not": "a list"})) == ([], False)
+    assert _tools(attributes([{"not_function_declarations": []}])) == ([], True)
+    assert _tools(
+        attributes([{"function_declarations": [{"description": "no name"}]}])
+    ) == ([], True)
+    assert _tools(
+        attributes(
+            [
+                {
+                    "function_declarations": [
+                        {"name": "no_description", "parameters": {"type": "object"}}
+                    ]
+                }
+            ]
+        )
+    ) == (
+        [
+            {
+                "name": "no_description",
+                "description": "",
+                "parameters": {"type": "object"},
+            }
+        ],
+        False,
+    )
+
+
+def test_trace_directory_scan_handles_io_and_partial_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory error or one unreadable file degrades without crashing."""
+    from blacki.dashboard import private_data
+    from blacki.dashboard.data import _JsonlScan
+
+    def raise_oserror(*_args: object, **_kwargs: object) -> None:
+        raise OSError("denied")
+
+    monkeypatch.setattr(Path, "glob", raise_oserror)
+    assert private_data._scan_trace_dir_sync(tmp_path).unavailable is True
+
+    monkeypatch.undo()
+    (tmp_path / "a.jsonl").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text("{}\n", encoding="utf-8")
+    real_scan = private_data._scan_jsonl_sync
+
+    def selective_scan(path: Path) -> _JsonlScan:
+        if path.name == "a.jsonl":
+            return _JsonlScan((), 0, 0, 0, unavailable=True)
+        return real_scan(path)
+
+    monkeypatch.setattr(private_data, "_scan_jsonl_sync", selective_scan)
+    scan = private_data._scan_trace_dir_sync(tmp_path)
+    assert scan.unavailable is False
+    assert scan.accepted == 1
+
+
+def test_trace_directory_scan_reports_empty_directory(tmp_path: Path) -> None:
+    """An empty daily trace file leaves the capture view unavailable."""
+    from blacki.dashboard.private_data import _scan_trace_dir_sync
+
+    (tmp_path / "empty.jsonl").write_text("", encoding="utf-8")
+
+    assert _scan_trace_dir_sync(tmp_path).unavailable is True
+
+
+def test_adk_prompt_extraction_falls_back_when_parts_or_contents_are_unusable() -> None:
+    """Malformed parts or contents do not fabricate a system prompt."""
+    from blacki.dashboard.private_data import _prompt
+
+    def attributes(request: object) -> dict[str, object]:
+        return {"gcp.vertex.agent.llm_request": json.dumps(request)}
+
+    assert (
+        _prompt(attributes({"config": {"system_instruction": {"parts": [{}]}}})) == ""
+    )
+    assert _prompt(attributes({"config": {}, "contents": "not-a-list"})) == ""
+    assert (
+        _prompt(
+            attributes(
+                {
+                    "config": {},
+                    "contents": [{"role": "user", "parts": [{"text": "user only"}]}],
+                }
+            )
+        )
+        == ""
+    )

@@ -6,23 +6,22 @@ import asyncio
 import json
 import re
 import sqlite3
-from collections import defaultdict
-from collections.abc import Iterator
+from collections import defaultdict, deque
+from collections.abc import Iterator, Mapping
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
+from ..observability.redaction import redact_secrets
 from ..wiki import wiki_configured
 from .data import (
-    _BEARER_RE,
-    _KEY_VALUE_SECRET_RE,
-    _TELEGRAM_TOKEN_RE,
     _as_dict,
     _iso_timestamp,
+    _JsonlScan,
     _scan_jsonl_sync,
     _trace_time,
 )
-from .models import JsonObject
+from .models import MAX_ACCEPTED_JSONL_RECORDS, JsonObject
 
 _TRACE_ID = re.compile(r"(?:0x)?[0-9a-f]{32}")
 _SPAN_ID = re.compile(r"(?:0x)?[0-9a-f]{16}")
@@ -39,10 +38,6 @@ _SESSION_KEYS = (
     "session.id",
 )
 _USER_KEYS = ("blacki.user_id", "user.id")
-_PROVIDER_SECRET = re.compile(
-    r"\b(?:sk-(?:or-v1-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{35}|"
-    r"ya29\.[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,})\b"
-)
 
 
 def valid_capture_id(trace_id: str, span_id: str) -> bool:
@@ -51,10 +46,7 @@ def valid_capture_id(trace_id: str, span_id: str) -> bool:
 
 
 def _redact(text: str) -> str:
-    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _TELEGRAM_TOKEN_RE.sub("[REDACTED]", text)
-    text = _PROVIDER_SECRET.sub("[REDACTED]", text)
-    return _KEY_VALUE_SECRET_RE.sub(r"\1[REDACTED]", text)
+    return redact_secrets(text)
 
 
 def _decode(value: Any) -> Any:
@@ -66,7 +58,53 @@ def _decode(value: Any) -> Any:
     return value
 
 
+def _content_text(value: Any) -> str:
+    """Extract text from a Gemini content value or a list of them."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, Mapping):
+        parts = value.get("parts")
+        if isinstance(parts, list):
+            texts = [
+                part["text"]
+                for part in parts
+                if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+            ]
+            if texts:
+                return "\n".join(texts)
+        text = value.get("text")
+        if isinstance(text, str):
+            return text
+    if isinstance(value, list):
+        return "\n".join(
+            text for item in value if (text := _content_text(item)).strip()
+        )
+    return ""
+
+
+def _adk_request(attributes: JsonObject) -> Mapping[str, Any] | None:
+    request = _decode(attributes.get("gcp.vertex.agent.llm_request"))
+    return request if isinstance(request, Mapping) else None
+
+
 def _prompt(attributes: JsonObject) -> str:
+    request = _adk_request(attributes)
+    if request is not None:
+        config = _as_dict(request.get("config"))
+        prompt = _content_text(config.get("system_instruction"))
+        if prompt.strip():
+            return prompt
+        contents = request.get("contents")
+        if isinstance(contents, list):
+            system_text = "\n".join(
+                text
+                for content in contents
+                if isinstance(content, Mapping) and content.get("role") == "system"
+                if (text := _content_text(content)).strip()
+            )
+            if system_text:
+                return system_text
+
     parts = _decode(attributes.get("gen_ai.system_instructions"))
     if isinstance(parts, list):
         texts = [
@@ -92,6 +130,37 @@ def _prompt(attributes: JsonObject) -> str:
 
 
 def _tools(attributes: JsonObject) -> tuple[list[JsonObject], bool]:
+    request = _adk_request(attributes)
+    if request is not None:
+        config = _as_dict(request.get("config"))
+        definitions = config.get("tools")
+        if isinstance(definitions, list):
+            tools: list[JsonObject] = []
+            partial = False
+            for definition in definitions:
+                declaration_list = _as_dict(definition).get("function_declarations")
+                if not isinstance(declaration_list, list):
+                    partial = True
+                    continue
+                for declaration in declaration_list:
+                    item = _as_dict(declaration)
+                    name, description = item.get("name"), item.get("description")
+                    if isinstance(name, str) and name:
+                        tools.append(
+                            {
+                                "name": _redact(name),
+                                "description": (
+                                    _redact(description)
+                                    if isinstance(description, str)
+                                    else ""
+                                ),
+                                "parameters": item.get("parameters") or {},
+                            }
+                        )
+                    else:
+                        partial = True
+            return tools, partial
+
     entries = sorted(
         (int(match[1]), _decode(value))
         for key, value in attributes.items()
@@ -113,6 +182,32 @@ def _tools(attributes: JsonObject) -> tuple[list[JsonObject], bool]:
             tools.append({"name": _redact(name), "description": _redact(description)})
     gaps = bool(entries) and [i for i, _ in entries] != list(range(len(entries)))
     return tools, len(tools) != len(definitions) or gaps
+
+
+def _scan_trace_dir_sync(path: Path) -> _JsonlScan:
+    """Scan the daily trace files, newest data winning inside the record cap."""
+    try:
+        files = sorted(path.glob("*.jsonl"))
+    except OSError:
+        return _JsonlScan((), 0, 0, 0, unavailable=True)
+    if not files:
+        return _JsonlScan((), 0, 0, 0, unavailable=True)
+
+    records: deque[dict[str, Any]] = deque(maxlen=MAX_ACCEPTED_JSONL_RECORDS)
+    accepted = invalid = oversized = 0
+    truncated = False
+    for file_path in files:
+        scan = _scan_jsonl_sync(file_path)
+        if scan.unavailable:
+            continue
+        accepted += scan.accepted
+        invalid += scan.invalid
+        oversized += scan.oversized
+        truncated = truncated or scan.truncated
+        records.extend(scan.records)
+    if accepted == 0 and not records:
+        return _JsonlScan((), 0, 0, 0, unavailable=True)
+    return _JsonlScan(tuple(records), accepted, invalid, oversized, truncated=truncated)
 
 
 def _span_key(record: JsonObject) -> tuple[str, str] | None:
@@ -207,7 +302,7 @@ class DashboardPrivateStore:
     ) -> JsonObject:
         if not self.sessions.is_file():
             return {"status": "unavailable"}
-        scan = _scan_jsonl_sync(self.traces)
+        scan = _scan_trace_dir_sync(self.traces)
         if scan.unavailable:
             return {"status": "trace_missing"}
 

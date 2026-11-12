@@ -51,7 +51,7 @@ and upgrade notes.
 | --- | --- | --- |
 | Tools, reminders, preferences, and Telegram state | `.adk_state/` | SQLite |
 | Private Telegram wiki | `.adk_state/wiki.db` | Enabled by default in private chats |
-| Application JSON logs and traces | `logs/` | Monitor and rotate these files |
+| Application JSON logs and traces | `logs/` | Logs rotate daily (14 days); trace files append |
 | ADK HTTP/web sessions | Not persisted | In-memory and reset on restart |
 
 Back up `.adk_state/` and `data/`. Keep `.env` private and never commit it.

@@ -81,7 +81,7 @@ def _client(
         app.include_router(create_dashboard_router(_env(tmp_path)))
     else:
         app.include_router(create_dashboard_router(_env(tmp_path), selected_store))
-    return TestClient(app), selected_store
+    return TestClient(app, base_url="http://localhost:8080"), selected_store
 
 
 def _assert_dashboard_headers(response: Any) -> None:

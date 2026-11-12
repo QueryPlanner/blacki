@@ -304,7 +304,7 @@ def create_dashboard_router(
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
     private_store = DashboardPrivateStore(
         _session_db_path(env),
-        get_log_dir() / "blacki-traces.log",
+        get_log_dir() / "traces",
         _tools_db_path(env).with_name("wiki.db"),
     )
 
@@ -485,11 +485,14 @@ def create_dashboard_router(
 
     @router.get("/api/logs")
     async def dashboard_logs(
+        request: Request,
         level: str | None = None,
         search: str | None = None,
         limit: str = str(_DEFAULT_LIMIT),
     ) -> JSONResponse:
         """List persisted JSON application logs."""
+        if (denial := _private_access(request)) is not None:
+            return denial
         try:
             level_value = _parse_text(level, max_length=32)
             search_value = _parse_text(search)

@@ -42,7 +42,7 @@ def _humanize_symbol(symbol: str) -> str:
     return escape_markdown_plain(normalized)
 
 
-def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str:
+def describe_tool(tool_name: str, args: dict[str, Any]) -> str:
     """Generate a human-readable present-participle progress phrase for a tool call.
 
     Produces strictly valid Telegram MarkdownV2 formatted strings with bold emphasis
@@ -51,14 +51,12 @@ def describe_tool(tool_name: str, args: dict[str, Any], *, private: bool) -> str
     Args:
         tool_name: Name of the tool being executed.
         args: Keyword arguments passed to the tool.
-        private: Whether the tool is user-private (if True, arguments are never
-            interpolated into the output string).
 
     Returns:
         A MarkdownV2-ready status description ending in '…'.
     """
     tool_name = meal_action_name(tool_name, args)
-    can_interpolate = not private and bool(args)
+    can_interpolate = bool(args)
 
     # 1. Search tools
     if tool_name in ("web_search", "brave_search", "exa_search"):

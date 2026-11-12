@@ -4,7 +4,6 @@
 import asyncio
 import contextlib
 import json
-import os
 import socket
 import sys
 from collections.abc import AsyncIterator, Generator
@@ -23,7 +22,6 @@ def mock_dependencies() -> Generator[MagicMock]:
         patch("google.adk.cli.fast_api.get_fast_api_app") as mock_get_app,
         patch("blacki.utils.initialize_environment") as mock_init_env,
         patch("blacki.observability.setup.configure_otel_resource"),
-        patch("openinference.instrumentation.google_adk.GoogleADKInstrumentor"),
         patch("blacki.observability.setup.setup_logging"),
         patch("blacki.observability.setup.setup_tracing"),
     ):
@@ -60,30 +58,23 @@ def test_server_session_service_uri_is_none(mock_dependencies: MagicMock) -> Non
     assert server.env.agent_dir == server.AGENT_DIR
 
 
-def test_server_configures_privacy_before_observability(
+def test_server_configures_observability_in_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Privacy settings must precede instrumentation and exporter setup."""
+    """Resource, logging, and tracing setup run in that order at startup."""
     sys.modules.pop("blacki.server", None)
     calls: list[str] = []
     mock_env = MagicMock()
     mock_env.agent_name = "order-test"
-    mock_env.log_level = "INFO"
+    mock_env.log_level = "DEBUG"
     mock_env.allow_origins_list = ["*"]
     mock_env.serve_web_interface = False
     mock_env.reload_agents = False
     mock_env.sqlite_path = None
 
-    def record_privacy() -> bool:
-        calls.append("privacy")
-        return False
-
     def record_resource(*, agent_name: str) -> None:
         _ = agent_name
         calls.append("resource")
-
-    def record_instrumentation() -> None:
-        calls.append("instrumentation")
 
     def record_logging(*, log_level: str) -> None:
         _ = log_level
@@ -96,97 +87,9 @@ def test_server_configures_privacy_before_observability(
         patch("google.adk.cli.fast_api.get_fast_api_app", return_value=FastAPI()),
         patch("blacki.utils.initialize_environment", return_value=mock_env),
         patch(
-            "blacki.security.tool_privacy.configure_private_tool_privacy",
-            side_effect=record_privacy,
-        ),
-        patch(
             "blacki.observability.setup.configure_otel_resource",
             side_effect=record_resource,
         ),
-        patch(
-            "openinference.instrumentation.google_adk.GoogleADKInstrumentor"
-        ) as instrumentor,
-        patch(
-            "blacki.observability.setup.setup_logging",
-            side_effect=record_logging,
-        ),
-        patch(
-            "blacki.observability.setup.setup_tracing",
-            side_effect=record_tracing,
-        ),
-    ):
-        instrumentor.return_value.instrument.side_effect = record_instrumentation
-        import blacki.server as server
-
-    assert server.private_tool_secure_mode is False
-    assert calls == ["privacy", "resource", "instrumentation", "logging", "tracing"]
-    monkeypatch.setitem(sys.modules, "blacki.server", server)
-
-
-def test_private_startup_disables_capture_before_observability(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Private mode sets capture flags before setup and skips instrumentation."""
-    monkeypatch.setenv("KOKORO_TTS_BASE_URL", "http://kokoro.internal")
-    monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", "true")
-    monkeypatch.setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
-    sys.modules.pop("blacki.server", None)
-    calls: list[str] = []
-    mock_env = MagicMock()
-    mock_env.agent_name = "private-order-test"
-    mock_env.log_level = "INFO"
-    mock_env.allow_origins_list = ["*"]
-    mock_env.serve_web_interface = False
-    mock_env.reload_agents = False
-    mock_env.sqlite_path = None
-    mock_env.agent_dir = "src"
-
-    from blacki.security.tool_privacy import (
-        configure_private_tool_privacy as real_configure_private_tool_privacy,
-    )
-
-    def record_privacy() -> bool:
-        result = real_configure_private_tool_privacy()
-        calls.append("privacy")
-        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
-        assert (
-            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-        )
-        return result
-
-    def record_resource(*, agent_name: str) -> None:
-        _ = agent_name
-        calls.append("resource")
-        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
-
-    def record_logging(*, log_level: str) -> None:
-        _ = log_level
-        calls.append("logging")
-        assert (
-            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-        )
-
-    def record_tracing() -> None:
-        calls.append("tracing")
-        assert os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
-        assert (
-            os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-        )
-
-    with (
-        patch("google.adk.cli.fast_api.get_fast_api_app", return_value=FastAPI()),
-        patch("blacki.utils.initialize_environment", return_value=mock_env),
-        patch(
-            "blacki.security.tool_privacy.configure_private_tool_privacy",
-            side_effect=record_privacy,
-        ),
-        patch(
-            "blacki.observability.setup.configure_otel_resource",
-            side_effect=record_resource,
-        ),
-        patch(
-            "openinference.instrumentation.google_adk.GoogleADKInstrumentor"
-        ) as instrumentor,
         patch(
             "blacki.observability.setup.setup_logging",
             side_effect=record_logging,
@@ -198,9 +101,7 @@ def test_private_startup_disables_capture_before_observability(
     ):
         import blacki.server as server
 
-    assert server.private_tool_secure_mode is True
-    assert calls == ["privacy", "resource", "logging", "tracing"]
-    instrumentor.return_value.instrument.assert_not_called()
+    assert calls == ["resource", "logging", "tracing"]
     monkeypatch.setitem(sys.modules, "blacki.server", server)
 
 
@@ -228,20 +129,6 @@ def _has_route(app: FastAPI, path: str) -> bool:
         if original_router is not None:
             pending.extend(getattr(original_router, "routes", ()))
     return False
-
-
-def test_server_skips_openinference_in_private_tool_mode(
-    mock_dependencies: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Private tools must take the no-content-instrumentation startup branch."""
-    monkeypatch.setenv("KOKORO_TTS_BASE_URL", "http://kokoro.internal")
-    if "blacki.server" in sys.modules:
-        del sys.modules["blacki.server"]
-
-    import blacki.server as server
-
-    assert server.private_tool_secure_mode is True
 
 
 @pytest.mark.asyncio

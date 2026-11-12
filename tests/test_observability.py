@@ -10,24 +10,34 @@ import sys
 import traceback
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from threading import Thread
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import grpc
 import pytest
+from opentelemetry import trace
 from opentelemetry.proto.collector.trace.v1 import (
     trace_service_pb2,
     trace_service_pb2_grpc,
 )
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+    InMemorySpanExporter,
+)
 
 from blacki.observability.setup import (
-    JSONFileSpanExporter,
+    FlatFileSpanExporter,
     JSONFormatter,
     _create_tracer_provider,
     _load_otlp_trace_config,
+    _span_end_day,
+    adk_span_content_capture_enabled,
     configure_otel_resource,
     get_log_dir,
     setup_logging,
@@ -169,14 +179,12 @@ def _request_span_names(
 def test_local_only_provider_writes_span_without_otlp(
     tmp_path: Path,
 ) -> None:
-    """Default mode writes local JSON and never constructs a network exporter."""
-    log_path = tmp_path / "traces.jsonl"
-
+    """Default mode writes slim and full local traces without a network exporter."""
     with (
         patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
         patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
     ):
-        provider, mode = _create_tracer_provider(log_path)
+        provider, mode = _create_tracer_provider(tmp_path)
         tracer = provider.get_tracer("test.local")
         with tracer.start_as_current_span("agent.local"):
             pass
@@ -186,8 +194,15 @@ def test_local_only_provider_writes_span_without_otlp(
     assert mode == "local"
     mock_grpc_exporter.assert_not_called()
     mock_http_exporter.assert_not_called()
-    written = [json.loads(line) for line in log_path.read_text().splitlines()]
-    assert [span["name"] for span in written] == ["agent.local"]
+    slim = [
+        json.loads(line)
+        for line in (tmp_path / "blacki-traces.log").read_text().splitlines()
+    ]
+    assert [span["name"] for span in slim] == ["agent.local"]
+    full_files = list((tmp_path / "traces").glob("*.jsonl"))
+    assert len(full_files) == 1
+    full = [json.loads(line) for line in full_files[0].read_text().splitlines()]
+    assert [span["name"] for span in full] == ["agent.local"]
 
 
 def test_otlp_export_reaches_local_grpc_collector(
@@ -209,7 +224,7 @@ def test_otlp_export_reaches_local_grpc_collector(
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
         "authorization=Bearer%20grpc-token",
     )
-    provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
+    provider, mode = _create_tracer_provider(tmp_path)
     try:
         tracer = provider.get_tracer("blacki.agent")
         with tracer.start_as_current_span("agent.turn") as span:
@@ -244,7 +259,7 @@ def test_otlp_export_reaches_local_http_collector(
         "OTEL_EXPORTER_OTLP_HEADERS",
         "authorization=Bearer%20test-token",
     )
-    provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
+    provider, mode = _create_tracer_provider(tmp_path)
     try:
         tracer = provider.get_tracer("blacki.agent")
         with tracer.start_as_current_span("agent.http-turn"):
@@ -645,21 +660,260 @@ def test_setup_logging_falls_back_to_stdout(
     assert "Continuing with stdout logging only" in capsys.readouterr().out
 
 
-def test_setup_tracing_returns_none_for_unwritable_directory() -> None:
-    """Tracing should degrade safely when its directory cannot be created."""
+def test_setup_tracing_installs_provider_for_unwritable_directory() -> None:
+    """Tracing still installs a provider so ADK cannot keep spans in memory."""
     blocked = Path("/blocked")
     with (
         patch("blacki.observability.setup.get_log_dir", return_value=blocked),
         patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
+        patch("blacki.observability.setup.trace.set_tracer_provider"),
     ):
         provider = setup_tracing()
 
-    assert provider is None
+    assert provider is not None
+    provider.shutdown()
 
 
-def test_json_span_exporter_reports_write_failure(tmp_path: Path) -> None:
+def test_flat_file_exporter_reports_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Local exporter failure is reported without crashing the application."""
-    exporter = JSONFileSpanExporter(str(tmp_path))
 
-    assert exporter.export([]).name == "FAILURE"
+    def fail_write(_path: Path, _lines: list[str]) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("blacki.observability.setup._append_private_lines", fail_write)
+    exporter = FlatFileSpanExporter(tmp_path)
+    span = _make_span("agent.failure")
+
+    assert exporter.export([span]).name == "FAILURE"
     exporter.shutdown()
+
+
+def _make_span(name: str) -> ReadableSpan:
+    """Create a completed in-memory span for exporter unit tests."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test.exporter")
+    with tracer.start_as_current_span(name):
+        pass
+    spans = exporter.get_finished_spans()
+    provider.shutdown()
+    assert len(spans) == 1
+    return spans[0]
+
+
+def _make_span_with(
+    name: str,
+    attributes: dict[str, Any] | None = None,
+    events: list[tuple[str, dict[str, Any]]] | None = None,
+) -> ReadableSpan:
+    """Create a completed span carrying the supplied attributes and events."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test.exporter")
+    with tracer.start_as_current_span(name) as span:
+        if attributes:
+            span.set_attributes(attributes)
+        for event_name, event_attributes in events or []:
+            span.add_event(event_name, attributes=event_attributes)
+    spans = exporter.get_finished_spans()
+    provider.shutdown()
+    return spans[0]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, True),
+        ("true", True),
+        ("TRUE", True),
+        ("1", True),
+        ("0", False),
+        ("false", False),
+        ("FALSE", False),
+    ],
+)
+def test_adk_span_content_capture_defaults_on(
+    value: str | None,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADK span content capture is opt-out and on by default."""
+    if value is None:
+        monkeypatch.delenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", raising=False)
+    else:
+        monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", value)
+
+    assert adk_span_content_capture_enabled() is expected
+
+
+def test_exporter_keeps_slim_and_full_traces_separate(tmp_path: Path) -> None:
+    """The slim overview omits content while the daily full trace retains it."""
+    exporter = FlatFileSpanExporter(tmp_path)
+    span = _make_span_with(
+        "call_llm",
+        {
+            "gen_ai.request.model": "openrouter/test",
+            "gcp.vertex.agent.llm_request": '{"contents": "secret prompt"}',
+            "gen_ai.tool.name": "should-not-be-allowlisted",
+        },
+        [("content.event", {"payload": "secret event"})],
+    )
+
+    assert exporter.export([span]).name == "SUCCESS"
+
+    slim = json.loads((tmp_path / "blacki-traces.log").read_text())
+    assert slim["attributes"] == {
+        "gen_ai.request.model": "openrouter/test",
+        "gen_ai.tool.name": "should-not-be-allowlisted",
+    }
+    assert slim["events"] == []
+    assert "secret" not in json.dumps(slim)
+
+    full_files = list((tmp_path / "traces").glob("*.jsonl"))
+    assert len(full_files) == 1
+    full = json.loads(full_files[0].read_text())
+    assert full["attributes"]["gcp.vertex.agent.llm_request"] == (
+        '{"contents": "secret prompt"}'
+    )
+    assert full["events"] == [
+        {
+            "name": "content.event",
+            "timestamp": full["events"][0]["timestamp"],
+            "attributes": {"payload": "secret event"},
+        }
+    ]
+
+
+def test_trace_files_are_owner_readable_only(tmp_path: Path) -> None:
+    """Trace and slim files are created with mode 0600."""
+    exporter = FlatFileSpanExporter(tmp_path)
+    exporter.export([_make_span("agent.private")])
+
+    slim_mode = (tmp_path / "blacki-traces.log").stat().st_mode & 0o777
+    full_file = next((tmp_path / "traces").glob("*.jsonl"))
+    assert slim_mode == 0o600
+    assert full_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_daily_trace_file_uses_utc_end_date(tmp_path: Path) -> None:
+    """Full traces are grouped into UTC-dated files."""
+    exporter = FlatFileSpanExporter(tmp_path)
+    span = _make_span("agent.dated")
+    exporter.export([span])
+
+    end = span.end_time
+    assert end is not None
+    expected = datetime.fromtimestamp(end / 1e9, tz=UTC).date().isoformat()
+    assert (tmp_path / "traces" / f"{expected}.jsonl").is_file()
+
+
+def test_json_formatter_redacts_and_correlates_trace_ids() -> None:
+    """Structured logs redact credentials and include the active trace IDs."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test.logging")
+    record = logging.LogRecord(
+        name="blacki.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="token=super-secret-value",
+        args=(),
+        exc_info=None,
+    )
+    with tracer.start_as_current_span("log.parent"):
+        formatted = json.loads(JSONFormatter().format(record))
+        context = trace.get_current_span().get_span_context()
+    provider.shutdown()
+
+    assert formatted["message"] == "token=[REDACTED]"
+    assert formatted["trace_id"] == format(context.trace_id, "032x")
+    assert formatted["span_id"] == format(context.span_id, "016x")
+
+
+def test_setup_logging_rotates_at_utc_midnight(
+    tmp_path: Path,
+    preserve_logging_configuration: None,
+) -> None:
+    """The file handler rotates daily in UTC and keeps fourteen backups."""
+    with patch("blacki.observability.setup.get_log_dir", return_value=tmp_path):
+        setup_logging("DEBUG")
+
+    handlers = [
+        handler
+        for handler in logging.getLogger().handlers
+        if isinstance(handler, TimedRotatingFileHandler)
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    assert handler.when == "MIDNIGHT"
+    assert handler.utc is True
+    assert handler.backupCount == 14
+    assert Path(handler.baseFilename) == tmp_path / "blacki-telemetry.log"
+
+
+def test_span_end_day_falls_back_to_current_utc_date() -> None:
+    """A span without timestamps is filed under today's UTC date."""
+    from types import SimpleNamespace
+
+    span = SimpleNamespace(end_time=None, start_time=None)
+    expected = datetime.now(tz=UTC).date().isoformat()
+    assert _span_end_day(span) == expected  # type: ignore[arg-type]
+
+
+def test_exporter_handles_empty_batches(tmp_path: Path) -> None:
+    """An empty export is a success and writes no files."""
+    exporter = FlatFileSpanExporter(tmp_path)
+
+    assert exporter.export([]).name == "SUCCESS"
+    assert not (tmp_path / "blacki-traces.log").exists()
+
+
+def test_redaction_filter_rewrites_messages_with_secrets() -> None:
+    """The logging filter rewrites a rendered record before a handler writes it."""
+    from blacki.observability.redaction import RedactionFilter
+
+    record = logging.LogRecord(
+        name="blacki.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="api_key=%s",
+        args=("sk-or-v1-" + "a" * 24,),
+        exc_info=None,
+    )
+
+    assert RedactionFilter().filter(record) is True
+    assert record.args == ()
+    assert "sk-or-v1-" not in record.msg
+    assert "[REDACTED]" in record.msg
+
+
+def test_redaction_filter_keeps_unparsable_records() -> None:
+    """A record whose arguments cannot be formatted is passed through untouched."""
+    from blacki.observability.redaction import RedactionFilter
+
+    record = logging.LogRecord(
+        name="blacki.test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="%d",
+        args=("not-an-int",),
+        exc_info=None,
+    )
+
+    assert RedactionFilter().filter(record) is True
+
+
+def test_iso_timestamp_returns_none_for_missing_nanoseconds() -> None:
+    """A span without a timestamp maps to a null ISO value."""
+    from blacki.observability.setup import _iso_timestamp
+
+    assert _iso_timestamp(None) is None

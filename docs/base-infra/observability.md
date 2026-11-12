@@ -10,8 +10,15 @@ Inside the container:
 
 | File | Contents |
 | --- | --- |
-| `/app/logs/blacki-telemetry.log` | JSON application log records |
-| `/app/logs/blacki-traces.log` | JSON Lines OpenTelemetry spans |
+| `/app/logs/blacki-telemetry.log` | JSON application log records (rotated) |
+| `/app/logs/blacki-traces.log` | Slim JSON Lines span overview (no content) |
+| `/app/logs/traces/YYYY-MM-DD.jsonl` | Full JSON Lines spans for that UTC day |
+
+The slim overview keeps only allowlisted metadata such as model, token, and
+cost attributes. The daily files keep the complete span attributes, including
+the prompt, tool declarations, tool arguments, and tool responses that ADK
+records. Both trace files are created with mode `0600` and are intended for the
+private operator dashboard.
 
 Compose maps `/app/logs` to `./logs` on the host. Human-readable application
 logs also go to stdout and are available through:
@@ -25,13 +32,12 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 At startup Blacki:
 
 1. sets `OTEL_RESOURCE_ATTRIBUTES`;
-2. instruments Google ADK with `GoogleADKInstrumentor` unless a private-tool
-   mode is enabled;
-3. configures stdout and JSON file logging; and
-4. registers a `TracerProvider` with `JSONFileSpanExporter`; and
-5. adds the selected OTLP exporter when a validated trace endpoint is configured.
+2. configures stdout and rotating JSON file logging;
+3. registers a `TracerProvider` with `FlatFileSpanExporter`; and
+4. adds the selected OTLP exporter when a validated trace endpoint is configured.
 
-The resource contains:
+Blacki relies on ADK's built-in span instrumentation. It does not install the
+OpenInference Google ADK instrumentor. The resource contains:
 
 | Attribute | Source |
 | --- | --- |
@@ -42,15 +48,17 @@ The resource contains:
 
 ## Message content
 
-Both `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` and
-`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS=false` are required to disable current
-and legacy ADK content capture. Capturing prompts and responses can expose
-personal data, credentials, and tool results.
+`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` is on by default. Blacki keeps full
+prompts, tool declarations, tool calls, and model responses in the local daily
+trace files so the private dashboard can show exactly what the model received
+and returned. Only the slim overview omits content.
 
-When any private-tool integration is configured, Blacki forces both values to
-`false` and disables the OpenInference Google ADK instrumentor. The ADK session
-database still retains tool calls and results so interrupted turns and
-confirmations can resume correctly.
+Content capture is a deliberate operator feature, not an external export.
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` stays `false` so the same
+content is not duplicated into OTel log events. Treat the local log directory as
+private user data: it can contain personal messages, tool arguments, and tool
+results. Common credential patterns are redacted before writes, but redaction is
+best-effort and is not a substitute for protecting the log volume.
 
 ## Remote OTLP export
 
@@ -91,8 +99,10 @@ configuration error. The application logs only `local`, `local+otlp-grpc`, or
 
 ## Retention
 
-The application files append and have no built-in size or time rotation.
-Docker's stdout log-driver rotation does not rotate `./logs/*.log`.
+`blacki-telemetry.log` rotates at UTC midnight and keeps fourteen daily backups
+(`blacki-telemetry.log.YYYY-MM-DD`). The slim trace log and the daily
+`traces/YYYY-MM-DD.jsonl` files are append-only and are not rotated by the
+application. Docker's stdout log-driver rotation does not rotate `./logs/*.log`.
 
 Monitor them:
 
@@ -100,32 +110,33 @@ Monitor them:
 du -sh logs
 ```
 
-Configure host-side retention before long-running use. Archive or clear files
-only during a maintenance window after preserving anything needed for an
-incident.
+Configure host-side retention for the trace directory before long-running use.
+Archive or clear files only during a maintenance window after preserving
+anything needed for an incident.
 
 ## Failure behavior
 
 If the application cannot create its log directory or file handler, it reports
-the error and continues with stdout logging. Treat that as degraded
-observability, not a successful persistence setup.
+the error and continues with stdout logging. Tracing still installs a
+`TracerProvider` so ADK cannot fall back to an unbounded in-memory exporter.
+Treat either condition as degraded observability, not a successful persistence
+setup.
 
 ## Private dashboard
 
 The server always mounts the read-only operator dashboard at `/dashboard`. It
-reads the local ADK session database, application JSON logs, and JSON Lines
+reads the local ADK session database, application JSON logs, and daily JSON Lines
 traces from the same persistent volumes. The dashboard can filter users and
 sessions and inspect individual conversations and traces;
 Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
-The Sessions view can show the recorded system instructions and tool
-descriptions for an individual model request. It verifies each capture against
-the selected ADK session and filters common credential patterns. The dashboard
-uses existing local captures. Blacki's normal private-tool settings suppress
-content capture, so recent requests can have conversation history and trace
-metadata with no captured system instructions.
+The Sessions view reads the system instruction and tool declarations from ADK's
+`gcp.vertex.agent.llm_request` span attribute in the daily trace files. It
+verifies each capture against the selected ADK session and filters common
+credential patterns. Because content capture is on by default, recent requests
+normally include their captured system instructions and tool descriptions.
 
 The User wiki tab lists the saved Markdown pages for the selected direct
 Telegram user and shows the selected page as plain text. It respects the

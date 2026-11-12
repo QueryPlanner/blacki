@@ -17,7 +17,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
-from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+from opentelemetry.sdk.trace import TracerProvider
 
 from .browser_takeover.routes import create_browser_takeover_router
 from .config.paths import agent_root
@@ -30,7 +30,6 @@ from .observability.setup import (
     shutdown_tracing,
 )
 from .runtime.adk import create_adk_runtime
-from .security.tool_privacy import configure_private_tool_privacy
 from .utils import ConfigurationError, ServerEnv, initialize_environment, validation
 
 logger = logging.getLogger(__name__)
@@ -38,17 +37,13 @@ logger = logging.getLogger(__name__)
 env = initialize_environment(ServerEnv)
 AGENT_DIR = str(agent_root())
 env.agent_dir = AGENT_DIR
-private_tool_secure_mode = configure_private_tool_privacy()
 
 configure_otel_resource(
     agent_name=env.agent_name,
 )
 
-if not private_tool_secure_mode:
-    GoogleADKInstrumentor().instrument()
-
 setup_logging(log_level=env.log_level)
-_tracer_provider = setup_tracing()
+_tracer_provider: TracerProvider | None = setup_tracing()
 
 if TYPE_CHECKING:
     from .telegram.bot import TelegramBot

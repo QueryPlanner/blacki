@@ -24,8 +24,6 @@ from blacki.container import AppContainer, reset_container_for_tests, set_contai
 from blacki.health.config import GOOGLE_HEALTH_NUTRITION_SCOPES
 from blacki.models.openrouter_request import build_chat_request
 from blacki.observability.lifecycle import LoggingCallbacks
-from blacki.observability.privacy_logging import PrivacyAwareLoggingPlugin
-from blacki.security.tool_privacy import is_private_tool
 from blacki.telegram.progress import describe_tool
 from blacki.telegram.progress_callbacks import (
     block_telegram_tool_retry,
@@ -358,7 +356,7 @@ async def test_registry_exposes_discovery_only_with_meals(
     assert not any(getattr(tool, "__name__", "") == "log_meal" for tool in enabled)
 
 
-async def test_outer_hooks_keep_action_identity_and_redact_payloads(
+async def test_outer_hooks_keep_action_identity(
     meal_context: ToolContext,
     meals: MealsTool,
     caplog: pytest.LogCaptureFixture,
@@ -369,16 +367,10 @@ async def test_outer_hooks_keep_action_identity_and_redact_payloads(
         "action": "log_meal",
         "arguments": {"description": "private-food", "estimated_calories": 100},
     }
-    assert is_private_tool(meals)
-    assert is_private_tool(DescribeActionTool(meals))
-    assert describe_tool(meals.name, args, private=True) == "Logging meal…"
-    assert describe_tool("meals", {"action": []}, private=True) == "Working on meals…"
-    plugin = PrivacyAwareLoggingPlugin()
+    assert describe_tool(meals.name, args) == "Logging meal…"
+    assert describe_tool("meals", {"action": []}) == "Working on meals…"
     callbacks = LoggingCallbacks()
     callbacks.before_tool(meals, args, meal_context)
-    await plugin.before_tool_callback(
-        tool=meals, tool_args=args, tool_context=meal_context
-    )
     recover_telegram_tool_error(
         meals, args, meal_context, RuntimeError("private-provider-error")
     )
@@ -389,8 +381,8 @@ async def test_outer_hooks_keep_action_identity_and_redact_payloads(
         )
         is None
     )
-    assert "private-food" not in caplog.text + capsys.readouterr().out
-    assert "private-provider-error" not in caplog.text
+    # Tool payloads are captured by design now that privacy mode is gone.
+    assert "private-food" in caplog.text + capsys.readouterr().out
 
 
 class SummaryLlm(BaseLlm):

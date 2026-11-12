@@ -60,7 +60,7 @@ regular audio files continue to use the existing file-upload behavior. If the
 credentials are absent, Blacki reports that voice transcription is not
 configured instead of failing startup. The raw voice bytes are transient; the
 resulting transcript is handled like ordinary Telegram text and follows the
-existing conversation-history and logging/privacy settings.
+existing conversation-history and logging settings.
 
 ### Optional Kokoro speech replies
 
@@ -79,10 +79,10 @@ the current Telegram chat or topic. Synthesis and upload are serialized so only
 one audio payload is retained at a time. The tool is not registered on the
 public ADK HTTP runner.
 
-When this private tool is configured, Blacki disables content-rich ADK and
-OpenInference logging. Tool notifications may show that speech synthesis is
-running, but never include the text being spoken. ADK session history still
-retains the model's tool call and arguments.
+When this tool is configured, tool notifications may show that speech synthesis
+is running and can include the requested text. Full prompts, tool arguments, and
+responses are kept in the local daily trace files for the private dashboard. ADK
+session history still retains the model's tool call and arguments.
 
 ### Optional Connect Google Health
 

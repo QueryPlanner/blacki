@@ -53,20 +53,20 @@ def validate_markdown_v2(text: str) -> None:
 
 def test_describe_tool_known_search_tools() -> None:
     """Search tools interpolate query and escape markdown."""
-    res1 = describe_tool("web_search", {"query": "high protein foods"}, private=False)
+    res1 = describe_tool("web_search", {"query": "high protein foods"})
     assert res1 == "Searching the web for *high protein foods*…"
     validate_markdown_v2(res1)
 
-    res2 = describe_tool("exa_search", {"query": "python 3.13 features"}, private=False)
+    res2 = describe_tool("exa_search", {"query": "python 3.13 features"})
     assert res2 == "Searching the web for *python 3\\.13 features*…"
     validate_markdown_v2(res2)
 
     # Without query arg
-    res3 = describe_tool("brave_search", {}, private=False)
+    res3 = describe_tool("brave_search", {})
     assert res3 == "Searching the web…"
     validate_markdown_v2(res3)
 
-    res4 = describe_tool("exa_search", {"num_results": 5}, private=False)
+    res4 = describe_tool("exa_search", {"num_results": 5})
     assert res4 == "Searching the web…"
     validate_markdown_v2(res4)
 
@@ -76,20 +76,19 @@ def test_describe_tool_reminders() -> None:
     res1 = describe_tool(
         "schedule_reminder",
         {"message": "Take vitamins at 9am"},
-        private=False,
     )
     assert res1 == "Scheduling reminder for *Take vitamins at 9am*…"
     validate_markdown_v2(res1)
 
-    res2 = describe_tool("schedule_reminder", {}, private=False)
+    res2 = describe_tool("schedule_reminder", {})
     assert res2 == "Scheduling reminder…"
     validate_markdown_v2(res2)
 
-    res3 = describe_tool("list_reminders", {"include_sent": False}, private=False)
+    res3 = describe_tool("list_reminders", {"include_sent": False})
     assert res3 == "Listing reminders…"
     validate_markdown_v2(res3)
 
-    res4 = describe_tool("cancel_reminder", {"reminder_id": 42}, private=False)
+    res4 = describe_tool("cancel_reminder", {"reminder_id": 42})
     assert res4 == "Cancelling reminder…"
     validate_markdown_v2(res4)
 
@@ -99,30 +98,24 @@ def test_describe_tool_calories() -> None:
     res1 = describe_tool(
         "log_meal",
         {"description": "Oatmeal with blueberries", "estimated_calories": 350},
-        private=False,
     )
     assert res1 == "Logging meal: *Oatmeal with blueberries*…"
     validate_markdown_v2(res1)
 
-    assert describe_tool("log_meal", {}, private=False) == "Logging meal…"
+    assert describe_tool("log_meal", {}) == "Logging meal…"
     assert (
-        describe_tool("get_calorie_summary", {"days": 7}, private=False)
-        == "Checking calorie summary…"
+        describe_tool("get_calorie_summary", {"days": 7}) == "Checking calorie summary…"
     )
     assert (
         describe_tool(
             "edit_meal",
             {"entry_id": 1, "description": "Greek yogurt"},
-            private=False,
         )
         == "Updating meal: *Greek yogurt*…"
     )
+    assert describe_tool("delete_meal", {"entry_id": 1}) == "Deleting meal entry…"
     assert (
-        describe_tool("delete_meal", {"entry_id": 1}, private=False)
-        == "Deleting meal entry…"
-    )
-    assert (
-        describe_tool("set_calorie_goal", {"daily_calories": 2500}, private=False)
+        describe_tool("set_calorie_goal", {"daily_calories": 2500})
         == "Setting calorie goal to *2500* kcal…"
     )
 
@@ -133,19 +126,14 @@ def test_describe_tool_workouts() -> None:
         describe_tool(
             "set_training_program",
             {"program_name": "Hypertrophy Block A"},
-            private=False,
         )
         == "Setting training program to *Hypertrophy Block A*…"
     )
-    assert (
-        describe_tool("get_todays_training", {}, private=False)
-        == "Checking today's training…"
-    )
+    assert describe_tool("get_todays_training", {}) == "Checking today's training…"
     assert (
         describe_tool(
             "log_training",
             {"session_type": "Upper Body Strength"},
-            private=False,
         )
         == "Logging training for *Upper Body Strength*…"
     )
@@ -153,7 +141,6 @@ def test_describe_tool_workouts() -> None:
         describe_tool(
             "advance_training_cycle",
             {"program_name": "PPL"},
-            private=False,
         )
         == "Advancing training cycle for *PPL*…"
     )
@@ -161,56 +148,42 @@ def test_describe_tool_workouts() -> None:
         describe_tool(
             "get_training_history",
             {"exercise_name": "bench_press"},
-            private=False,
         )
         == "Checking training history for *bench\\_press*…"
     )
-    assert (
-        describe_tool("get_training_metrics", {}, private=False)
-        == "Fetching training metrics…"
-    )
-    assert (
-        describe_tool("update_training_metrics", {}, private=False)
-        == "Updating training metrics…"
-    )
-    assert (
-        describe_tool("delete_workout", {"session_id": 3}, private=False)
-        == "Deleting workout…"
-    )
+    assert describe_tool("get_training_metrics", {}) == "Fetching training metrics…"
+    assert describe_tool("update_training_metrics", {}) == "Updating training metrics…"
+    assert describe_tool("delete_workout", {"session_id": 3}) == "Deleting workout…"
     # Legacy workout tools
     assert (
-        describe_tool("log_workout", {"split_day": "Legs"}, private=False)
+        describe_tool("log_workout", {"split_day": "Legs"})
         == "Logging workout for *Legs*…"
     )
     assert (
-        describe_tool("get_last_workout", {"split_day": "Push"}, private=False)
+        describe_tool("get_last_workout", {"split_day": "Push"})
         == "Checking last workout for *Push*…"
     )
     assert (
-        describe_tool("set_workout_split", {"split_name": "Upper/Lower"}, private=False)
+        describe_tool("set_workout_split", {"split_name": "Upper/Lower"})
         == "Setting workout split to *Upper/Lower*…"
     )
-    assert (
-        describe_tool("get_todays_workout", {}, private=False)
-        == "Checking today's workout…"
-    )
+    assert describe_tool("get_todays_workout", {}) == "Checking today's workout…"
 
 
 def test_describe_tool_declarative_db() -> None:
     """Declarative DB tools produce human progress phrases."""
     assert (
-        describe_tool("create_custom_table", {"table_name": "books"}, private=False)
+        describe_tool("create_custom_table", {"table_name": "books"})
         == "Creating table *books*…"
     )
     assert (
-        describe_tool("delete_custom_table", {"table_name": "books"}, private=False)
+        describe_tool("delete_custom_table", {"table_name": "books"})
         == "Deleting table *books*…"
     )
     assert (
         describe_tool(
             "create_query_template",
             {"template_name": "find_unread"},
-            private=False,
         )
         == "Creating query template *find\\_unread*…"
     )
@@ -218,20 +191,19 @@ def test_describe_tool_declarative_db() -> None:
         describe_tool(
             "execute_query_template",
             {"template_name": "find_unread"},
-            private=False,
         )
         == "Running query template *find\\_unread*…"
     )
     assert (
-        describe_tool("list_custom_tables_and_templates", {}, private=False)
+        describe_tool("list_custom_tables_and_templates", {})
         == "Listing custom tables and queries…"
     )
     assert (
-        describe_tool("set_custom_instruction_override", {}, private=False)
+        describe_tool("set_custom_instruction_override", {})
         == "Updating database instructions…"
     )
     assert (
-        describe_tool("delete_custom_instruction_override", {}, private=False)
+        describe_tool("delete_custom_instruction_override", {})
         == "Resetting database instructions…"
     )
 
@@ -239,35 +211,34 @@ def test_describe_tool_declarative_db() -> None:
 def test_describe_tool_sandbox() -> None:
     """Sandbox tools produce human progress phrases."""
     assert (
-        describe_tool("sandbox_run_command", {"command": "pytest -v"}, private=False)
+        describe_tool("sandbox_run_command", {"command": "pytest -v"})
         == "Running *pytest \\-v* in sandbox…"
     )
     assert (
-        describe_tool("sandbox_execute_code", {"language": "python"}, private=False)
+        describe_tool("sandbox_execute_code", {"language": "python"})
         == "Executing *python* code in sandbox…"
     )
     assert (
-        describe_tool("sandbox_write_file", {"path": "test.py"}, private=False)
+        describe_tool("sandbox_write_file", {"path": "test.py"})
         == "Writing file *test\\.py* in sandbox…"
     )
     assert (
-        describe_tool("sandbox_read_file", {"path": "test.py"}, private=False)
+        describe_tool("sandbox_read_file", {"path": "test.py"})
         == "Reading file *test\\.py* in sandbox…"
     )
     assert (
-        describe_tool("sandbox_list_files", {"path": "src/"}, private=False)
+        describe_tool("sandbox_list_files", {"path": "src/"})
         == "Listing files in *src/* in sandbox…"
     )
     assert (
         describe_tool(
             "sandbox_send_file_to_user",
             {"path": "report.pdf"},
-            private=False,
         )
         == "Sending file *report\\.pdf* from sandbox…"
     )
     assert (
-        describe_tool("sandbox_view_image", {"path": "photo.png"}, private=False)
+        describe_tool("sandbox_view_image", {"path": "photo.png"})
         == "Viewing image *photo\\.png* from sandbox…"
     )
 
@@ -275,11 +246,11 @@ def test_describe_tool_sandbox() -> None:
 def test_describe_tool_weather() -> None:
     """Weather tools produce human progress phrases."""
     assert (
-        describe_tool("get_current_weather", {"location": "London"}, private=False)
+        describe_tool("get_current_weather", {"location": "London"})
         == "Checking current weather for *London*…"
     )
     assert (
-        describe_tool("get_weather_forecast", {"location": "Tokyo"}, private=False)
+        describe_tool("get_weather_forecast", {"location": "Tokyo"})
         == "Fetching weather forecast for *Tokyo*…"
     )
 
@@ -290,92 +261,48 @@ def test_describe_tool_memory() -> None:
         describe_tool(
             "save_memory",
             {"text": "User prefers vegetarian meals"},
-            private=False,
         )
         == "Saving memory: *User prefers vegetarian meals*…"
     )
     assert (
-        describe_tool("search_memory", {"query": "preferences"}, private=False)
+        describe_tool("search_memory", {"query": "preferences"})
         == "Searching memory for *preferences*…"
     )
-    assert (
-        describe_tool("get_all_memories", {}, private=False)
-        == "Retrieving all memories…"
-    )
-    assert describe_tool("get_memory", {}, private=False) == "Retrieving memory…"
-    assert describe_tool("update_memory", {}, private=False) == "Updating memory…"
-    assert describe_tool("delete_memory", {}, private=False) == "Deleting memory…"
-    assert describe_tool("preload_memory", {}, private=False) == "Loading memories…"
+    assert describe_tool("get_all_memories", {}) == "Retrieving all memories…"
+    assert describe_tool("get_memory", {}) == "Retrieving memory…"
+    assert describe_tool("update_memory", {}) == "Updating memory…"
+    assert describe_tool("delete_memory", {}) == "Deleting memory…"
+    assert describe_tool("preload_memory", {}) == "Loading memories…"
 
 
 def test_describe_tool_skill_loading() -> None:
     """Skill loader tool produces human progress phrase."""
     assert (
-        describe_tool("load_skill", {"name": "explore_repo"}, private=False)
+        describe_tool("load_skill", {"name": "explore_repo"})
         == "Loading skill *explore\\_repo*…"
     )
-    assert describe_tool("load_skill", {}, private=False) == "Loading skill…"
+    assert describe_tool("load_skill", {}) == "Loading skill…"
 
 
 def test_describe_tool_gmail_api() -> None:
     assert (
-        describe_tool("gmail_search_messages", {"query": "invoices"}, private=False)
+        describe_tool("gmail_search_messages", {"query": "invoices"})
         == "Searching Gmail for *invoices*…"
     )
+    assert describe_tool("gmail_get_thread", {}) == "Reading email…"
+    assert describe_tool("gmail_create_draft", {}) == "Drafting email…"
+    assert describe_tool("gmail_list_drafts", {}) == "Checking drafts…"
+    assert describe_tool("gmail_modify_thread_labels", {}) == "Updating Gmail labels…"
     assert (
-        describe_tool("gmail_search_messages", {"query": "invoices"}, private=True)
-        == "Searching Gmail…"
-    )
-    assert describe_tool("gmail_get_thread", {}, private=False) == "Reading email…"
-    assert describe_tool("gmail_create_draft", {}, private=False) == "Drafting email…"
-    assert describe_tool("gmail_list_drafts", {}, private=False) == "Checking drafts…"
-    assert (
-        describe_tool("gmail_modify_thread_labels", {}, private=False)
-        == "Updating Gmail labels…"
-    )
-    assert (
-        describe_tool("gmail_custom_action", {}, private=False)
+        describe_tool("gmail_custom_action", {})
         == "Working with Gmail (custom action)…"
-    )
-
-
-def test_describe_tool_private_never_interpolates_args() -> None:
-    """When private=True, no argument interpolation ever occurs."""
-    args: dict[str, Any] = {
-        "text": "secret medical content",
-        "query": "private search terms",
-        "command": "secret shell cmd",
-    }
-    # Private tools
-    assert (
-        describe_tool("query_health_data", args, private=True)
-        == "Querying stored health records…"
-    )
-    assert (
-        describe_tool("get_health_summary", {"days": 7}, private=True)
-        == "Fetching health summary…"
-    )
-    assert (
-        describe_tool("send_text_to_speech", {"text": "hello"}, private=True)
-        == "Generating speech…"
-    )
-    # Other tools with private=True
-    assert describe_tool("brave_search", args, private=True) == "Searching the web…"
-    assert (
-        describe_tool("sandbox_run_command", args, private=True)
-        == "Running command in sandbox…"
-    )
-    assert describe_tool("save_memory", args, private=True) == "Saving to memory…"
-    assert (
-        describe_tool("log_meal", {"description": "private food"}, private=True)
-        == "Logging meal…"
     )
 
 
 def test_describe_tool_markdownv2_escaping() -> None:
     """Salient args containing special Markdown characters are escaped."""
     raw_query = "protein_rich *food* [quick] & vitamins_d3!"
-    result = describe_tool("brave_search", {"query": raw_query}, private=False)
+    result = describe_tool("brave_search", {"query": raw_query})
     expected = (
         "Searching the web for "
         "*protein\\_rich \\*food\\* \\[quick\\] & vitamins\\_d3\\!*…"
@@ -387,7 +314,7 @@ def test_describe_tool_markdownv2_escaping() -> None:
 def test_describe_tool_arg_truncation() -> None:
     """Arguments longer than 60 chars are truncated to <= 60 chars with '…'."""
     long_query = "a" * 80
-    result = describe_tool("brave_search", {"query": long_query}, private=False)
+    result = describe_tool("brave_search", {"query": long_query})
     # 59 chars of 'a' + '…'
     expected_inner = "a" * 59 + "…"
     assert result == f"Searching the web for *{expected_inner}*…"
@@ -397,45 +324,33 @@ def test_describe_tool_arg_truncation() -> None:
 def test_describe_tool_empty_whitespace_arg_fallback() -> None:
     """Whitespace-only args fall back to no-arg labels and avoid empty bold '**'."""
     # Test multiple tools with whitespace args
+    assert describe_tool("brave_search", {"query": "   "}) == "Searching the web…"
+    assert describe_tool("schedule_reminder", {"message": ""}) == "Scheduling reminder…"
+    assert describe_tool("log_meal", {"description": "\t \n"}) == "Logging meal…"
     assert (
-        describe_tool("brave_search", {"query": "   "}, private=False)
-        == "Searching the web…"
-    )
-    assert (
-        describe_tool("schedule_reminder", {"message": ""}, private=False)
-        == "Scheduling reminder…"
-    )
-    assert (
-        describe_tool("log_meal", {"description": "\t \n"}, private=False)
-        == "Logging meal…"
-    )
-    assert (
-        describe_tool("sandbox_run_command", {"command": "   "}, private=False)
+        describe_tool("sandbox_run_command", {"command": "   "})
         == "Running command in sandbox…"
     )
     assert (
-        describe_tool("get_current_weather", {"location": " "}, private=False)
+        describe_tool("get_current_weather", {"location": " "})
         == "Checking current weather…"
     )
-    assert (
-        describe_tool("save_memory", {"text": " "}, private=False)
-        == "Saving to memory…"
-    )
-    assert describe_tool("load_skill", {"name": " "}, private=False) == "Loading skill…"
+    assert describe_tool("save_memory", {"text": " "}) == "Saving to memory…"
+    assert describe_tool("load_skill", {"name": " "}) == "Loading skill…"
 
 
 def test_describe_tool_unknown_fallback() -> None:
     """Unknown tools humanize symbol into generic phrase without raw symbol alone."""
-    result = describe_tool("log_calories", {"some_arg": "val"}, private=False)
+    result = describe_tool("log_calories", {"some_arg": "val"})
     assert result == "Working on log calories…"
     validate_markdown_v2(result)
 
-    result2 = describe_tool("fetch_spotify_playlist", {}, private=False)
+    result2 = describe_tool("fetch_spotify_playlist", {})
     assert result2 == "Working on fetch spotify playlist…"
     validate_markdown_v2(result2)
 
     # Dotted and hyphenated MCP tool symbols
-    result_mcp2 = describe_tool("some.mcp.tool-v2", {}, private=False)
+    result_mcp2 = describe_tool("some.mcp.tool-v2", {})
     assert result_mcp2 == "Working on some mcp tool v2…"
     validate_markdown_v2(result_mcp2)
 
@@ -504,23 +419,27 @@ def test_all_tools_emit_strictly_valid_markdown_v2(
         k: (f"special._*[]()~`>#+-=|{{}}.! {v}" if isinstance(v, str) else v)
         for k, v in args.items()
     }
-    label1 = describe_tool(tool_name, complex_args, private=False)
+    label1 = describe_tool(tool_name, complex_args)
     validate_markdown_v2(label1)
 
     # 2. With empty / whitespace arguments
     empty_args = dict.fromkeys(args, "   ")
-    label2 = describe_tool(tool_name, empty_args, private=False)
+    label2 = describe_tool(tool_name, empty_args)
     validate_markdown_v2(label2)
 
     # 3. With no arguments
-    label3 = describe_tool(tool_name, {}, private=False)
+    label3 = describe_tool(tool_name, {})
     validate_markdown_v2(label3)
-
-    # 4. With private=True
-    label4 = describe_tool(tool_name, complex_args, private=True)
-    validate_markdown_v2(label4)
 
 
 def test_elapsed_collapse_text_is_valid_markdown_v2() -> None:
     """Assert final elapsed collapse text is strictly valid MarkdownV2."""
     validate_markdown_v2("✓ Worked for 2m 5s")
+
+
+def test_describe_tool_health_and_gmail_fallbacks() -> None:
+    """Health tools and Gmail search without a query use static labels."""
+    assert describe_tool("query_health_data", {"metric": "steps"}) == (
+        "Querying stored health records…"
+    )
+    assert describe_tool("gmail_search_messages", {}) == "Searching Gmail…"

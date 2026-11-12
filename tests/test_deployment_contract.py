@@ -103,7 +103,8 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS" not in values
+    assert values["LOG_LEVEL"] == "DEBUG"
 
 
 def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
@@ -117,7 +118,7 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["HOST"] == "127.0.0.1"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS" not in values
 
 
 def test_compose_defaults_are_private_persistent_and_live() -> None:

@@ -6,7 +6,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8080
       AGENT_NAME: ${AGENT_NAME:?Set AGENT_NAME in the environment file}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
       RELOAD_AGENTS: ${RELOAD_AGENTS:-false}
       SERVE_WEB_INTERFACE: ${SERVE_WEB_INTERFACE:-false}
     env_file:

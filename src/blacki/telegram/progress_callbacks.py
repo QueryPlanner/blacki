@@ -21,7 +21,6 @@ from google.adk.tools.base_tool import BaseTool
 
 from blacki.tools.action_identity import meal_action_name
 
-from ..security.tool_privacy import is_private_tool
 from .api import TelegramApiClient, TelegramApiError
 from .formatting import format_for_telegram
 from .progress import describe_tool
@@ -430,7 +429,7 @@ async def notify_telegram_before_tool(
             label = format_for_telegram(session.pending_preamble)
             session.pending_preamble = None
         else:
-            label = describe_tool(tool.name, args, private=is_private_tool(tool))
+            label = describe_tool(tool.name, args)
 
         if session.message_id is None:
             async with _shared_telegram_notify_client_lease(token) as client:
