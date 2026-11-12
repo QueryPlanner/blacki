@@ -67,7 +67,16 @@ src = ["src"]
 target-version = "py311"
 line-length = 88
 fix = true
-extend-exclude = ["notebooks", "init_template.py"]
+extend-exclude = [
+  "notebooks",
+  "init_template.py",
+  # Local-only AI tooling and scratch worktrees (never committed)
+  ".agents",
+  ".claude",
+  ".codex",
+  ".gemini",
+  ".worktrees",
+]
 
 [tool.ruff.format]
 quote-style = "double"
