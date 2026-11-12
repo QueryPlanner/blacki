@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Record model calls with the experimental OpenTelemetry GenAI attributes; `.env` must set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=SPAN_ONLY`
 - Show model calls in the dashboard from `gen_ai.*` span attributes, and gate the trace views like the other private views
 
+### Removed
+- Remove the stored-preferences tools, prompt plugin, and SQLite writes; use the private wiki `memory.md` for durable style and unit preferences. Existing preference rows remain in SQLite but are no longer read, so re-save them in `memory.md`
+
 ## [0.1.0] - 2026-05-07
 
 ### Added

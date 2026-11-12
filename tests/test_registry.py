@@ -633,12 +633,23 @@ class TestBuildDeclarativeDbTools:
     """Tests for _build_declarative_db_tools."""
 
     def test_returns_tools_when_available(self) -> None:
-        """Should return declarative database tools when available."""
+        """Should return the declarative database tools when available."""
         from blacki.tools.registry import _build_declarative_db_tools
 
         tools = _build_declarative_db_tools()
 
-        assert len(tools) == 7
+        assert len(tools) == 5
+        assert {tool.__name__ for tool in tools} == {
+            "create_custom_table",
+            "delete_custom_table",
+            "create_query_template",
+            "execute_query_template",
+            "list_custom_tables_and_templates",
+        }
+        assert not {
+            "set_custom_instruction_override",
+            "delete_custom_instruction_override",
+        } & {tool.__name__ for tool in tools}
 
 
 class TestMiniAppToolRegistration:

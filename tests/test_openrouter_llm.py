@@ -160,9 +160,7 @@ async def test_telegram_openrouter_prompt_and_session_affinity(
     state = {"user_id": first.user_id}
     container = await init_container(tmp_path / "tools.db")
     try:
-        storage = container.declarative_db_storage
-        await storage.initialize()
-        await storage.set_custom_instruction_override(first.user_id, "units: metric")
+        await container.declarative_db_storage.initialize()
         await runtime.run_user_turn(
             locator=first, message_text="Look it up", state=state
         )
@@ -183,7 +181,6 @@ async def test_telegram_openrouter_prompt_and_session_affinity(
     assert len(set(headers)) == 3
     assert all(len(value) <= 256 and "123456789" not in value for value in headers)
     before, after = (records[i]["body"]["messages"][0]["content"] for i in (0, 2))
-    assert "</stored_user_preferences>" in before
     assert before.endswith("</temporal_context>")
     assert "2026-11-10" in before
     assert before.replace("2026-11-10", "2026-11-11") == after

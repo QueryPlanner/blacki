@@ -359,11 +359,9 @@ def _build_declarative_db_tools() -> list[Any]:
         from blacki.tools.declarative_db import (
             create_custom_table,
             create_query_template,
-            delete_custom_instruction_override,
             delete_custom_table,
             execute_query_template,
             list_custom_tables_and_templates,
-            set_custom_instruction_override,
         )
 
         return [
@@ -372,8 +370,6 @@ def _build_declarative_db_tools() -> list[Any]:
             create_query_template,
             execute_query_template,
             list_custom_tables_and_templates,
-            set_custom_instruction_override,
-            delete_custom_instruction_override,
         ]
     except ImportError as e:  # pragma: no cover
         logger.warning("Failed to load Declarative DB tools: %s", e)

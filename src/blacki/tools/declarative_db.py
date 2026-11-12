@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from google.adk.tools import ToolContext
 
 from blacki.declarative_db.storage import get_declarative_db_storage
-from blacki.declarative_db.validation import parse_user_preferences
 
 logger = logging.getLogger(__name__)
 
@@ -260,81 +258,4 @@ async def list_custom_tables_and_templates(
         return {
             "status": "error",
             "message": f"Failed to fetch custom schemas: {e}",
-        }
-
-
-async def set_custom_instruction_override(
-    instructions: str,
-    tool_context: ToolContext,
-) -> dict[str, Any]:
-    """Save allow-listed style and unit preferences for the user.
-
-    Args:
-        instructions: One ``key: value`` preference per line. Allowed keys are
-                      language, response_style, tone, and units. Example:
-                      ``tone: warm``.
-        tool_context: ADK tool context.
-
-    Returns:
-        A status dictionary.
-    """
-    user_id = _require_user_id(tool_context)
-    if not user_id:
-        return _user_not_identified_error()
-
-    try:
-        preferences = parse_user_preferences(instructions)
-        storage = get_declarative_db_storage()
-        await storage.set_custom_instruction_override(
-            str(user_id), json.dumps(preferences, sort_keys=True)
-        )
-        return {
-            "status": "success",
-            "message": "User preferences successfully saved.",
-        }
-    except ValueError as e:
-        return {
-            "status": "error",
-            "message": f"Invalid preferences: {e}",
-        }
-    except Exception as e:
-        logger.exception("Failed to set user preferences")
-        return {
-            "status": "error",
-            "message": f"Failed to save preferences: {e}",
-        }
-
-
-async def delete_custom_instruction_override(
-    tool_context: ToolContext,
-) -> dict[str, Any]:
-    """Clear custom instruction override for the user.
-
-    Args:
-        tool_context: ADK tool context.
-
-    Returns:
-        A status dictionary.
-    """
-    user_id = _require_user_id(tool_context)
-    if not user_id:
-        return _user_not_identified_error()
-
-    try:
-        storage = get_declarative_db_storage()
-        deleted = await storage.delete_custom_instruction_override(str(user_id))
-        if deleted:
-            return {
-                "status": "success",
-                "message": "Custom instructions successfully deleted.",
-            }
-        return {
-            "status": "success",
-            "message": "No custom instructions existed to delete.",
-        }
-    except Exception as e:
-        logger.exception("Failed to delete instruction override")
-        return {
-            "status": "error",
-            "message": f"Failed to clear instructions: {e}",
         }
