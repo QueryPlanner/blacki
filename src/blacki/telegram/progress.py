@@ -158,10 +158,6 @@ def describe_tool(tool_name: str, args: dict[str, Any]) -> str:
         return "Running query template…"
     if tool_name == "list_custom_tables_and_templates":
         return "Listing custom tables and queries…"
-    if tool_name == "set_custom_instruction_override":
-        return "Updating database instructions…"
-    if tool_name == "delete_custom_instruction_override":
-        return "Resetting database instructions…"
 
     # 6. Sandbox
     if tool_name == "sandbox_run_command":

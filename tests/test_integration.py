@@ -72,14 +72,13 @@ class TestAppIntegration:
                 assert hasattr(plugin, "__class__")
 
     def test_prompt_plugins_preserve_precedence_order(self) -> None:
-        """Safety leads and stored preferences follow developer policy/schema."""
+        """Only always-on plugins are attached when optional tools are disabled."""
         assert app.plugins is not None
         plugin_names = [plugin.name for plugin in app.plugins]
 
         assert plugin_names == [
             "telegram_model_override",
             "declarative_db",
-            "stored_preferences",
             "temporal_context",
         ]
 

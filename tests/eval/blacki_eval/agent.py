@@ -10,10 +10,7 @@ from google.adk.agents import LlmAgent
 
 from blacki.agent import create_agent
 from blacki.container import close_container, get_container, init_container
-from blacki.declarative_db.plugin import (
-    DeclarativeDbPlugin,
-    StoredPreferencesPlugin,
-)
+from blacki.declarative_db.plugin import DeclarativeDbPlugin
 from blacki.prompts.instructions import TemporalContextPlugin
 
 _container_lock = asyncio.Lock()
@@ -62,12 +59,10 @@ def create_eval_agent(agent: LlmAgent | None = None) -> LlmAgent:
     eval_agent = agent or create_agent()
     temporal_context = TemporalContextPlugin()
     declarative_db = DeclarativeDbPlugin()
-    stored_preferences = StoredPreferencesPlugin()
 
     before_model_callbacks: list[Any] = [
         *_callback_list(eval_agent.before_model_callback),
         declarative_db.before_model_callback,
-        stored_preferences.before_model_callback,
         temporal_context.before_model_callback,
     ]
     before_agent_callbacks: list[Any] = [

@@ -55,33 +55,3 @@ class DeclarativeDbPlugin(BasePlugin):
                 llm_request.append_instructions([schema_xml])
         except Exception:
             logger.exception("Failed to inject user database schema metadata")
-
-
-class StoredPreferencesPlugin(BasePlugin):
-    """Append allow-listed stored preferences after all developer policies."""
-
-    def __init__(self, name: str = "stored_preferences") -> None:
-        super().__init__(name=name)
-
-    async def before_model_callback(
-        self, *, callback_context: CallbackContext, llm_request: LlmRequest
-    ) -> None:
-        """Append structured style preferences at the lowest prompt precedence."""
-        user_id = _get_user_id(callback_context)
-        if not user_id:
-            return
-
-        try:
-            storage = get_declarative_db_storage()
-            preferences_xml = await storage.get_user_preferences_instruction_xml(
-                user_id
-            )
-            if preferences_xml:
-                logger.info(
-                    "Injecting stored preferences for user %s (%d chars)",
-                    user_id,
-                    len(preferences_xml),
-                )
-                llm_request.append_instructions([preferences_xml])
-        except Exception:
-            logger.exception("Failed to inject stored user preferences")

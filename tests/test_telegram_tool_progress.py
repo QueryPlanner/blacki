@@ -198,14 +198,6 @@ def test_describe_tool_declarative_db() -> None:
         describe_tool("list_custom_tables_and_templates", {})
         == "Listing custom tables and queries…"
     )
-    assert (
-        describe_tool("set_custom_instruction_override", {})
-        == "Updating database instructions…"
-    )
-    assert (
-        describe_tool("delete_custom_instruction_override", {})
-        == "Resetting database instructions…"
-    )
 
 
 def test_describe_tool_sandbox() -> None:
@@ -383,8 +375,6 @@ ALL_KNOWN_TOOLS = [
     ("create_query_template", {"template_name": "get_pending_tasks"}),
     ("execute_query_template", {"template_name": "get_pending_tasks"}),
     ("list_custom_tables_and_templates", {}),
-    ("set_custom_instruction_override", {}),
-    ("delete_custom_instruction_override", {}),
     ("sandbox_run_command", {"command": "cat /tmp/test.py | grep -E 'def '"}),
     ("sandbox_execute_code", {"language": "python3"}),
     ("sandbox_write_file", {"path": "src/blacki/main.py"}),

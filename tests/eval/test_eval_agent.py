@@ -28,7 +28,11 @@ def test_eval_agent_attaches_policy_callbacks() -> None:
     assert result is agent
     assert len(result.canonical_before_agent_callbacks) == 1
     assert len(result.canonical_after_agent_callbacks) == 1
-    assert len(result.canonical_before_model_callbacks) == 3
+    assert len(result.canonical_before_model_callbacks) == 2
+    assert [
+        getattr(callback, "__self__", None).__class__.__name__
+        for callback in result.canonical_before_model_callbacks
+    ] == ["DeclarativeDbPlugin", "TemporalContextPlugin"]
     assert not result.canonical_after_model_callbacks
     assert not result.canonical_before_tool_callbacks
     assert not result.canonical_after_tool_callbacks

@@ -195,10 +195,7 @@ def create_app(agent: LlmAgent | None = None) -> App:
     if agent is None:
         agent = create_agent()
 
-    from blacki.declarative_db.plugin import (
-        DeclarativeDbPlugin,
-        StoredPreferencesPlugin,
-    )
+    from blacki.declarative_db.plugin import DeclarativeDbPlugin
     from blacki.sandbox.config import sandbox_enabled
     from blacki.sandbox.images import SandboxMultimodalToolResultsPlugin
     from blacki.user_files import UserFilesPromptPlugin, user_files_enabled
@@ -216,7 +213,6 @@ def create_app(agent: LlmAgent | None = None) -> App:
         TelegramModelOverridePlugin(name="telegram_model_override"),
         *([WikiPolicyPlugin(name="private_wiki")] if wiki_tools_enabled else []),
         DeclarativeDbPlugin(name="declarative_db"),
-        StoredPreferencesPlugin(name="stored_preferences"),
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         *([WikiMemoryPlugin(name="owner_memory")] if wiki_tools_enabled else []),
         TemporalContextPlugin(),
