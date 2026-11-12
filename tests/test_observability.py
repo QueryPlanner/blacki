@@ -1,64 +1,51 @@
-"""Tests for local observability configuration."""
+"""Tests for the OpenTelemetry file exporters and GenAI telemetry defaults."""
 
 from __future__ import annotations
 
-import importlib
+import io
 import json
 import logging
 import os
-import sys
+import stat
 from collections.abc import Iterator
-from datetime import UTC, datetime
-from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from opentelemetry import trace
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import ProxyTracerProvider
 
 from blacki.observability.setup import (
-    FlatFileSpanExporter,
-    JSONFormatter,
-    _create_tracer_provider,
-    _span_end_day,
-    adk_span_content_capture_enabled,
+    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS,
+    GENAI_TELEMETRY_DEFAULTS,
+    LOG_FILE_NAME,
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+    OTEL_SEMCONV_STABILITY_OPT_IN,
+    TRACE_FILE_NAME,
+    FileLogRecordExporter,
+    FileSpanExporter,
+    TelemetryProviders,
+    _otel_hooks,
+    configure_genai_telemetry,
     configure_otel_resource,
+    genai_content_capture_enabled,
     get_log_dir,
+    open_private_append,
     setup_logging,
     setup_tracing,
     shutdown_tracing,
 )
 
+_SETUP = "blacki.observability.setup"
 
-@pytest.fixture(autouse=True)
-def clear_otlp_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep exporter-warning tests independent from the developer's shell."""
-    for name in [name for name in os.environ if name.startswith("OTEL_EXPORTER_OTLP_")]:
+
+@pytest.fixture
+def genai_environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Start every test without GenAI telemetry variables from the shell."""
+    for name in GENAI_TELEMETRY_DEFAULTS:
         monkeypatch.delenv(name, raising=False)
-
-
-def test_observability_setup_has_stable_import_path() -> None:
-    """Deployment preflight must import the relocated setup module."""
-    module = importlib.import_module("blacki.observability.setup")
-
-    assert module.setup_tracing is setup_tracing
-    assert module.FlatFileSpanExporter is FlatFileSpanExporter
-
-
-def test_shutdown_tracing_handles_missing_and_configured_providers() -> None:
-    """Tracing teardown should be safe when setup could not create a provider."""
-    provider = MagicMock()
-
-    shutdown_tracing(None)
-    shutdown_tracing(provider)
-
-    provider.shutdown.assert_called_once_with()
+    return monkeypatch
 
 
 @pytest.fixture
@@ -80,389 +67,224 @@ def preserve_logging_configuration() -> Iterator[None]:
         urllib3_logger.setLevel(original_urllib3_level)
 
 
-def test_local_provider_writes_span(tmp_path: Path) -> None:
-    """The provider writes slim and full local traces without a network exporter."""
-    provider = _create_tracer_provider(tmp_path)
-    tracer = provider.get_tracer("test.local")
-    with tracer.start_as_current_span("agent.local"):
-        pass
-    assert provider.force_flush()
-    provider.shutdown()
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
-    slim = [
+
+def test_genai_defaults_fill_only_unset_variables(
+    genai_environment: pytest.MonkeyPatch,
+) -> None:
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "")
+    configure_genai_telemetry()
+
+    assert os.environ[OTEL_SEMCONV_STABILITY_OPT_IN] == "gen_ai_latest_experimental"
+    assert os.environ[OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT] == ""
+    assert os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] == "false"
+
+
+@pytest.mark.parametrize(
+    ("opt_in", "mode", "expected"),
+    [
+        ("gen_ai_latest_experimental", "SPAN_ONLY", True),
+        ("http, gen_ai_latest_experimental", "span_and_event", True),
+        ("gen_ai_latest_experimental", "EVENT_ONLY", False),
+        ("gen_ai_latest_experimental", "", False),
+        ("", "SPAN_ONLY", False),
+    ],
+)
+def test_genai_content_capture_needs_experimental_span_content(
+    genai_environment: pytest.MonkeyPatch, opt_in: str, mode: str, expected: bool
+) -> None:
+    genai_environment.setenv(OTEL_SEMCONV_STABILITY_OPT_IN, opt_in)
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, mode)
+
+    assert genai_content_capture_enabled() is expected
+
+
+def test_file_exporters_write_every_span_and_log_record(tmp_path: Path) -> None:
+    hooks = _otel_hooks(tmp_path)
+    assert hooks is not None
+
+    tracer_provider = TracerProvider()
+    for span_processor in hooks.span_processors:
+        tracer_provider.add_span_processor(span_processor)
+    logger_provider = LoggerProvider()
+    for log_processor in hooks.log_record_processors:
+        logger_provider.add_log_record_processor(log_processor)
+    test_logger = logging.getLogger("blacki.test.exporters")
+    test_logger.propagate = False
+    test_logger.setLevel(logging.INFO)
+    handler = LoggingHandler(logger_provider=logger_provider)
+    test_logger.addHandler(handler)
+    prompt = "password: example-secret\n" * 1000
+    try:
+        with tracer_provider.get_tracer("test").start_as_current_span("model") as span:
+            span.set_attribute("gen_ai.system_instructions", prompt)
+            test_logger.info("inside %s", "span")
+    finally:
+        test_logger.removeHandler(handler)
+        tracer_provider.shutdown()
+        logger_provider.shutdown()
+
+    [span_record] = [
         json.loads(line)
-        for line in (tmp_path / "blacki-traces.log").read_text().splitlines()
+        for line in (tmp_path / TRACE_FILE_NAME).read_text().splitlines()
     ]
-    assert [span["name"] for span in slim] == ["agent.local"]
-    full_files = list((tmp_path / "traces").glob("*.jsonl"))
-    assert len(full_files) == 1
-    full = [json.loads(line) for line in full_files[0].read_text().splitlines()]
-    assert [span["name"] for span in full] == ["agent.local"]
+    assert span_record["name"] == "model"
+    assert span_record["attributes"]["gen_ai.system_instructions"] == prompt
+    assert span_record["context"]["trace_id"].startswith("0x")
+    [log_record] = [
+        json.loads(line) for line in (tmp_path / LOG_FILE_NAME).read_text().splitlines()
+    ]
+    assert log_record["body"] == "inside span"
+    assert log_record["severity_text"] == "INFO"
+    assert log_record["trace_id"] == span_record["context"]["trace_id"]
+    assert log_record["instrumentation_scope"]["name"] == "blacki.test.exporters"
+    assert _mode(tmp_path / TRACE_FILE_NAME) == 0o600
+    assert _mode(tmp_path / LOG_FILE_NAME) == 0o600
 
 
-def test_setup_tracing_warns_about_ignored_otlp_settings(
+def test_private_append_tightens_existing_files_and_appends(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "telemetry.log"
+    path.parent.mkdir()
+    path.write_text("old\n", encoding="utf-8")
+    path.chmod(0o644)
+
+    with open_private_append(path) as handle:
+        handle.write("new\n")
+
+    assert path.read_text(encoding="utf-8") == "old\nnew\n"
+    assert _mode(path) == 0o600
+
+
+def test_private_append_closes_descriptor_when_wrapping_fails(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Remote exporter settings are named but never logged with their values."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example/endpoint-canary",
-    )
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_HEADERS",
-        "authorization=header-credential-canary",
-    )
-    caplog.set_level(logging.WARNING)
-
     with (
-        patch("blacki.observability.setup.get_log_dir", return_value=tmp_path),
-        patch("blacki.observability.setup.trace.set_tracer_provider"),
+        patch(f"{_SETUP}.os.fdopen", side_effect=OSError("wrap failed")),
+        patch(f"{_SETUP}.os.close", wraps=os.close) as close,
+        pytest.raises(OSError, match="wrap failed"),
     ):
-        provider = setup_tracing()
+        open_private_append(tmp_path / "telemetry.log")
 
-    provider.shutdown()
-    assert "OTEL_EXPORTER_OTLP_ENDPOINT" in caplog.text
-    assert "OTEL_EXPORTER_OTLP_HEADERS" in caplog.text
-    assert "endpoint-canary" not in caplog.text
-    assert "header-credential-canary" not in caplog.text
+    close.assert_called_once()
 
 
-def test_setup_tracing_stays_quiet_without_otlp_settings(
+def test_hooks_are_skipped_when_either_file_cannot_open(tmp_path: Path) -> None:
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+    assert _otel_hooks(blocked) is None
+
+    (tmp_path / LOG_FILE_NAME).mkdir()
+    assert _otel_hooks(tmp_path) is None
+    assert (tmp_path / TRACE_FILE_NAME).exists()
+
+
+def test_setup_tracing_installs_adk_providers_and_bridges_logging(
     tmp_path: Path,
+    genai_environment: pytest.MonkeyPatch,
+    preserve_logging_configuration: None,
+) -> None:
+    tracer_provider, logger_provider = TracerProvider(), LoggerProvider()
+    with (
+        patch(f"{_SETUP}.get_log_dir", return_value=tmp_path),
+        patch(f"{_SETUP}.maybe_set_otel_providers", autospec=True) as install,
+        patch(f"{_SETUP}.trace.get_tracer_provider", return_value=tracer_provider),
+        patch(f"{_SETUP}._logs.get_logger_provider", return_value=logger_provider),
+    ):
+        providers = setup_tracing()
+
+    [hooks] = install.call_args.args[0]
+    assert len(hooks.span_processors) == len(hooks.log_record_processors) == 1
+    assert providers == TelemetryProviders(tracer_provider, logger_provider)
+    assert any(isinstance(h, LoggingHandler) for h in logging.getLogger().handlers)
+    assert genai_content_capture_enabled()
+    shutdown_tracing(providers)
+    for processor in hooks.span_processors:
+        processor.shutdown()
+    for processor in hooks.log_record_processors:
+        processor.shutdown()
+
+
+def test_setup_tracing_installs_a_provider_without_files_and_warns(
+    tmp_path: Path,
+    genai_environment: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Local-only startup does not emit a remote-exporter warning."""
-    caplog.set_level(logging.WARNING)
-
+    blocked = tmp_path / "blocked"
+    blocked.write_text("", encoding="utf-8")
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "")
     with (
-        patch("blacki.observability.setup.get_log_dir", return_value=tmp_path),
-        patch("blacki.observability.setup.trace.set_tracer_provider"),
+        patch(f"{_SETUP}.get_log_dir", return_value=blocked),
+        patch(f"{_SETUP}.maybe_set_otel_providers", autospec=True) as install,
+        patch(
+            f"{_SETUP}.trace.get_tracer_provider", return_value=ProxyTracerProvider()
+        ),
+        patch(f"{_SETUP}.trace.set_tracer_provider") as set_provider,
+        patch(f"{_SETUP}._logs.get_logger_provider", return_value=object()),
+        caplog.at_level(logging.WARNING, logger="blacki.utils.observability"),
     ):
-        provider = setup_tracing()
+        providers = setup_tracing()
 
-    provider.shutdown()
-    assert "Ignoring remote OTLP" not in caplog.text
+    assert install.call_args.args[0] == []
+    set_provider.assert_called_once_with(providers.tracer)
+    assert providers.logger is None
+    assert "GenAI content capture is off" in caplog.text
+    shutdown_tracing(providers)
 
 
-def test_observability_formatters_and_resource_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Resource attributes and JSON log records remain structured."""
+def test_setup_tracing_explains_missing_otlp_exporter(tmp_path: Path) -> None:
+    with (
+        patch(f"{_SETUP}.get_log_dir", return_value=tmp_path),
+        patch(
+            f"{_SETUP}.maybe_set_otel_providers",
+            autospec=True,
+            side_effect=ImportError("opentelemetry.exporter"),
+        ),
+        pytest.raises(RuntimeError, match="no OTLP exporter package"),
+    ):
+        setup_tracing()
+
+
+def test_shutdown_tracing_accepts_missing_providers() -> None:
+    shutdown_tracing(None)
+
+
+def test_resource_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEMETRY_NAMESPACE", "tests")
     monkeypatch.setenv("K_REVISION", "revision-1")
     configure_otel_resource("blacki-test")
 
-    attributes = os.getenv("OTEL_RESOURCE_ATTRIBUTES")
-    assert attributes is not None
+    attributes = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
     assert "service.name=blacki-test" in attributes
     assert "service.namespace=tests" in attributes
     assert "service.version=revision-1" in attributes
 
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="hello",
-        args=(),
-        exc_info=None,
-    )
-    formatted = json.loads(JSONFormatter().format(record))
-    assert formatted["message"] == "hello"
-    assert formatted["name"] == "blacki.test"
-
-
-def test_json_formatter_includes_exception_details() -> None:
-    """Structured logs should retain exception type and message."""
-    try:
-        raise ValueError("formatting failed")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.ERROR,
-        pathname=__file__,
-        lineno=1,
-        msg="failed",
-        args=(),
-        exc_info=exc_info,
-    )
-
-    formatted = json.loads(JSONFormatter().format(record))
-
-    assert "ValueError: formatting failed" in formatted["exception"]
-
 
 @pytest.mark.parametrize(
     ("in_container", "expected"),
-    [
-        (True, Path("/app/logs")),
-        (False, Path("./logs")),
-    ],
+    [(True, Path("/app/logs")), (False, Path("./logs"))],
 )
 def test_get_log_dir_selects_container_or_local_path(
-    in_container: bool,
-    expected: Path,
+    in_container: bool, expected: Path
 ) -> None:
-    """Log paths should follow the runtime environment."""
     with patch.object(Path, "exists", return_value=in_container):
         assert get_log_dir() == expected
 
 
-def test_setup_logging_adds_json_file_handler(
-    tmp_path: Path,
+def test_setup_logging_writes_to_stdout_at_the_requested_level(
     preserve_logging_configuration: None,
 ) -> None:
-    """A writable log directory should receive structured file logs."""
-    with patch("blacki.observability.setup.get_log_dir", return_value=tmp_path):
-        setup_logging("DEBUG")
-        logging.getLogger("blacki.test").info("file message")
-        for handler in logging.getLogger().handlers:
-            handler.flush()
+    setup_logging("DEBUG")
 
-    log_path = tmp_path / "blacki-telemetry.log"
-    records = [json.loads(line) for line in log_path.read_text().splitlines()]
-    assert records[-1]["message"] == "file message"
-    assert logging.getLogger().level == logging.DEBUG
+    root = logging.getLogger()
+    assert root.level == logging.DEBUG
+    assert [type(handler) for handler in root.handlers] == [logging.StreamHandler]
     assert logging.getLogger("urllib3").level == logging.WARNING
 
 
-def test_setup_logging_falls_back_to_stdout(
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-    preserve_logging_configuration: None,
-) -> None:
-    """An unavailable local log directory does not prevent process logging."""
-    blocked = Path("/blocked")
-    with (
-        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
-        patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
-    ):
-        setup_logging("INFO")
-
-    assert "Continuing with stdout logging only" in capsys.readouterr().out
-
-
-def test_setup_tracing_installs_provider_for_unwritable_directory() -> None:
-    """Tracing still installs a provider so ADK cannot keep spans in memory."""
-    blocked = Path("/blocked")
-    with (
-        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
-        patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
-        patch("blacki.observability.setup.trace.set_tracer_provider"),
-    ):
-        provider = setup_tracing()
-
-    assert provider is not None
-    provider.shutdown()
-
-
-def test_flat_file_exporter_reports_write_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Local exporter failure is reported without crashing the application."""
-
-    def fail_write(_path: Path, _lines: list[str]) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr("blacki.observability.setup._append_private_lines", fail_write)
-    exporter = FlatFileSpanExporter(tmp_path)
-    span = _make_span("agent.failure")
-
-    assert exporter.export([span]).name == "FAILURE"
-    exporter.shutdown()
-
-
-def _make_span(name: str) -> ReadableSpan:
-    """Create a completed in-memory span for exporter unit tests."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("test.exporter")
-    with tracer.start_as_current_span(name):
-        pass
-    spans = exporter.get_finished_spans()
-    provider.shutdown()
-    assert len(spans) == 1
-    return spans[0]
-
-
-def _make_span_with(
-    name: str,
-    attributes: dict[str, Any] | None = None,
-    events: list[tuple[str, dict[str, Any]]] | None = None,
-) -> ReadableSpan:
-    """Create a completed span carrying the supplied attributes and events."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("test.exporter")
-    with tracer.start_as_current_span(name) as span:
-        if attributes:
-            span.set_attributes(attributes)
-        for event_name, event_attributes in events or []:
-            span.add_event(event_name, attributes=event_attributes)
-    spans = exporter.get_finished_spans()
-    provider.shutdown()
-    return spans[0]
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, True),
-        ("true", True),
-        ("TRUE", True),
-        ("1", True),
-        ("0", False),
-        ("false", False),
-        ("FALSE", False),
-    ],
-)
-def test_adk_span_content_capture_defaults_on(
-    value: str | None,
-    expected: bool,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """ADK span content capture is opt-out and on by default."""
-    if value is None:
-        monkeypatch.delenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", raising=False)
-    else:
-        monkeypatch.setenv("ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS", value)
-
-    assert adk_span_content_capture_enabled() is expected
-
-
-def test_exporter_keeps_slim_and_full_traces_separate(tmp_path: Path) -> None:
-    """The slim overview omits content while the daily full trace retains it."""
-    exporter = FlatFileSpanExporter(tmp_path)
-    span = _make_span_with(
-        "call_llm",
-        {
-            "gen_ai.request.model": "openrouter/test",
-            "gcp.vertex.agent.llm_request": '{"contents": "secret prompt"}',
-            "gen_ai.tool.name": "should-not-be-allowlisted",
-        },
-        [("content.event", {"payload": "secret event"})],
-    )
-
-    assert exporter.export([span]).name == "SUCCESS"
-
-    slim = json.loads((tmp_path / "blacki-traces.log").read_text())
-    assert slim["attributes"] == {
-        "gen_ai.request.model": "openrouter/test",
-        "gen_ai.tool.name": "should-not-be-allowlisted",
-    }
-    assert slim["events"] == []
-    assert "secret" not in json.dumps(slim)
-
-    full_files = list((tmp_path / "traces").glob("*.jsonl"))
-    assert len(full_files) == 1
-    full = json.loads(full_files[0].read_text())
-    assert full["attributes"]["gcp.vertex.agent.llm_request"] == (
-        '{"contents": "secret prompt"}'
-    )
-    assert full["events"] == [
-        {
-            "name": "content.event",
-            "timestamp": full["events"][0]["timestamp"],
-            "attributes": {"payload": "secret event"},
-        }
-    ]
-
-
-def test_trace_files_are_owner_readable_only(tmp_path: Path) -> None:
-    """Trace and slim files are created with mode 0600."""
-    exporter = FlatFileSpanExporter(tmp_path)
-    exporter.export([_make_span("agent.private")])
-
-    slim_mode = (tmp_path / "blacki-traces.log").stat().st_mode & 0o777
-    full_file = next((tmp_path / "traces").glob("*.jsonl"))
-    assert slim_mode == 0o600
-    assert full_file.stat().st_mode & 0o777 == 0o600
-
-
-def test_daily_trace_file_uses_utc_end_date(tmp_path: Path) -> None:
-    """Full traces are grouped into UTC-dated files."""
-    exporter = FlatFileSpanExporter(tmp_path)
-    span = _make_span("agent.dated")
-    exporter.export([span])
-
-    end = span.end_time
-    assert end is not None
-    expected = datetime.fromtimestamp(end / 1e9, tz=UTC).date().isoformat()
-    assert (tmp_path / "traces" / f"{expected}.jsonl").is_file()
-
-
-def test_json_formatter_keeps_raw_messages_and_correlates_trace_ids() -> None:
-    """Structured logs keep raw content and include the active trace IDs."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("test.logging")
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="token=super-secret-value",
-        args=(),
-        exc_info=None,
-    )
-    with tracer.start_as_current_span("log.parent"):
-        formatted = json.loads(JSONFormatter().format(record))
-        context = trace.get_current_span().get_span_context()
-    provider.shutdown()
-
-    assert formatted["message"] == "token=super-secret-value"
-    assert formatted["trace_id"] == format(context.trace_id, "032x")
-    assert formatted["span_id"] == format(context.span_id, "016x")
-
-
-def test_setup_logging_rotates_at_utc_midnight(
-    tmp_path: Path,
-    preserve_logging_configuration: None,
-) -> None:
-    """The file handler rotates daily in UTC and keeps fourteen backups."""
-    with patch("blacki.observability.setup.get_log_dir", return_value=tmp_path):
-        setup_logging("DEBUG")
-
-    handlers = [
-        handler
-        for handler in logging.getLogger().handlers
-        if isinstance(handler, TimedRotatingFileHandler)
-    ]
-    assert len(handlers) == 1
-    handler = handlers[0]
-    assert handler.when == "MIDNIGHT"
-    assert handler.utc is True
-    assert handler.backupCount == 14
-    assert Path(handler.baseFilename) == tmp_path / "blacki-telemetry.log"
-
-
-def test_span_end_day_falls_back_to_current_utc_date() -> None:
-    """A span without timestamps is filed under today's UTC date."""
-    from types import SimpleNamespace
-
-    span = SimpleNamespace(end_time=None, start_time=None)
-    expected = datetime.now(tz=UTC).date().isoformat()
-    assert _span_end_day(span) == expected  # type: ignore[arg-type]
-
-
-def test_exporter_handles_empty_batches(tmp_path: Path) -> None:
-    """An empty export is a success and writes no files."""
-    exporter = FlatFileSpanExporter(tmp_path)
-
-    assert exporter.export([]).name == "SUCCESS"
-    assert not (tmp_path / "blacki-traces.log").exists()
-
-
-def test_iso_timestamp_returns_none_for_missing_nanoseconds() -> None:
-    """A span without a timestamp maps to a null ISO value."""
-    from blacki.observability.setup import _iso_timestamp
-
-    assert _iso_timestamp(None) is None
+def test_file_exporters_close_their_file_on_shutdown() -> None:
+    traces, logs = io.StringIO(), io.StringIO()
+    FileSpanExporter(out=traces).shutdown()
+    FileLogRecordExporter(out=logs).shutdown()
+    assert traces.closed and logs.closed

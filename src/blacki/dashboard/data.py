@@ -22,21 +22,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from ..observability.attributes import TRACE_ATTRIBUTE_ALLOWLIST
 from ..observability.ledger import (
     LedgerSummary,
     UsageLedgerSnapshot,
     fixed_cost_to_usd,
     read_usage_ledger,
-)
-from ..observability.redaction import (
-    BEARER_RE as _BEARER_RE,
-)
-from ..observability.redaction import (
-    KEY_VALUE_SECRET_RE as _KEY_VALUE_SECRET_RE,
-)
-from ..observability.redaction import (
-    TELEGRAM_TOKEN_RE as _TELEGRAM_TOKEN_RE,
 )
 from .models import (
     DEGRADED_DATABASE_WARNING,
@@ -45,6 +35,8 @@ from .models import (
     MAX_JSONL_LINE_BYTES,
     MAX_JSONL_TAIL_BYTES,
     MAX_LOG_PAGE_SIZE,
+    MAX_TRACE_JSONL_LINE_BYTES,
+    MAX_TRACE_JSONL_TAIL_BYTES,
     MAX_TRACE_PAGE_SIZE,
     MISSING_EVENTS_WARNING,
     MISSING_TELEMETRY_WARNING,
@@ -58,53 +50,9 @@ from .models import (
 
 _SESSION_VERSION_RE = re.compile(r"^(?P<prefix>.+)-v(?P<version>[0-9]+)$")
 _TELEGRAM_DIRECT_USER_ID_RE = re.compile(r"^telegram-chat-(?P<user_id>[0-9]+)$")
-_ABSOLUTE_PATH_RE = re.compile(
-    r"(?<![A-Za-z0-9_])/(?:Users|home|var|tmp|private|app|workspace|opt|srv|etc)/[^\s\"']+"
-)
-_SENSITIVE_KEYS = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "api_token",
-        "token",
-        "access_token",
-        "refresh_token",
-        "id_token",
-        "client_secret",
-        "password",
-        "passwd",
-        "secret",
-        "authorization",
-        "cookie",
-        "telegram_bot_token",
-        "bot_token",
-        "credential",
-        "credentials",
-    }
-)
 _WINDOW_RE = re.compile(r"^(?P<count>[0-9]{1,4})(?P<unit>[hdw])$")
-_MAX_TEXT_REDACTION_LENGTH = 64 * 1024
 _MIN_TIMESTAMP_SECONDS = -62_135_596_800.0  # datetime year 1
 _MAX_TIMESTAMP_SECONDS = 253_402_300_799.999999  # datetime year 9999
-_TRACE_NUMERIC_ATTRIBUTE_KEYS = frozenset(
-    {
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "gen_ai.usage.prompt_tokens",
-        "gen_ai.usage.completion_tokens",
-        "gen_ai.usage.prompt_token_count",
-        "gen_ai.usage.candidates_token_count",
-        "llm.token_count.input",
-        "llm.token_count.output",
-        "llm.token_count.total",
-        "llm.token_count.prompt",
-        "llm.token_count.completion",
-        "gen_ai.usage.cost",
-        "gen_ai.usage.cost_estimate",
-        "gen_ai.cost.upstream_inference_cost",
-    }
-)
 COST_METADATA_KEY = "blacki.cost"
 
 
@@ -536,7 +484,10 @@ def _discard_partial_jsonl_line(handle: Any) -> None:
 
 
 def _scan_jsonl_sync(
-    path: Path, *, max_line_bytes: int = MAX_JSONL_LINE_BYTES
+    path: Path,
+    *,
+    max_line_bytes: int = MAX_JSONL_LINE_BYTES,
+    max_tail_bytes: int = MAX_JSONL_TAIL_BYTES,
 ) -> _JsonlScan:
     records: deque[dict[str, Any]] = deque(maxlen=MAX_ACCEPTED_JSONL_RECORDS)
     invalid = 0
@@ -550,7 +501,7 @@ def _scan_jsonl_sync(
         return _JsonlScan((), 0, 0, 0, unavailable=True)
 
     with handle:
-        tail_offset = max(0, file_size - MAX_JSONL_TAIL_BYTES)
+        tail_offset = max(0, file_size - max_tail_bytes)
         if tail_offset:
             truncated = True
             handle.seek(tail_offset)
@@ -572,38 +523,6 @@ def _scan_jsonl_sync(
             accepted = min(MAX_ACCEPTED_JSONL_RECORDS, accepted + 1)
             records.append(decoded)
     return _JsonlScan(tuple(records), accepted, invalid, oversized, truncated=truncated)
-
-
-def _sanitize_text(value: str) -> str:
-    text = value[:_MAX_TEXT_REDACTION_LENGTH]
-    text = _BEARER_RE.sub("Bearer [REDACTED]", text)
-    text = _TELEGRAM_TOKEN_RE.sub("[REDACTED]", text)
-    text = _KEY_VALUE_SECRET_RE.sub(r"\1[REDACTED]", text)
-    text = _ABSOLUTE_PATH_RE.sub("[PATH_REDACTED]", text)
-    if len(value) > _MAX_TEXT_REDACTION_LENGTH:
-        text += "…"
-    return text
-
-
-def _sanitize_json(value: Any, key: str | None = None) -> Any:
-    key_name = (
-        re.sub(r"(?<!^)(?=[A-Z])", "_", key).lower().replace("-", "_") if key else ""
-    )
-    if key_name in _SENSITIVE_KEYS:
-        return "[REDACTED]"
-    if key_name in {"exception", "exc_info", "traceback", "stack"}:
-        return "[REDACTED_EXCEPTION]"
-    if isinstance(value, str):
-        return _sanitize_text(value)
-    if value is None or isinstance(value, (bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Mapping):
-        return {str(k): _sanitize_json(v, str(k)) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_sanitize_json(item) for item in value]
-    return _sanitize_text(str(value))
 
 
 def _event_content(event: _EventRow) -> dict[str, Any]:
@@ -644,11 +563,7 @@ def _attachment_item(
     mime_type: Any = None
     if isinstance(attachment, Mapping):
         mime_type = attachment.get("mime_type", attachment.get("mimeType"))
-    safe_mime = (
-        _sanitize_text(mime_type)[:128]
-        if isinstance(mime_type, str) and mime_type
-        else "unknown"
-    )
+    safe_mime = mime_type if isinstance(mime_type, str) and mime_type else "unknown"
     return {
         "id": f"{event.event_id}:attachment:{index}",
         "timestamp": _iso_timestamp(event.timestamp),
@@ -694,7 +609,7 @@ def _event_messages(event: _EventRow) -> list[JsonObject]:
                         "id": f"{event.event_id}:tool:{index}",
                         "timestamp": _iso_timestamp(event.timestamp),
                         "type": "tool",
-                        "name": _sanitize_text(name)[:256],
+                        "name": name,
                         "status": "requested",
                     }
                 )
@@ -709,7 +624,7 @@ def _event_messages(event: _EventRow) -> list[JsonObject]:
                         "id": f"{event.event_id}:tool:{index}",
                         "timestamp": _iso_timestamp(event.timestamp),
                         "type": "tool",
-                        "name": _sanitize_text(name)[:256],
+                        "name": name,
                         "status": _tool_status(function_response),
                     }
                 )
@@ -1193,19 +1108,50 @@ def _scan_warning(scan: _JsonlScan, *, missing: str) -> list[str]:
     return warnings
 
 
+def _otel_id(value: Any) -> Any:
+    """Return an OpenTelemetry hex ID without the SDK's ``0x`` prefix."""
+    if isinstance(value, str) and value.startswith("0x"):
+        return value[2:]
+    return value
+
+
 def _log_item(record: dict[str, Any]) -> JsonObject:
-    clean = _sanitize_json(record)
-    if not isinstance(clean, dict):  # pragma: no cover - input is always a dict
-        clean = {}
+    """Return a log record with the fields the dashboard lists.
+
+    OpenTelemetry records keep every field and gain ``level``, ``message``, and
+    ``logger`` from ``severity_text``, ``body`` or ``event_name``, and the
+    instrumentation scope.  Lines written before the OpenTelemetry exporter
+    already carry those three fields.
+    """
+    item: JsonObject = dict(record)
     timestamp = _parse_timestamp(record.get("timestamp"))
     if timestamp is not None:
-        clean["timestamp"] = _iso_timestamp(timestamp)
-    level = record.get("level")
-    if isinstance(level, str):
-        clean["level"] = level.upper()
-    if "name" in record and "logger" not in clean:
-        clean["logger"] = clean.get("name")
-    return clean
+        item["timestamp"] = _iso_timestamp(timestamp)
+    level = record.get("severity_text", record.get("level"))
+    if isinstance(level, str) and level:
+        item["level"] = level.upper()
+    if "body" in record or "event_name" in record:
+        body = record.get("body")
+        event_name = record.get("event_name")
+        if body is None and isinstance(event_name, str) and event_name:
+            item["message"] = event_name
+        else:
+            item["message"] = (
+                body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+            )
+    scope = record.get("instrumentation_scope")
+    if isinstance(scope, Mapping) and isinstance(scope.get("name"), str):
+        item["logger"] = scope["name"]
+    elif isinstance(record.get("name"), str):
+        item["logger"] = record["name"]
+    for key in ("trace_id", "span_id"):
+        if key in item:
+            value = _otel_id(item[key])
+            # The SDK writes all-zero IDs for records outside any span.
+            item[key] = (
+                None if isinstance(value, str) and not value.strip("0") else value
+            )
+    return item
 
 
 def _log_sort_key(item: Mapping[str, Any]) -> float:
@@ -1229,35 +1175,13 @@ def _trace_time(record: Mapping[str, Any], key: str) -> float | None:
     return _parse_timestamp(value)
 
 
-def _safe_attribute_value(value: Any) -> JsonObject | str | int | float | bool | None:
-    if value is None or isinstance(value, (bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, str):
-        return _sanitize_text(value)[:2048]
-    # Arrays are useful for a small number of OTel attributes but nested
-    # objects can hide content, so only scalar values are exposed.
-    return _sanitize_text(str(value))[:2048]
-
-
-def _allowlisted_attributes(value: Any) -> JsonObject:
-    if not isinstance(value, Mapping):
-        return {}
-    attributes: JsonObject = {}
-    for key, item in value.items():
-        name = str(key)
-        if name not in TRACE_ATTRIBUTE_ALLOWLIST:
-            continue
-        if name in _TRACE_NUMERIC_ATTRIBUTE_KEYS and (
-            isinstance(item, bool)
-            or not isinstance(item, (int, float))
-            or (isinstance(item, float) and not math.isfinite(item))
-        ):
-            continue
-        safe_value = _safe_attribute_value(item)
-        attributes[name] = safe_value
-    return attributes
+def _attributes(value: Any) -> JsonObject:
+    """Return span or event attributes unchanged."""
+    return (
+        {str(key): item for key, item in value.items()}
+        if isinstance(value, Mapping)
+        else {}
+    )
 
 
 def _trace_item(record: dict[str, Any]) -> JsonObject | None:
@@ -1268,6 +1192,7 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
         or context.get("trace_id")
         or context.get("traceId")
     )
+    trace_id = _otel_id(trace_id)
     if not isinstance(trace_id, str) or not trace_id:
         return None
     span_id = (
@@ -1282,6 +1207,7 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
         or context.get("parent_id")
         or context.get("parentId")
     )
+    span_id, parent_id = _otel_id(span_id), _otel_id(parent_id)
     start = _trace_time(record, "start_time")
     end = _trace_time(record, "end_time")
     duration = (
@@ -1290,10 +1216,12 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
         else 0.0
     )
     raw_name = record.get("name")
-    name = _sanitize_text(raw_name)[:256] if isinstance(raw_name, str) else "span"
+    name = raw_name if isinstance(raw_name, str) else "span"
     kind = record.get("kind")
     if not isinstance(kind, str):
         kind = str(kind) if kind is not None else None
+    if kind is not None:
+        kind = kind.removeprefix("SpanKind.")
     events: list[JsonObject] = []
     raw_events = record.get("events")
     if isinstance(raw_events, list):
@@ -1304,14 +1232,14 @@ def _trace_item(record: dict[str, Any]) -> JsonObject | None:
             if not isinstance(event_name, str):
                 continue
             event_item: JsonObject = {
-                "name": _sanitize_text(event_name)[:256],
+                "name": event_name,
                 "timestamp": _iso_timestamp(
                     _parse_timestamp(raw_event.get("timestamp"))
                 ),
-                "attributes": _allowlisted_attributes(raw_event.get("attributes")),
+                "attributes": _attributes(raw_event.get("attributes")),
             }
             events.append(event_item)
-    attributes = _allowlisted_attributes(record.get("attributes"))
+    attributes = _attributes(record.get("attributes"))
     return {
         "trace_id": trace_id,
         "span_id": span_id if isinstance(span_id, str) else None,
@@ -1457,6 +1385,19 @@ def _trace_latency_stats(
     }
 
 
+def scan_traces_sync(path: Path) -> _JsonlScan:
+    """Scan the newest spans in the trace file.
+
+    Model-call spans hold the whole conversation, so the trace file gets larger
+    line and tail limits than the log file.
+    """
+    return _scan_jsonl_sync(
+        path,
+        max_line_bytes=MAX_TRACE_JSONL_LINE_BYTES,
+        max_tail_bytes=MAX_TRACE_JSONL_TAIL_BYTES,
+    )
+
+
 class DashboardStore:
     """Read-only adapter over ADK sessions and local JSONL telemetry."""
 
@@ -1520,7 +1461,7 @@ class DashboardStore:
         snapshot, log_scan, trace_scan = await asyncio.gather(
             self._snapshot(),
             asyncio.to_thread(_scan_jsonl_sync, self.log_dir / "blacki-telemetry.log"),
-            asyncio.to_thread(_scan_jsonl_sync, self.log_dir / "blacki-traces.log"),
+            asyncio.to_thread(scan_traces_sync, self.log_dir / "blacki-traces.log"),
         )
         log_items = [_log_item(record) for record in log_scan.records]
         trace_span_items = [
@@ -2014,7 +1955,7 @@ class DashboardStore:
         query = bounded_search(search)
         wanted_status = str(status).upper() if status else ""
         scan = await asyncio.to_thread(
-            _scan_jsonl_sync, self.log_dir / "blacki-traces.log"
+            scan_traces_sync, self.log_dir / "blacki-traces.log"
         )
         span_items: list[JsonObject] = []
         for record in scan.records:
@@ -2046,7 +1987,7 @@ class DashboardStore:
 
     async def get_trace(self, trace_id: str) -> JsonObject | None:
         scan = await asyncio.to_thread(
-            _scan_jsonl_sync, self.log_dir / "blacki-traces.log"
+            scan_traces_sync, self.log_dir / "blacki-traces.log"
         )
         requested = str(trace_id)
         matches: list[JsonObject] = []

@@ -18,7 +18,7 @@ from blacki.wiki.storage import WikiStore
 USER = "telegram-chat-12"
 OTHER = "telegram-chat-34"
 TRACE = "a" * 32
-PROMPT = "Use the captured instructions.\n" * 300 + "End of recorded prompt."
+PROMPT = "Use the captured instructions.\n" * 300 + "password: example-secret"
 
 
 @pytest.fixture
@@ -73,37 +73,93 @@ def client(files: Path) -> Iterator[TestClient]:
 
 
 def _span(
-    index: int, attributes: dict[str, object], parent: int | None = None
+    index: int,
+    attributes: dict[str, object],
+    parent: int | None = None,
+    *,
+    name: str = "generate_content model-x",
+    status: str = "UNSET",
 ) -> dict[str, object]:
+    """Build a span in the OpenTelemetry SDK's JSON format."""
     return {
-        "name": "generate_content",
-        "context": {"trace_id": TRACE, "span_id": f"{index:016x}"},
-        "parent_id": f"{parent:016x}" if parent is not None else None,
-        "start_time": 1730000000 + index,
+        "name": name,
+        "context": {"trace_id": "0x" + TRACE, "span_id": f"0x{index:016x}"},
+        "kind": "SpanKind.INTERNAL",
+        "parent_id": f"0x{parent:016x}" if parent is not None else None,
+        "start_time": f"2026-08-15T10:00:{index:02d}.000000Z",
+        "end_time": f"2026-08-15T10:00:{index:02d}.250000Z",
+        "status": {"status_code": status},
         "attributes": attributes,
+        "events": [],
     }
 
 
-def _old_prompt(text: str, **attributes: object) -> dict[str, object]:
+def _model_call(prompt: str = PROMPT, **attributes: object) -> dict[str, object]:
+    """Return the experimental GenAI attributes ADK writes on a model call."""
     return {
-        "llm.input_messages.0.message.role": "system",
-        "llm.input_messages.0.message.content": text,
-        "llm.input_messages.1.message.content": "Raw user message",
-        "llm.tools.0.tool.json_schema": json.dumps(
-            {
-                "name": "example_tool",
-                "description": "Read example records.",
-                "parameters": {"description": "Internal schema details"},
-            }
+        "gen_ai.request.model": "model-x",
+        "gen_ai.system_instructions": json.dumps([{"type": "text", "content": prompt}]),
+        "gen_ai.tool.definitions": json.dumps(
+            [
+                {
+                    "name": "add",
+                    "description": "Add two numbers.",
+                    "parameters": {"type": "object"},
+                    "type": "function",
+                }
+            ]
         ),
+        "gen_ai.input.messages": json.dumps(
+            [
+                {"role": "user", "parts": [{"type": "text", "content": "1+2?"}]},
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {
+                            "type": "tool_call",
+                            "id": "call-1",
+                            "name": "add",
+                            "arguments": {"a": 1, "b": 2},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "type": "tool_call_response",
+                            "id": "call-1",
+                            "response": {"result": 3},
+                        }
+                    ],
+                },
+            ]
+        ),
+        "gen_ai.output.messages": json.dumps(
+            [
+                {
+                    "role": "assistant",
+                    "parts": [
+                        {"type": "text", "content": "It is 3."},
+                        {
+                            "type": "tool_call",
+                            "id": "call-2",
+                            "name": "add",
+                            "arguments": {"a": 3, "b": 4},
+                        },
+                    ],
+                    "finish_reason": "stop",
+                }
+            ]
+        ),
+        "gen_ai.usage.input_tokens": 10,
+        "gen_ai.usage.output_tokens": 3,
         **attributes,
     }
 
 
 def _write_spans(path: Path, spans: list[dict[str, object]]) -> None:
-    trace_dir = path / "traces"
-    trace_dir.mkdir(parents=True, exist_ok=True)
-    (trace_dir / "2024-10-26.jsonl").write_text(
+    (path / "blacki-traces.log").write_text(
         "\n".join(map(json.dumps, spans)) + "\n", encoding="utf-8"
     )
 
@@ -114,15 +170,19 @@ def test_context_matches_invocation_ancestry_and_omits_unverified_spans(
     _write_spans(
         files,
         [
+            {"context": {"trace_id": "invalid", "span_id": "invalid"}},
             _span(1, {"gcp.vertex.agent.invocation_id": "inv-a", "user.id": USER}),
-            _span(2, _old_prompt(PROMPT), 1),
-            _span(3, _old_prompt("Foreign user", **{"user.id": OTHER}), 1),
-            _span(4, _old_prompt("Wrong session", **{"session.id": "session-v2"}), 1),
-            _span(5, _old_prompt("Conflict", **{"blacki.invocation_id": "inv-b"}), 1),
-            _span(6, _old_prompt("Collision", **{"blacki.invocation_id": "collision"})),
-            _span(7, _old_prompt("Sibling with no ancestry")),
-            _span(8, _old_prompt("Duplicated span"), 1),
-            _span(8, _old_prompt("Duplicated span"), 1),
+            _span(2, _model_call(), 1),
+            _span(3, _model_call(**{"user.id": OTHER}), 1),
+            _span(4, _model_call(**{"session.id": "session-v2"}), 1),
+            _span(5, _model_call(**{"blacki.invocation_id": "inv-b"}), 1),
+            _span(6, _model_call(**{"blacki.invocation_id": "collision"})),
+            _span(7, _model_call()),
+            _span(8, _model_call(), 1),
+            _span(8, _model_call(), 1),
+            _span(9, _model_call(**{"blacki.invocation_id": "inv-a"}), 9),
+            _span(10, {**_model_call(), "blacki.invocation_id": 7}),
+            _span(11, {"blacki.invocation_id": "inv-a"}, name="call_llm"),
         ],
     )
     params = {"user_id": USER, "session_id": "session-v1"}
@@ -134,67 +194,134 @@ def test_context_matches_invocation_ancestry_and_omits_unverified_spans(
     assert PROMPT not in listing.text
     span_id = f"{2:016x}"
     assert body["items"][0]["span_id"] == span_id
+    assert body["items"][0]["trace_id"] == TRACE
+    assert body["items"][0]["model"] == "model-x"
 
     selector = {"trace_id": TRACE, "span_id": span_id}
-    detail = client.get("/dashboard/api/context", params=params | selector)
-    capture = detail.json()["capture"]
-    assert capture["system_prompt"] == PROMPT
-    assert capture["tools"] == [
-        {"name": "example_tool", "description": "Read example records."}
-    ]
-    assert "Raw user message" not in detail.text
-    assert "Internal schema details" not in detail.text
     assert client.get(
         "/dashboard/api/context", params=params | selector | {"user_id": OTHER}
     ).json() == {"status": "capture_missing"}
     assert client.get(
         "/dashboard/api/context", params=params | selector | {"session_id": "absent"}
     ).json() == {"status": "session_missing"}
-    assert (
-        PROMPT
-        not in client.get("/dashboard/api/trace", params={"trace_id": TRACE}).text
-    )
 
 
-def test_structured_capture_and_incomplete_tool_list(
+def test_context_capture_shows_the_whole_model_call(
     client: TestClient, files: Path
 ) -> None:
+    """Every tab comes from the experimental GenAI attributes, unfiltered."""
     _write_spans(
         files,
         [
+            _span(1, {"gcp.vertex.agent.invocation_id": "inv-a"}),
+            _span(2, _model_call(), 1),
             _span(
+                3,
+                {"gen_ai.tool.call.id": "call-2", "gen_ai.tool.name": "add"},
+                2,
+                name="execute_tool add",
+                status="OK",
+            ),
+            _span(
+                4,
+                _model_call(
+                    **{
+                        "gen_ai.input.messages": json.dumps(
+                            [
+                                {
+                                    "role": "user",
+                                    "parts": [
+                                        {
+                                            "type": "tool_call_response",
+                                            "id": "call-2",
+                                            "response": {"result": 7},
+                                        }
+                                    ],
+                                }
+                            ]
+                        )
+                    }
+                ),
                 1,
-                {
-                    "blacki.invocation_id": "inv-a",
-                    "gen_ai.system_instructions": json.dumps(
-                        [
-                            {"type": "text", "content": "System rule."},
-                            {"type": "text", "content": "password: example-secret"},
-                        ]
-                    ),
-                    "gen_ai.tool.definitions": json.dumps(
-                        [
-                            {"name": "read", "description": "Read one record."},
-                            {"name": "partial"},
-                        ]
-                    ),
-                },
-            )
+            ),
         ],
     )
-    response = client.get(
+    detail = client.get(
         "/dashboard/api/context",
         params={
             "user_id": USER,
             "session_id": "session-v1",
             "trace_id": TRACE,
-            "span_id": f"{1:016x}",
+            "span_id": f"{2:016x}",
         },
     )
-    capture = response.json()["capture"]
-    assert capture["system_prompt"] == "System rule.\npassword: [REDACTED]"
-    assert capture["tools"] == [{"name": "read", "description": "Read one record."}]
-    assert capture["partial_tools"] is True
+    capture = detail.json()["capture"]
+    assert capture["system_prompt"] == PROMPT
+    assert capture["tools"] == [
+        {
+            "name": "add",
+            "description": "Add two numbers.",
+            "parameters": {"type": "object"},
+        }
+    ]
+    assert capture["partial_tools"] is False
+    assert [message["role"] for message in capture["messages"]] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+    assert capture["messages"][2]["parts"] == [
+        {
+            "type": "function_response",
+            "name": "add",
+            "response": {"result": 3},
+            "call_id": "call-1",
+        }
+    ]
+    assert capture["response"]["text"] == "It is 3."
+    assert capture["response"]["finish_reason"] == "stop"
+    assert capture["response"]["usage"] == {"input_tokens": 10, "output_tokens": 3}
+    assert capture["tool_calls"] == [
+        {
+            "name": "add",
+            "call_id": "call-2",
+            "args": {"a": 3, "b": 4},
+            "response": {"result": 7},
+            "status": "OK",
+            "duration_ms": 250,
+        }
+    ]
+    raw = json.loads(capture["raw_span"])
+    assert raw["attributes"]["gen_ai.output.messages"][0]["finish_reason"] == "stop"
+    assert "password: example-secret" in capture["system_prompt"]
+
+
+def test_trace_views_return_full_content(client: TestClient, files: Path) -> None:
+    _write_spans(files, [_span(1, _model_call())])
+    traces = client.get("/dashboard/api/traces").json()
+    assert traces["items"][0]["trace_id"] == TRACE
+    trace = client.get("/dashboard/api/trace", params={"trace_id": TRACE})
+    assert trace.status_code == 200
+    span = trace.json()["spans"][0]
+    assert span["attributes"]["gen_ai.system_instructions"] == json.dumps(
+        [{"type": "text", "content": PROMPT}]
+    )
+
+
+def test_context_distinguishes_missing_trace_from_unreadable_session_store(
+    client: TestClient, files: Path
+) -> None:
+    url = "/dashboard/api/context"
+    params = {"user_id": USER, "session_id": "session-v1"}
+    assert client.get(url, params=params).json() == {"status": "trace_missing"}
+
+    sessions = files / ".adk" / "sessions.db"
+    sessions.rename(sessions.with_suffix(".bak"))
+    assert client.get(url, params=params).json() == {"status": "unavailable"}
+
+    sessions.write_text("not a database", encoding="utf-8")
+    _write_spans(files, [_span(1, _model_call())])
+    assert client.get(url, params=params).json() == {"status": "unavailable"}
 
 
 @pytest.mark.parametrize(
@@ -224,7 +351,7 @@ def test_private_routes_available_by_default_on_supported_hosts(
 
 
 def test_private_routes_enforce_host_and_browser_boundary(client: TestClient) -> None:
-    for path in ("context", "wiki", "logs"):
+    for path in ("context", "wiki", "logs", "traces", "trace"):
         url = "/dashboard/api/" + path
         for headers in (
             {"Host": "foreign.example", "X-Forwarded-Host": "localhost"},
@@ -303,21 +430,19 @@ def test_wiki_lists_owner_pages_and_reads_the_selected_page(
     assert client.get(url, params=params).json() == {"status": "wiki_disabled"}
 
 
-def test_wiki_markdown_is_returned_as_data_and_redacted(
-    client: TestClient, files: Path
-) -> None:
+def test_wiki_markdown_is_returned_as_data(client: TestClient, files: Path) -> None:
+    secret = "- note: sk-or-v1-" + "a" * 24
     WikiStore(files / "wiki.db").edit(
         12,
         "notes.md",
-        "<script>alert('x')</script>\n- note: sk-or-v1-" + "a" * 24,
+        "<script>alert('x')</script>\n" + secret,
         "",
         read=False,
     )
     data = client.get("/dashboard/api/wiki", params={"user_id": USER}).json()
     markdown = data["selected"]["markdown"]
     assert "<script>alert('x')</script>" in markdown
-    assert "sk-or-v1-" not in markdown
-    assert "[REDACTED]" in markdown
+    assert secret in markdown
 
 
 def test_wiki_from_a_claim_based_database_reads_as_empty(
@@ -346,66 +471,6 @@ def test_wiki_from_a_claim_based_database_reads_as_empty(
     assert data == {"status": "empty"}
 
 
-def test_trace_tail_can_read_multipart_prompt_but_rejects_broken_ancestry(
-    client: TestClient, files: Path
-) -> None:
-    params = {"user_id": USER, "session_id": "session-v1"}
-    _write_spans(
-        files,
-        [
-            {"context": {"trace_id": "invalid", "span_id": "invalid"}},
-            _span(
-                1,
-                {
-                    "blacki.invocation_id": "inv-a",
-                    "llm.model_name": "example-model",
-                    "llm.input_messages.0.message.role": "system",
-                    "llm.input_messages.0.message.contents.1.message_content.text": (
-                        "Last."
-                    ),
-                    "llm.input_messages.0.message.contents.0.message_content.text": (
-                        "First."
-                    ),
-                    "llm.tools.1.tool.json_schema": "not JSON",
-                    "gen_ai.system_instructions": "[]",
-                },
-                99,  # Older parent outside the retained trace file.
-            ),
-            _span(
-                2, _old_prompt("Cyclic span", **{"blacki.invocation_id": "inv-a"}), 2
-            ),
-            _span(3, _old_prompt("Unusable ID", **{"blacki.invocation_id": 7})),
-            _span(4, _old_prompt("<elided>", **{"blacki.invocation_id": "inv-a"})),
-        ],
-    )
-    listing = client.get("/dashboard/api/context", params=params).json()
-    assert listing["total"] == 1
-    assert listing["items"][0]["model"] == "example-model"
-    detail = client.get(
-        "/dashboard/api/context",
-        params=params | {"trace_id": TRACE, "span_id": f"{1:016x}"},
-    ).json()["capture"]
-    assert detail["system_prompt"] == "First.\nLast."
-    assert detail["partial_tools"] is True
-    assert detail["tools"] == []
-
-
-def test_context_distinguishes_missing_trace_from_unreadable_session_store(
-    client: TestClient, files: Path
-) -> None:
-    url = "/dashboard/api/context"
-    params = {"user_id": USER, "session_id": "session-v1"}
-    assert client.get(url, params=params).json() == {"status": "trace_missing"}
-
-    sessions = files / ".adk" / "sessions.db"
-    sessions.rename(sessions.with_suffix(".bak"))
-    assert client.get(url, params=params).json() == {"status": "unavailable"}
-
-    sessions.write_text("not a database", encoding="utf-8")
-    _write_spans(files, [_span(1, _old_prompt(PROMPT))])
-    assert client.get(url, params=params).json() == {"status": "unavailable"}
-
-
 def test_wiki_distinguishes_empty_unknown_owner_and_unreadable_data(
     client: TestClient, files: Path
 ) -> None:
@@ -420,575 +485,146 @@ def test_wiki_distinguishes_empty_unknown_owner_and_unreadable_data(
     assert client.get(url, params={"user_id": USER}).json() == {"status": "unavailable"}
 
 
-def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) -> None:
-    """The private view reads the full model call from ADK span attributes."""
-    request = {
-        "model": "openrouter/example",
-        "config": {
-            "system_instruction": {
-                "role": "system",
-                "parts": [{"text": "ADK system prompt."}],
-            },
-            "api_key": "sk-or-v1-" + "a" * 24,
-            "tools": [
-                {
-                    "function_declarations": [
-                        {
-                            "name": "read_file",
-                            "description": "Read a file.",
-                            "parameters": {"type": "object"},
-                        }
-                    ]
-                }
-            ],
-        },
-        "contents": [{"role": "user", "parts": [{"text": "User message."}]}],
+def test_parts_map_every_genai_part_type() -> None:
+    from blacki.dashboard.private_data import _normalize_part
+
+    names = {"call-1": "add"}
+    assert _normalize_part({"type": "text", "content": "hi"}, names) == {
+        "type": "text",
+        "text": "hi",
     }
-    response = {
-        "content": {
-            "role": "model",
-            "parts": [
-                {"text": "Reading the file."},
-                {
-                    "function_call": {
-                        "name": "read_file",
-                        "args": {"path": "notes.txt"},
-                        "id": "call-1",
-                    }
-                },
-            ],
-        },
-        "finish_reason": "STOP",
-        "usage_metadata": {"prompt_token_count": 12, "total_token_count": 18},
-    }
-    _write_spans(
-        files,
-        [
-            _span(
-                1,
-                {
-                    "gcp.vertex.agent.invocation_id": "inv-a",
-                    "gcp.vertex.agent.session_id": "session-v1",
-                    "gcp.vertex.agent.llm_request": json.dumps(request),
-                    "gcp.vertex.agent.llm_response": json.dumps(response),
-                },
-            ),
-            {
-                "name": "execute_tool read_file",
-                "context": {"trace_id": TRACE, "span_id": f"{2:016x}"},
-                "parent_id": None,
-                "start_time": "2024-10-26T10:00:00+00:00",
-                "end_time": "2024-10-26T10:00:00.250000+00:00",
-                "status": {"status_code": "OK", "description": None},
-                "attributes": {
-                    "gen_ai.operation.name": "execute_tool",
-                    "gen_ai.tool.name": "read_file",
-                    "gen_ai.tool.call.id": "call-1",
-                    "gcp.vertex.agent.tool_call_args": json.dumps(
-                        {"path": "notes.txt"}
-                    ),
-                    "gcp.vertex.agent.tool_response": json.dumps({"content": "hello"}),
-                },
-            },
-        ],
-    )
-    params = {"user_id": USER, "session_id": "session-v1"}
-    listing = client.get("/dashboard/api/context", params=params).json()
-    assert listing["total"] == 1
-
-    detail = client.get(
-        "/dashboard/api/context",
-        params=params | {"trace_id": TRACE, "span_id": f"{1:016x}"},
-    ).json()["capture"]
-    assert detail["system_prompt"] == "ADK system prompt."
-    assert detail["tools"] == [
-        {
-            "name": "read_file",
-            "description": "Read a file.",
-            "parameters": {"type": "object"},
-        }
-    ]
-    assert detail["partial_tools"] is False
-    assert detail["messages"] == [
-        {
-            "role": "user",
-            "text": "User message.",
-            "parts": [{"type": "text", "text": "User message."}],
-        }
-    ]
-    assert detail["response"]["text"] == "Reading the file."
-    assert detail["response"]["finish_reason"] == "STOP"
-    assert detail["response"]["usage"] == {
-        "prompt_token_count": 12,
-        "total_token_count": 18,
-    }
-    assert detail["response"]["parts"][1] == {
-        "type": "function_call",
-        "name": "read_file",
-        "args": {"path": "notes.txt"},
-        "call_id": "call-1",
-    }
-    assert detail["tool_calls"] == [
-        {
-            "name": "read_file",
-            "call_id": "call-1",
-            "args": {"path": "notes.txt"},
-            "response": {"content": "hello"},
-            "status": "OK",
-            "duration_ms": 250,
-        }
-    ]
-    assert '"model": "openrouter/example"' in detail["raw_request"]
-    assert "sk-or-v1-" not in detail["raw_request"]
-    assert "[REDACTED]" in detail["raw_request"]
-
-
-def test_adk_prompt_extraction_handles_all_content_shapes() -> None:
-    """ADK request content can be a string, content object, or list."""
-    from blacki.dashboard.private_data import _prompt
-
-    def attributes(request: object) -> dict[str, object]:
-        return {"gcp.vertex.agent.llm_request": json.dumps(request)}
-
-    assert _prompt(attributes({"config": {"system_instruction": "plain"}})) == "plain"
-    assert (
-        _prompt(attributes({"config": {"system_instruction": {"text": "flat"}}}))
-        == "flat"
-    )
-    assert (
-        _prompt(
-            attributes(
-                {
-                    "config": {
-                        "system_instruction": [
-                            {"parts": [{"text": "first"}]},
-                            {"text": "second"},
-                        ]
-                    }
-                }
-            )
-        )
-        == "first\nsecond"
-    )
-    assert (
-        _prompt(
-            attributes(
-                {
-                    "config": {"system_instruction": {}},
-                    "contents": [
-                        {"role": "user", "parts": [{"text": "ignored"}]},
-                        {"role": "system", "parts": [{"text": "system fallback"}]},
-                    ],
-                }
-            )
-        )
-        == "system fallback"
-    )
-
-
-def test_adk_tool_extraction_marks_partial_definitions() -> None:
-    """Malformed tool declarations are reported as a partial list."""
-    from blacki.dashboard.private_data import _tools
-
-    def attributes(tools: object) -> dict[str, object]:
-        return {
-            "gcp.vertex.agent.llm_request": json.dumps({"config": {"tools": tools}})
-        }
-
-    assert _tools(attributes({"not": "a list"})) == ([], False)
-    assert _tools(attributes([{"not_function_declarations": []}])) == ([], True)
-    assert _tools(
-        attributes([{"function_declarations": [{"description": "no name"}]}])
-    ) == ([], True)
-    assert _tools(
-        attributes(
-            [
-                {
-                    "function_declarations": [
-                        {"name": "no_description", "parameters": {"type": "object"}}
-                    ]
-                }
-            ]
-        )
-    ) == (
-        [
-            {
-                "name": "no_description",
-                "description": "",
-                "parameters": {"type": "object"},
-            }
-        ],
-        False,
-    )
-
-
-def test_trace_directory_scan_handles_io_and_partial_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A directory error or one unreadable file degrades without crashing."""
-    from blacki.dashboard import private_data
-    from blacki.dashboard.data import _JsonlScan
-
-    def raise_oserror(*_args: object, **_kwargs: object) -> None:
-        raise OSError("denied")
-
-    monkeypatch.setattr(Path, "glob", raise_oserror)
-    assert private_data._scan_trace_dir_sync(tmp_path).unavailable is True
-
-    monkeypatch.undo()
-    (tmp_path / "a.jsonl").write_text("{}\n", encoding="utf-8")
-    (tmp_path / "b.jsonl").write_text("{}\n", encoding="utf-8")
-    real_scan = private_data._scan_jsonl_sync
-
-    def selective_scan(path: Path, *, max_line_bytes: int = 0) -> _JsonlScan:
-        if path.name == "a.jsonl":
-            return _JsonlScan((), 0, 0, 0, unavailable=True)
-        return real_scan(path, max_line_bytes=max_line_bytes)
-
-    monkeypatch.setattr(private_data, "_scan_jsonl_sync", selective_scan)
-    scan = private_data._scan_trace_dir_sync(tmp_path)
-    assert scan.unavailable is False
-    assert scan.accepted == 1
-
-
-def test_trace_directory_scan_reads_only_newest_files(tmp_path: Path) -> None:
-    """Old daily files stay on disk but do not slow down every request."""
-    from blacki.dashboard.models import MAX_TRACE_SCAN_FILES
-    from blacki.dashboard.private_data import _scan_trace_dir_sync
-
-    for index in range(MAX_TRACE_SCAN_FILES + 2):
-        (tmp_path / f"2024-01-{index + 1:02d}.jsonl").write_text(
-            json.dumps({"marker": index}) + "\n",
-            encoding="utf-8",
-        )
-
-    scan = _scan_trace_dir_sync(tmp_path)
-
-    markers = {record["marker"] for record in scan.records}
-    assert markers == set(range(2, MAX_TRACE_SCAN_FILES + 2))
-
-
-def test_trace_directory_scan_accepts_large_model_requests(tmp_path: Path) -> None:
-    """A request over the log limit is still readable in the trace view."""
-    from blacki.dashboard.data import _scan_jsonl_sync
-    from blacki.dashboard.models import MAX_JSONL_LINE_BYTES
-    from blacki.dashboard.private_data import _scan_trace_dir_sync
-
-    record = {"payload": "x" * (MAX_JSONL_LINE_BYTES + 1024)}
-    path = tmp_path / "2024-01-01.jsonl"
-    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
-
-    assert _scan_jsonl_sync(path).oversized == 1
-    scan = _scan_trace_dir_sync(tmp_path)
-    assert scan.oversized == 0
-    assert scan.accepted == 1
-    assert scan.records[0]["payload"] == record["payload"]
-
-
-def test_trace_directory_scan_reports_empty_directory(tmp_path: Path) -> None:
-    """An empty daily trace file leaves the capture view unavailable."""
-    from blacki.dashboard.private_data import _scan_trace_dir_sync
-
-    (tmp_path / "empty.jsonl").write_text("", encoding="utf-8")
-
-    assert _scan_trace_dir_sync(tmp_path).unavailable is True
-
-
-def test_adk_prompt_extraction_falls_back_when_parts_or_contents_are_unusable() -> None:
-    """Malformed parts or contents do not fabricate a system prompt."""
-    from blacki.dashboard.private_data import _prompt
-
-    def attributes(request: object) -> dict[str, object]:
-        return {"gcp.vertex.agent.llm_request": json.dumps(request)}
-
-    assert (
-        _prompt(attributes({"config": {"system_instruction": {"parts": [{}]}}})) == ""
-    )
-    assert _prompt(attributes({"config": {}, "contents": "not-a-list"})) == ""
-    assert (
-        _prompt(
-            attributes(
-                {
-                    "config": {},
-                    "contents": [{"role": "user", "parts": [{"text": "user only"}]}],
-                }
-            )
-        )
-        == ""
-    )
-
-
-def test_capture_parts_describe_text_reasoning_and_binary_values() -> None:
-    """Parts are normalized without exposing inline bytes or file URIs raw."""
-    from blacki.dashboard.private_data import _normalize_content, _normalize_part
-
-    assert _normalize_part({"text": "plain"}) == {"type": "text", "text": "plain"}
-    assert _normalize_part({"text": "thinking", "thought": True}) == {
+    assert _normalize_part({"type": "reasoning", "content": 3}, names) == {
         "type": "thought",
-        "text": "thinking",
+        "text": "",
     }
-    assert _normalize_part(
-        {
-            "function_response": {
-                "name": "read_file",
-                "response": {"content": "password: example-secret"},
-                "id": "call-1",
-            }
-        }
-    ) == {
+    assert _normalize_part({"type": "tool_call", "id": 5}, names) == {
+        "type": "function_call",
+        "name": "",
+        "args": {},
+        "call_id": "",
+    }
+    assert _normalize_part({"type": "tool_call_response", "id": "call-1"}, names) == {
         "type": "function_response",
-        "name": "read_file",
-        "response": {"content": "password: [REDACTED]"},
+        "name": "add",
+        "response": {},
         "call_id": "call-1",
     }
-    assert _normalize_part({"inline_data": {"mime_type": "image/png"}}) == {
+    assert _normalize_part({"type": "blob", "mime_type": "image/png"}, names) == {
         "type": "inline_data",
         "mime_type": "image/png",
     }
-    assert _normalize_part({"inline_data": {"mime_type": 7}}) == {
-        "type": "inline_data",
-        "mime_type": "",
-    }
     assert _normalize_part(
-        {"file_data": {"mime_type": "text/plain", "file_uri": "gs://bucket/file"}}
-    ) == {
-        "type": "file_data",
-        "mime_type": "text/plain",
-        "file_uri": "gs://bucket/file",
-    }
-    assert _normalize_part({"file_data": {"mime_type": 1, "file_uri": 2}}) == {
-        "type": "file_data",
-        "mime_type": "",
-        "file_uri": "",
-    }
-    assert _normalize_part({"thought_signature": "opaque"}) == {
+        {"type": "file_data", "mime_type": "text/plain", "uri": "file:///x"}, names
+    ) == {"type": "file_data", "mime_type": "text/plain", "file_uri": "file:///x"}
+    assert _normalize_part({"type": "audio", "z": 1, "a": 2}, names) == {
         "type": "other",
-        "keys": ["thought_signature"],
-    }
-
-    assert _normalize_content(
-        {
-            "role": 7,
-            "parts": [
-                {"text": "one"},
-                {"text": "two", "thought": True},
-                "not a part",
-            ],
-        }
-    ) == {
-        "role": "",
-        "text": "one\ntwo",
-        "parts": [
-            {"type": "text", "text": "one"},
-            {"type": "thought", "text": "two"},
-        ],
-    }
-    assert _normalize_content({"role": "user", "parts": "not-a-list"}) == {
-        "role": "user",
-        "text": "",
-        "parts": [],
+        "keys": ["a", "type", "z"],
     }
 
 
-def test_capture_messages_requires_a_decoded_request() -> None:
-    """Messages are empty when the request is absent or malformed."""
-    from blacki.dashboard.private_data import _messages
-
-    assert _messages({}) == []
-    assert (
-        _messages(
-            {"gcp.vertex.agent.llm_request": json.dumps({"contents": "not-a-list"})}
-        )
-        == []
+@pytest.mark.parametrize("value", [None, "not JSON", "{}", json.dumps([1, None])])
+def test_messages_and_response_tolerate_unusable_values(value: object) -> None:
+    from blacki.dashboard.private_data import (
+        _messages,
+        _prompt,
+        _response,
+        _tool_calls,
     )
-    assert _messages(
-        {
-            "gcp.vertex.agent.llm_request": json.dumps(
-                {"contents": ["not-an-object", {"role": "user"}]}
-            )
-        }
-    ) == [{"role": "user", "text": "", "parts": []}]
+
+    attributes = {
+        "gen_ai.input.messages": value,
+        "gen_ai.output.messages": value,
+        "gen_ai.system_instructions": value,
+    }
+    messages = _messages(attributes)
+    assert all(message["parts"] == [] for message in messages)
+    assert _prompt(attributes) == ""
+    assert _tool_calls(attributes, {}, {}) == []
+    response = _response(attributes)
+    assert response is None or response == {"text": "", "parts": []}
 
 
-def test_capture_response_normalizes_errors_and_usage() -> None:
-    """Response metadata is optional and credential-shaped text is redacted."""
+def test_response_without_usage_or_finish_reason() -> None:
     from blacki.dashboard.private_data import _response
 
-    assert _response({}) is None
-    assert _response({"gcp.vertex.agent.llm_response": "not JSON"}) is None
-    assert _response({"gcp.vertex.agent.llm_response": json.dumps({})}) == {
-        "text": "",
-        "parts": [],
+    output = [{"role": 7, "parts": [{"type": "text", "content": "ok"}]}]
+    assert _response({"gen_ai.output.messages": json.dumps(output)}) == {
+        "text": "ok",
+        "parts": [{"type": "text", "text": "ok"}],
     }
-    response = _response(
-        {
-            "gcp.vertex.agent.llm_response": json.dumps(
-                {
-                    "error_code": 429,
-                    "error_message": "api_key: example-secret",
-                    "interrupted": True,
-                    "turn_complete": False,
-                    "partial": True,
-                    "model_version": "example-v1",
-                    "usage_metadata": {"prompt_token_count": 3},
-                }
-            )
-        }
-    )
-    assert response == {
-        "text": "",
-        "parts": [],
-        "error_code": 429,
-        "error_message": "api_key: [REDACTED]",
-        "interrupted": True,
-        "turn_complete": False,
-        "partial": True,
-        "model_version": "example-v1",
-        "usage": {"prompt_token_count": 3},
-    }
-    assert _response(
-        {
-            "gcp.vertex.agent.llm_response": json.dumps(
-                {"usage_metadata": "not-an-object"}
-            )
-        }
-    ) == {"text": "", "parts": []}
 
 
-def test_capture_tool_calls_pair_results_and_skip_unusable_parts() -> None:
-    """Tool calls use response arguments and tolerate missing execution spans."""
-    from blacki.dashboard.private_data import _tool_calls
+def test_tools_mark_unnamed_definitions_as_partial() -> None:
+    from blacki.dashboard.private_data import _tools
 
-    assert _tool_calls({}, {}) == []
-    assert (
-        _tool_calls({"gcp.vertex.agent.llm_response": json.dumps({"content": {}})}, {})
-        == []
+    definitions = [{"name": "read", "description": 3}, {"name": ""}, "bad"]
+    assert _tools({"gen_ai.tool.definitions": json.dumps(definitions)}) == (
+        [{"name": "read", "description": "", "parameters": {}}],
+        True,
     )
-    assert (
-        _tool_calls(
-            {
-                "gcp.vertex.agent.llm_response": json.dumps(
-                    {"content": {"parts": [{"text": "no call"}]}}
-                )
-            },
-            {},
-        )
-        == []
+
+
+def test_tool_call_without_span_or_result_and_unusable_records() -> None:
+    from blacki.dashboard.private_data import (
+        _duration_ms,
+        _tool_calls,
+        _tool_results,
+        _tool_span_index,
     )
-    response = {
-        "gcp.vertex.agent.llm_response": json.dumps(
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "function_call": {
-                                "name": "read_file",
-                                "args": None,
-                                "id": 7,
-                            }
-                        }
-                    ]
-                }
-            }
-        )
-    }
-    assert _tool_calls(response, {}) == [
+
+    output = [
+        {"parts": [{"type": "text", "content": "x"}, {"type": "tool_call", "id": "a"}]}
+    ]
+    assert _tool_calls({"gen_ai.output.messages": json.dumps(output)}, {}, {}) == [
         {
-            "name": "read_file",
-            "call_id": "",
+            "name": "",
+            "call_id": "a",
             "args": {},
             "response": None,
             "status": None,
             "duration_ms": None,
         }
     ]
-    record = {
-        "start_time": "2024-10-26T10:00:00+00:00",
-        "end_time": "2024-10-26T10:00:00.125000+00:00",
-        "status": {"status_code": 7},
-        "attributes": {
-            "gcp.vertex.agent.tool_call_args": json.dumps({"path": "notes.txt"}),
-            "gcp.vertex.agent.tool_response": json.dumps({"content": "hello"}),
-        },
-    }
-    assert _tool_calls(
-        {
-            "gcp.vertex.agent.llm_response": json.dumps(
-                {
-                    "content": {
-                        "parts": [
-                            {
-                                "function_call": {
-                                    "name": "read_file",
-                                    "id": "call-1",
-                                }
-                            }
-                        ]
-                    }
-                }
-            )
-        },
-        {"call-1": record},
-    ) == [
-        {
-            "name": "read_file",
-            "call_id": "call-1",
-            "args": {"path": "notes.txt"},
-            "response": {"content": "hello"},
-            "status": None,
-            "duration_ms": 125,
-        }
-    ]
-
-
-def test_tool_span_index_and_duration_ignore_damaged_records() -> None:
-    """Only tool spans with a usable call ID are indexed."""
-    from blacki.dashboard.private_data import _duration_ms, _tool_span_index
-
-    valid = {
-        "attributes": {
-            "gen_ai.operation.name": "execute_tool",
-            "gen_ai.tool.call.id": "call-1",
-        }
-    }
+    valid = {"attributes": {"gen_ai.tool.call.id": "call-1"}}
     assert _tool_span_index(
-        [
-            {},
-            {"attributes": {"gen_ai.operation.name": "invoke_agent"}},
-            {"attributes": {"gen_ai.operation.name": "execute_tool"}},
-            valid,
-        ]
+        [{}, {"attributes": {"gen_ai.tool.call.id": ""}}, valid]
     ) == {"call-1": valid}
-
+    messages = [{"parts": [{"type": "tool_call_response"}, {"type": "text"}]}]
+    assert (
+        _tool_results(
+            [{}, {"attributes": {"gen_ai.input.messages": json.dumps(messages)}}]
+        )
+        == {}
+    )
     assert _duration_ms(None) is None
     assert _duration_ms({"start_time": 1}) is None
     assert _duration_ms({"start_time": 2, "end_time": 1}) is None
 
 
-def test_raw_request_is_redacted_and_rejects_recursive_values() -> None:
-    """Raw request rendering redacts text and degrades on a recursive object."""
-    from blacki.dashboard.private_data import _raw_request
+def test_raw_span_decodes_json_attributes_only() -> None:
+    from blacki.dashboard.private_data import _raw_span
 
-    assert _raw_request({}) is None
-    raw = _raw_request(
-        {
-            "gcp.vertex.agent.llm_request": json.dumps(
-                {"model": "example", "config": {"api_key": "sk-or-v1-" + "a" * 24}}
-            )
-        }
+    raw = json.loads(
+        _raw_span({"name": "s", "attributes": {"a": '{"x": 1}', "b": "plain", "c": 2}})
     )
-    assert raw is not None
-    assert '"model": "example"' in raw
-    assert "sk-or-v1-" not in raw
-    recursive: dict[str, object] = {}
-    recursive["self"] = recursive
-    assert _raw_request({"gcp.vertex.agent.llm_request": recursive}) is None
+    assert raw == {"name": "s", "attributes": {"a": {"x": 1}, "b": "plain", "c": 2}}
 
 
-def test_redact_value_walks_lists_and_keeps_scalars() -> None:
-    """Nested JSON values are redacted recursively without changing scalars."""
-    from blacki.dashboard.private_data import _redact_value
+def test_invocation_rejects_long_ancestry() -> None:
+    from blacki.dashboard.private_data import _invocation
 
-    assert _redact_value(
-        ["sk-or-v1-" + "a" * 24, {"password": "example-secret"}, 7, None]
-    ) == ["[REDACTED]", {"password": "[REDACTED]"}, 7, None]
+    spans = {
+        (TRACE, f"{index:016x}"): {
+            "attributes": {},
+            "parent_id": f"0x{index + 1:016x}",
+        }
+        for index in range(70)
+    }
+    assert _invocation((TRACE, f"{0:016x}"), spans, USER, "session-v1") is None
+    orphan = {
+        (TRACE, f"{1:016x}"): {
+            "attributes": {"blacki.invocation_id": "inv-a"},
+            "parent_id": f"0x{99:016x}",
+        }
+    }
+    assert _invocation((TRACE, f"{1:016x}"), orphan, USER, "session-v1") == "inv-a"

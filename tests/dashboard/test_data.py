@@ -13,8 +13,8 @@ import pytest
 from blacki.dashboard import DashboardStore
 from blacki.dashboard.data import (
     _activity_series,
-    _allowlisted_attributes,
     _attachment_item,
+    _attributes,
     _cost_fields,
     _event_cost,
     _event_cost_summary,
@@ -33,10 +33,9 @@ from blacki.dashboard.data import (
     _money_value,
     _normalize_epoch_seconds,
     _number,
+    _otel_id,
     _parse_json_object,
     _parse_timestamp,
-    _sanitize_json,
-    _sanitize_text,
     _scan_jsonl_sync,
     _scan_warning,
     _select_table_rows,
@@ -587,23 +586,35 @@ async def test_missing_and_corrupt_database_degrade_without_paths(
 
 
 @pytest.mark.asyncio
-async def test_logs_stream_caps_and_redacts_secrets(tmp_path: Path) -> None:
+async def test_logs_stream_caps_and_keeps_records_raw(tmp_path: Path) -> None:
     log_path = tmp_path / "blacki-telemetry.log"
+    secret_message = "Bearer abc.def and api_key=super-secret at /Users/me/file.py"  # noqa: S105
     rows = [
         {
-            "timestamp": "2026-08-15T10:00:00Z",
-            "level": "error",
-            "name": "test",
-            "message": (
-                "Bearer abc.def and api_key=super-secret "
-                "telegram token 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij "
-                "at /Users/private/user/project/file.py"
-            ),
-            "exception": "ValueError: /private/secret/path",
-            "cookie": "session-cookie",
+            "body": secret_message,
+            "severity_text": "ERROR",
+            "attributes": {"exception.stacktrace": "ValueError: /private/path"},
+            "timestamp": "2026-08-15T10:00:00.000000Z",
+            "trace_id": "0x" + "a" * 32,
+            "span_id": "0x" + "b" * 16,
+            "event_name": "",
+            "instrumentation_scope": {"name": "blacki.test", "version": None},
         },
-        {"timestamp": "2026-08-15T10:01:00Z", "level": "INFO", "message": "needle"},
-        {"level": "INFO", "message": "final line"},
+        {
+            "body": None,
+            "severity_text": None,
+            "attributes": {"gen_ai.agent.name": "root"},
+            "timestamp": "2026-08-15T10:01:00.000000Z",
+            "trace_id": "0x" + "0" * 32,
+            "event_name": "gen_ai.client.inference.operation.details",
+            "instrumentation_scope": {"name": "gcp.vertex.agent", "version": None},
+        },
+        {
+            "body": {"structured": "needle"},
+            "severity_text": "INFO",
+            "timestamp": "2026-08-15T10:02:00.000000Z",
+        },
+        {"level": "INFO", "name": "legacy", "message": "final line"},
     ]
     log_path.write_bytes(
         b"\xff\xfe malformed\n"
@@ -612,60 +623,56 @@ async def test_logs_stream_caps_and_redacts_secrets(tmp_path: Path) -> None:
         + b"{"
         + b"x" * (1024 * 1024 + 10)
         + b"}\n"
-        + json.dumps(rows[1]).encode()
-        + b"\n"
-        + json.dumps(rows[2]).encode()
+        + b"\n".join(json.dumps(row).encode() for row in rows[1:])
     )
     store = DashboardStore(tmp_path / "missing.db", tmp_path)
     logs = await store.list_logs("ERROR", "", 10)
     assert logs["total"] == 1
-    serialized = json.dumps(logs["items"][0])
-    assert "super-secret" not in serialized
-    assert "abc.def" not in serialized
-    assert "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij" not in serialized
-    assert "/Users/private" not in serialized
-    assert "ValueError" not in serialized
+    error = logs["items"][0]
+    assert error["message"] == secret_message
+    assert error["logger"] == "blacki.test"
+    assert error["trace_id"] == "a" * 32
+    assert error["span_id"] == "b" * 16
+    assert error["attributes"]["exception.stacktrace"] == "ValueError: /private/path"
     assert any("malformed" in warning for warning in logs["warnings"])
     assert any("1 MiB" in warning for warning in logs["warnings"])
+    event = (await store.list_logs(None, "operation.details", 10))["items"][0]
+    assert event["message"] == "gen_ai.client.inference.operation.details"
+    assert event["trace_id"] is None
+    assert "level" not in event
+    structured = (await store.list_logs(None, "needle", 10))["items"][0]
+    assert structured["message"] == '{"structured": "needle"}'
     final = await store.list_logs(None, "final", 10)
     assert final["items"][0]["message"] == "final line"
+    assert final["items"][0]["logger"] == "legacy"
 
 
 @pytest.mark.asyncio
-async def test_trace_projection_allowlist_filters_content(tmp_path: Path) -> None:
+async def test_trace_projection_keeps_every_attribute(tmp_path: Path) -> None:
     trace_path = tmp_path / "blacki-traces.log"
+    attributes = {
+        "gen_ai.request.model": "model-x",
+        "gen_ai.input.messages": '[{"role":"user","parts":[]}]',
+        "gen_ai.usage.input_tokens": 3,
+        "llm.token_count.input": "not-numeric",
+        "nested": [1, 2],
+    }
     trace_path.write_text(
         json.dumps(
             {
-                "name": "agent.invoke",
-                "context": {"trace_id": "trace-1", "span_id": "span-1"},
-                "start_time": 1_781_000_000,
-                "end_time": 1_781_000_001,
-                "status": {"status_code": "ERROR", "description": "secret prompt"},
-                "attributes": {
-                    "service.name": "blacki",
-                    "gen_ai.request.model": "model-x",
-                    "gcp.vertex.agent.session_id": "session-1",
-                    "gcp.vertex.agent.invocation_id": "invocation-1",
-                    "gen_ai.conversation.id": "conversation-1",
-                    "gen_ai.tool.name": "search",
-                    "agent.name": "root-agent",
-                    "llm.model_name": "model-x",
-                    "gen_ai.usage.prompt_tokens": 3,
-                    "llm.token_count.input": "not-numeric",
-                    "gen_ai.prompt": "do-not-return",
-                    "gen_ai.input": "do-not-return",
-                    "gen_ai.usage.input_tokens": 3,
-                    "tool.args": "do-not-return",
-                },
+                "name": "generate_content model-x",
+                "context": {"trace_id": "0x" + "1" * 32, "span_id": "0x" + "2" * 16},
+                "kind": "SpanKind.INTERNAL",
+                "parent_id": "0x" + "3" * 16,
+                "start_time": "2026-08-15T10:00:00.000000Z",
+                "end_time": "2026-08-15T10:00:01.000000Z",
+                "status": {"status_code": "ERROR", "description": "provider failed"},
+                "attributes": attributes,
                 "events": [
                     {
-                        "name": "model.response",
-                        "timestamp": 1_781_000_001,
-                        "attributes": {
-                            "http.status_code": 500,
-                            "gen_ai.output": "do-not-return",
-                        },
+                        "name": "exception",
+                        "timestamp": "2026-08-15T10:00:01.000000Z",
+                        "attributes": {"exception.message": "boom"},
                     }
                 ],
             }
@@ -679,28 +686,16 @@ async def test_trace_projection_allowlist_filters_content(tmp_path: Path) -> Non
     traces = await store.list_traces("error", "model-x", 10)
     assert traces["total"] == 1
     trace = traces["items"][0]
-    assert trace["trace_id"] == "trace-1"
+    assert trace["trace_id"] == "1" * 32
     assert trace["duration_ms"] == 1000.0
-    assert trace["attributes"] == {
-        "service.name": "blacki",
-        "gen_ai.request.model": "model-x",
-        "gcp.vertex.agent.session_id": "session-1",
-        "gcp.vertex.agent.invocation_id": "invocation-1",
-        "gen_ai.conversation.id": "conversation-1",
-        "gen_ai.tool.name": "search",
-        "agent.name": "root-agent",
-        "llm.model_name": "model-x",
-        "gen_ai.usage.input_tokens": 3,
-        "gen_ai.usage.prompt_tokens": 3,
-    }
-    assert "llm.token_count.input" not in trace["attributes"]
-    serialized = json.dumps(trace)
-    assert "do-not-return" not in serialized
-    assert "secret prompt" not in serialized
-    assert "description" not in serialized
-    found = await store.get_trace("trace-1")
+    assert trace["attributes"] == attributes
+    found = await store.get_trace("1" * 32)
     assert found is not None
-    assert found["trace_id"] == "trace-1"
+    span = found["spans"][0]
+    assert span["span_id"] == "2" * 16
+    assert span["parent_span_id"] == "3" * 16
+    assert span["kind"] == "INTERNAL"
+    assert span["events"][0]["attributes"] == {"exception.message": "boom"}
     assert await store.get_trace("not-present") is None
 
 
@@ -926,19 +921,10 @@ def test_defensive_adapters_cover_scalars_windows_and_trace_shapes() -> None:
     assert _tool_status({"error": "hidden"}) == "error"
     assert _tool_status({"response": {"error": "hidden"}}) == "error"
     assert _tool_status({}) == "completed"
-    assert _allowlisted_attributes(None) == {}
-    assert _allowlisted_attributes({"gen_ai.response.model": "m"}) == {
-        "gen_ai.response.model": "m"
-    }
-    attrs = _allowlisted_attributes(
-        {
-            "service.version": float("nan"),
-            "service.name": object(),
-            "gen_ai.prompt": "hidden",
-        }
-    )
-    assert attrs["service.version"] is None
-    assert str(attrs["service.name"]).startswith("<object object")
+    assert _attributes(None) == {}
+    assert _attributes({"gen_ai.prompt": "kept"}) == {"gen_ai.prompt": "kept"}
+    assert _otel_id("0xabc") == "abc"
+    assert _otel_id(None) is None
     assert _trace_item({"context": {"trace_id": "t"}}) is not None
     assert _trace_item({"name": "no-id"}) is None
     cost_trace = _trace_item(
@@ -1145,12 +1131,9 @@ def test_canonical_helpers_tolerate_unknown_and_timestamp_values() -> None:
     attachment = _attachment_item({"inlineData": "opaque"}, event=event, index=0)
     assert attachment is not None
     assert attachment["mime_type"] == "unknown"
-    redacted = _sanitize_text("Authorization: Bearer abc123 at /tmp/file")
-    assert "abc123" not in redacted
-    assert "/tmp/file" not in redacted
 
 
-def test_bounded_jsonl_iterator_and_json_sanitizer_edges(
+def test_bounded_jsonl_iterator_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     class ChunkedHandle:
@@ -1201,31 +1184,13 @@ def test_bounded_jsonl_iterator_and_json_sanitizer_edges(
     )
     tail_scan = _scan_jsonl_sync(tail_path)
     assert tail_scan.truncated is False
-    monkeypatch.setattr("blacki.dashboard.data.MAX_JSONL_TAIL_BYTES", 25)
-    tail_scan = _scan_jsonl_sync(tail_path)
+    tail_scan = _scan_jsonl_sync(tail_path, max_tail_bytes=25)
     assert tail_scan.truncated is True
     assert tail_scan.records[-1]["index"] == 4
     no_newline = tmp_path / "no-newline.jsonl"
     no_newline.write_bytes(b"x" * 40)
-    assert _scan_jsonl_sync(no_newline).truncated is True
+    assert _scan_jsonl_sync(no_newline, max_tail_bytes=25).truncated is True
 
-    sanitized = _sanitize_json(
-        {
-            "token": "hidden",
-            "exception": "stack",
-            "values": [float("nan"), object()],
-        }
-    )
-    assert sanitized["token"] == "[REDACTED]"  # noqa: S105
-    assert sanitized["exception"] == "[REDACTED_EXCEPTION]"
-    assert sanitized["values"][0] is None
-    assert sanitized["values"][1].startswith("<object object")
-    assert sanitized["values"][1].endswith(">")
-    assert {
-        "token": "[REDACTED]",
-        "exception": "[REDACTED_EXCEPTION]",
-    }.items() <= sanitized.items()
-    assert _sanitize_text("x" * (64 * 1024 + 1)).endswith("…")
     assert _log_item({"level": 10, "message": "numeric"})["message"] == "numeric"
 
 

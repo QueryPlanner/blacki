@@ -27,9 +27,10 @@ MAX_JSONL_LINE_BYTES = 1 * 1024 * 1024
 # on a single trace line, so the private trace view needs a larger bound than
 # application logs to keep long sessions inspectable.
 MAX_TRACE_JSONL_LINE_BYTES = 8 * 1024 * 1024
-# Daily trace files are never deleted by the application.  The dashboard scans
-# only the newest files so a page load stays bounded after months of use.
-MAX_TRACE_SCAN_FILES = 7
+# The trace file is never trimmed, and each model-call span repeats the whole
+# conversation.  The dashboard reads only this much of its end, so a page load
+# stays bounded while recent model calls remain visible.
+MAX_TRACE_JSONL_TAIL_BYTES = 128 * 1024 * 1024
 # A bounded tail keeps scans recent and predictable even when the process has
 # accumulated months of local telemetry.  The scanner retains only the last
 # 10,000 valid records from this tail.
@@ -37,10 +38,6 @@ MAX_JSONL_TAIL_BYTES = 16 * 1024 * 1024
 MAX_ACCEPTED_JSONL_RECORDS = 10_000
 MAX_DATABASE_ROWS = 100_000
 
-# Only these OpenTelemetry attributes are useful for an operator dashboard.
-# In particular, no prompt/content/tool argument attributes are included.
-# The exporter uses the same allowlist, so the slim trace file stays free of
-# content even when ADK captures it on its own spans.
 DEGRADED_DATABASE_WARNING = "Session data is temporarily unavailable."
 MISSING_EVENTS_WARNING = "Session event history is unavailable."
 MISSING_TELEMETRY_WARNING = "Telemetry log is unavailable."

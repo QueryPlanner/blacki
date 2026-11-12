@@ -27,7 +27,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 
 from ..observability.ledger import default_usage_ledger_path
-from ..observability.setup import get_log_dir
+from ..observability.setup import TRACE_FILE_NAME, get_log_dir
 from ..utils.config import ServerEnv
 from .data import DashboardStore
 from .models import (
@@ -304,7 +304,7 @@ def create_dashboard_router(
     router = APIRouter(prefix="/dashboard", tags=["dashboard"])
     private_store = DashboardPrivateStore(
         _session_db_path(env),
-        get_log_dir() / "traces",
+        get_log_dir() / TRACE_FILE_NAME,
         _tools_db_path(env).with_name("wiki.db"),
     )
 
@@ -514,11 +514,14 @@ def create_dashboard_router(
 
     @router.get("/api/traces")
     async def dashboard_traces(
+        request: Request,
         status: str | None = None,
         search: str | None = None,
         limit: str = str(_DEFAULT_LIMIT),
     ) -> JSONResponse:
         """List persisted OpenTelemetry spans."""
+        if (denial := _private_access(request)) is not None:
+            return denial
         try:
             status_value = _parse_text(status, max_length=32)
             search_value = _parse_text(search)
@@ -539,8 +542,12 @@ def create_dashboard_router(
         )
 
     @router.get("/api/trace")
-    async def dashboard_trace(trace_id: str | None = None) -> JSONResponse:
+    async def dashboard_trace(
+        request: Request, trace_id: str | None = None
+    ) -> JSONResponse:
         """Return one trace by ID."""
+        if (denial := _private_access(request)) is not None:
+            return denial
         try:
             trace_value = _parse_text(trace_id, required=True)
         except _InvalidDashboardQueryError:

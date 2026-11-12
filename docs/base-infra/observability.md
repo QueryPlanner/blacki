@@ -1,7 +1,8 @@
 # Observability
 
-Blacki always provides local structured logs and local OpenTelemetry span files.
-It does not export spans to a remote collector.
+Blacki uses ADK's official OpenTelemetry setup and the OpenTelemetry SDK's
+exporters. Spans and log records go to two local JSON Lines files. Nothing is
+filtered or redacted.
 
 ## Outputs
 
@@ -9,15 +10,13 @@ Inside the container:
 
 | File | Contents |
 | --- | --- |
-| `/app/logs/blacki-telemetry.log` | JSON application log records (rotated) |
-| `/app/logs/blacki-traces.log` | Slim JSON Lines span overview (no content) |
-| `/app/logs/traces/YYYY-MM-DD.jsonl` | Full JSON Lines spans for that UTC day |
+| `/app/logs/blacki-traces.log` | Every OpenTelemetry span, one JSON object per line |
+| `/app/logs/blacki-telemetry.log` | Every OpenTelemetry log record, one JSON object per line |
 
-The slim overview keeps only allowlisted metadata such as model, token, and
-cost attributes. The daily files keep the complete span attributes, including
-the prompt, tool declarations, tool arguments, and tool responses that ADK
-records. Both trace files are created with mode `0600` and are intended for the
-private operator dashboard.
+Each line is the SDK's own JSON for a span (`ReadableSpan.to_json`) or log
+record (`ReadableLogRecord.to_json`, plus the instrumentation scope that holds
+the Python logger name). Log records carry the trace and span IDs of the span
+that was active when they were written. Both files are created with mode `0600`.
 
 Compose maps `/app/logs` to `./logs` on the host. Human-readable application
 logs also go to stdout and are available through:
@@ -31,11 +30,14 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 At startup Blacki:
 
 1. sets `OTEL_RESOURCE_ATTRIBUTES`;
-2. configures stdout and rotating JSON file logging; and
-3. registers a `TracerProvider` with `FlatFileSpanExporter`.
+2. sets the GenAI telemetry defaults below, unless already set;
+3. calls ADK's `google.adk.telemetry.setup.maybe_set_otel_providers` with a
+   `BatchSpanProcessor` and a `BatchLogRecordProcessor`, each wrapping the
+   SDK console exporter pointed at its file; and
+4. adds the SDK `LoggingHandler`, so Python `logging` records reach
+   `blacki-telemetry.log`.
 
-Blacki relies on ADK's built-in span instrumentation. It does not install the
-OpenInference Google ADK instrumentor. The resource contains:
+The resource contains:
 
 | Attribute | Source |
 | --- | --- |
@@ -46,89 +48,82 @@ OpenInference Google ADK instrumentor. The resource contains:
 
 ## Message content
 
-`ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` is on by default. Blacki keeps full
-prompts, tool declarations, tool calls, and model responses in the local daily
-trace files so the private dashboard can show exactly what the model received
-and returned. Only the slim overview omits content.
+Blacki opts in to ADK's experimental OpenTelemetry GenAI semantic conventions:
 
-Content capture is a deliberate operator feature, not an external export.
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` stays `false` so the same
-content is not duplicated into OTel log events. Treat the local log directory as
-private user data: it can contain personal messages, tool arguments, and tool
-results. Application logs and the daily trace files are raw operator records and
-are not redacted; the dashboard reader masks common credential patterns when it
-renders them in a browser. Protecting the log volume is the primary control for
-log and trace content.
+| Variable | Default |
+| --- | --- |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental` |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `SPAN_ONLY` |
+| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` |
 
-At the default `INFO` level, lifecycle logging omits message and tool payloads.
-Setting `LOG_LEVEL=DEBUG` logs full model request contents and tool arguments
-and results through `LoggingCallbacks`, including Gmail and health data, to
-stdout and the JSON application log. Enable it only for a bounded debugging
-session.
+Each `generate_content` span then carries `gen_ai.system_instructions`,
+`gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.definitions`,
+and token usage. Each `execute_tool` span carries `gen_ai.tool.name` and
+`gen_ai.tool.call.id`. ADK's legacy `gcp.vertex.agent.llm_request` and
+`gcp.vertex.agent.tool_call_args` content is turned off, because it would store
+every request twice.
+
+These attributes follow the OpenTelemetry GenAI conventions, which are still
+experimental. A future ADK or OpenTelemetry release may rename them; the
+dashboard's tests pin the format it reads.
+
+Treat the log directory as private user data. It holds full prompts, personal
+messages, tool arguments, and tool results, unredacted. Protecting the log
+volume is the control.
+
+At `LOG_LEVEL=DEBUG`, `LoggingCallbacks` also logs full model request contents
+and tool payloads, including Gmail and health data, to stdout and
+`blacki-telemetry.log`.
 
 ## Remote export
 
-Blacki writes spans only to local files. If any `OTEL_EXPORTER_OTLP_*` variable
-is set, startup logs a warning that names the ignored variables and continues
-with local files. The values are never logged because they may contain collector
-credentials. Remove those variables from `.env` to silence the warning.
+ADK adds its OTLP HTTP exporters when `OTEL_EXPORTER_OTLP_ENDPOINT` or a
+signal-specific endpoint is set. The local files keep working alongside them.
+The OTLP exporter package is not installed by default; startup fails with a
+clear error if those variables are set without it.
 
 ## Retention
 
-`blacki-telemetry.log` rotates at UTC midnight and keeps fourteen daily backups
-(`blacki-telemetry.log.YYYY-MM-DD`). The slim trace log and the daily
-`traces/YYYY-MM-DD.jsonl` files are append-only and are never deleted or rotated
-by the application. Docker's stdout log-driver rotation does not rotate
-`./logs/*.log`.
-
-Trace files grow without an application-side bound, so disk usage is the
-operator's responsibility. Monitor it:
+Neither file is rotated, trimmed, or deleted by the application. Docker's stdout
+log-driver rotation does not touch `./logs`. Each model-call span repeats the
+conversation sent to the model, so `blacki-traces.log` grows quickly. Monitor
+disk usage:
 
 ```bash
 du -sh logs
 ```
 
-Archive or clear files only during a maintenance window after preserving
-anything needed for an incident. The dashboard scans only the newest seven daily
-trace files, so keeping old files does not slow down normal page loads.
+The dashboard reads only the last 128 MiB of the trace file and the last 16 MiB
+of the log file, so page loads stay bounded. Older lines stay on disk.
 
 ## Failure behavior
 
-If the application cannot create its log directory or file handler, it reports
-the error and continues with stdout logging. Tracing still installs a
-`TracerProvider` so ADK cannot fall back to an unbounded in-memory exporter.
-Treat either condition as degraded observability, not a successful persistence
-setup.
+If either file cannot be opened, startup prints the error and continues without
+file exporters. A `TracerProvider` is still installed, so ADK cannot fall back
+to an unbounded in-memory exporter. Treat this as degraded observability.
 
 ## Private dashboard
 
 The server always mounts the read-only operator dashboard at `/dashboard`. It
-reads the local ADK session database, application JSON logs, and daily JSON Lines
-traces from the same persistent volumes. The dashboard can filter users and
-sessions and inspect individual conversations and traces;
-Telegram `/reset` starts the next versioned ADK session and leaves earlier
-session rows available. The append-only log and trace files are not deleted by
-`/reset`, so the dashboard continues to show that history.
+reads the local ADK session database and the two telemetry files from the same
+persistent volumes. Telegram `/reset` starts the next versioned ADK session and
+leaves earlier session rows and telemetry lines in place.
 
-The Sessions view opens a model-call inspector for each captured request. It
-reads the system instruction, tool declarations, conversation messages, model
-response, tool arguments and results, and the raw ADK request body from ADK's
-`gcp.vertex.agent.llm_request` and `gcp.vertex.agent.llm_response` span
-attributes and the matching `execute_tool` spans in the daily trace files. It
-verifies each capture against the selected ADK session and filters common
-credential patterns. Because content capture is on by default, recent requests
-normally include the complete model call.
+The Logs and Traces tabs show records exactly as written, with every attribute.
+The Sessions view opens a model-call inspector for each `generate_content` span.
+It shows the system instructions, tool definitions, the messages sent, the
+model's output, each tool call with its result and execution span, and the raw
+span. It checks each span against the selected ADK session before showing it.
 
 The User wiki tab lists the saved Markdown pages for the selected direct
 Telegram user and shows the selected page as plain text. It respects the
 user's memory setting. It uses the same local `wiki.db` as Telegram, beside the
 tools database.
 
-Both views are available by default. Open the dashboard at a loopback address,
-a Tailscale device IP, or the full hostname provided by Tailscale Serve.
-The application checks the browser's request host and blocks cross-origin
-reads for both views. Operator access still depends on the loopback or
-Tailscale controls below.
+The Context, Wiki, Logs, and Traces views open only from a loopback address, a
+Tailscale device IP, or the full hostname provided by Tailscale Serve. The
+application checks the browser's request host and blocks cross-origin reads.
+Operator access still depends on the loopback or Tailscale controls below.
 
 For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with

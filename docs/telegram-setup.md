@@ -81,7 +81,7 @@ public ADK HTTP runner.
 
 When this tool is configured, tool notifications may show that speech synthesis
 is running and can include the requested text. Full prompts, tool arguments, and
-responses are kept in the local daily trace files for the private dashboard. ADK
+responses are kept in the local trace file for the private dashboard. ADK
 session history still retains the model's tool call and arguments.
 
 ### Optional Connect Google Health

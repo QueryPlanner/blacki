@@ -17,13 +17,13 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from google.adk.cli.fast_api import get_fast_api_app
-from opentelemetry.sdk.trace import TracerProvider
 
 from .browser_takeover.routes import create_browser_takeover_router
 from .config.paths import agent_root
 from .container import AppContainer, close_container, init_container
 from .dashboard.routes import create_dashboard_router
 from .observability.setup import (
+    TelemetryProviders,
     configure_otel_resource,
     setup_logging,
     setup_tracing,
@@ -43,7 +43,7 @@ configure_otel_resource(
 )
 
 setup_logging(log_level=env.log_level)
-_tracer_provider: TracerProvider | None = setup_tracing()
+_tracer_provider: TelemetryProviders | None = setup_tracing()
 
 if TYPE_CHECKING:
     from .telegram.bot import TelegramBot

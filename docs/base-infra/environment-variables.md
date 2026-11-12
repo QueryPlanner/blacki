@@ -247,18 +247,16 @@ stored object remains available for a later restore.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
-| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Duplicate content into OTel log events; keep `false` |
-| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `true` | Record prompts, tools, and responses on ADK spans |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental` | Use the experimental OpenTelemetry GenAI attributes |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `SPAN_ONLY` | Put prompts, messages, and tool definitions on spans |
+| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` | ADK's legacy request and response attributes; off to avoid a second copy |
+| `OTEL_EXPORTER_OTLP_*` | Unset | Also export through ADK's OTLP exporters |
 
-Blacki always exports spans to local JSON. It does not support remote OTLP
-export; any `OTEL_EXPORTER_OTLP_*` variable is ignored at startup with a warning
-that names the variable. See [Observability](observability.md).
-
-ADK span content capture is on by default. Blacki keeps full prompts, tool
-declarations, and responses in owner-readable daily trace files for the private
-dashboard. The slim trace log omits content. Keep
-`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=false` so the same content
-is not duplicated into OTel log events.
+Blacki sets the three GenAI defaults at startup unless the variable is already
+set. The dashboard's model-call views need `gen_ai_latest_experimental` and a
+span content mode (`SPAN_ONLY` or `SPAN_AND_EVENT`); startup logs a warning
+otherwise. `SPAN_AND_EVENT` also copies the content into
+`blacki-telemetry.log`. See [Observability](observability.md).
 
 ## Precedence
 

@@ -67,13 +67,19 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 Common causes are missing configuration, an invalid Telegram token, a database
 permission problem, or an exception while an enabled integration starts.
 
-## Startup warns about OTLP settings
+## Startup fails with "no OTLP exporter package"
 
-Blacki writes traces only to local files and does not export to a remote
-collector. If any `OTEL_EXPORTER_OTLP_*` variable is set, startup logs a warning
-that names the ignored variables. Remove those variables from `.env` to silence
-the warning. The application never logs their values because they may contain
-collector credentials.
+An `OTEL_EXPORTER_OTLP_*` endpoint is set, so ADK tries to add its OTLP
+exporters, but the package is not installed. Remove the variables to keep the
+local files only, or install `opentelemetry-exporter-otlp-proto-http`.
+
+## The dashboard shows no model calls
+
+Startup logs "GenAI content capture is off" when
+`OTEL_SEMCONV_STABILITY_OPT_IN` does not include `gen_ai_latest_experimental` or
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is not `SPAN_ONLY` or
+`SPAN_AND_EVENT`. Older `.env` files set the second variable to `false`; change
+it to `SPAN_ONLY` and restart.
 
 ## /ready returns HTTP 503
 

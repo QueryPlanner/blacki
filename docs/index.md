@@ -57,8 +57,8 @@ Docker Compose plugin.
 - `AGENT_NAME` and at least one model API key are required.
 - SQLite and optional local memory data are stored in host-mounted directories.
 - HTTP and ADK web sessions are in memory and reset on restart.
-- Logs and traces are always written to local JSON files; Blacki does not
-  export spans to a remote collector.
+- OpenTelemetry logs and spans are written to two local JSON Lines files.
+  ADK's OTLP exporters can be added later through `OTEL_EXPORTER_OTLP_*`.
 
 ## Next steps
 

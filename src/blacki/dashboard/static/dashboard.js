@@ -580,14 +580,14 @@ function captureToolCalls(output, calls) {
   output.append(list);
 }
 
-function captureRaw(output, rawRequest) {
-  if (!rawRequest) {
-    output.append(el("p", "help", "This request did not record a raw request body."));
+function captureRaw(output, rawSpan) {
+  if (!rawSpan) {
+    output.append(el("p", "help", "This model call has no recorded span."));
     return;
   }
   output.append(
-    el("pre", "prompt", rawRequest),
-    el("p", "help", "This is the ADK request body captured before it was sent to the configured model. Provider adapters may add wire-specific fields."),
+    el("pre", "prompt", rawSpan),
+    el("p", "help", "This is the model-call span as it is stored in blacki-traces.log, with JSON attributes decoded."),
   );
 }
 
@@ -599,15 +599,13 @@ function renderCapture(container, capture, selectedSection, onSelect) {
   const tools = capture.tools ?? [];
   const messages = capture.messages ?? [];
   const toolCalls = capture.tool_calls ?? [];
-  const rawLabel = capture.model && String(capture.model).toLowerCase().includes("openrouter")
-    ? "Raw OpenRouter request" : "Raw model request";
   const sections = [
     ["prompt", "System prompt"],
     ["tools", `Tools (${count(tools.length)})`],
     ["messages", `Messages sent (${count(messages.length)})`],
     ["response", "Response"],
     ["tool_calls", `Tool calls (${count(toolCalls.length)})`],
-    ["raw", rawLabel],
+    ["raw", "Raw span"],
   ];
 
   function showSection(section) {
@@ -643,7 +641,7 @@ function renderCapture(container, capture, selectedSection, onSelect) {
     } else if (section === "tool_calls") {
       captureToolCalls(output, toolCalls);
     } else {
-      captureRaw(output, capture.raw_request);
+      captureRaw(output, capture.raw_span);
     }
   }
 
@@ -811,7 +809,7 @@ function filterBar(view, signal, update) {
   search.placeholder = view === "traces" ? "Find a trace" : "Find a log entry";
   search.value = state[view].search;
   const field = view === "traces" ? "status" : "level";
-  const values = view === "traces" ? ["OK", "ERROR", "UNSET"] : ["INFO", "WARNING", "ERROR", "CRITICAL", "DEBUG"];
+  const values = view === "traces" ? ["OK", "ERROR", "UNSET"] : ["INFO", "WARN", "ERROR", "FATAL", "DEBUG"];
   const picker = options([["", "All"], ...values.map((value) => [value, value])], state[view][field]);
   const submit = el("button", "control", "Apply filters");
   submit.type = "submit";
@@ -867,7 +865,7 @@ function renderLog(entry) {
   const item = el("details", "log-entry");
   const title = el("summary");
   const level = el("span", "level", entry.level || "LOG");
-  if (["ERROR", "CRITICAL"].includes(entry.level)) level.setAttribute("data-error", "");
+  if (["ERROR", "FATAL"].includes(entry.level)) level.setAttribute("data-error", "");
   const message = typeof entry.message === "string" ? entry.message : "Structured log entry";
   title.append(level, el("strong", "", message.length > 150 ? `${message.slice(0, 149)}…` : message), dateNode(entry.timestamp, true));
   const body = el("div", "entry-body");
