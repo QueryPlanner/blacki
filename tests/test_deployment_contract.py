@@ -381,7 +381,6 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         "docker build --tag blacki:contract-test .",
         "-f compose.smoke.yaml up -d",
         'docker exec "$CONTAINER_ID" python -c',
-        "validate_observability_environment",
     ):
         assert command in workflow
 
@@ -484,13 +483,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
     assert "TELEGRAM_ENABLED=false" not in workflow
     assert "--env OPENROUTER_API_KEY" not in workflow
-
-    for setting in (
-        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    ):
-        assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
-        assert f'{setting}="${{{setting}}}"' not in workflow
+    assert "OTEL_EXPORTER_OTLP" not in workflow
 
 
 def test_production_deployment_serializes_host_bind_secret() -> None:

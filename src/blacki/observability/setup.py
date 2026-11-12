@@ -1,31 +1,22 @@
 """OpenTelemetry and Logging setup for bare-metal adaptation.
 
 This module provides consolidated observability configuration.  Spans are
-written to local flat files; the optional OTLP path is retained until the
-dedicated removal change lands.
+written only to local flat files; Blacki does not export traces to a remote
+collector.
 """
 
 import json
 import logging
 import os
-import re
 import sys
 import uuid
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-    OTLPSpanExporter as GrpcOTLPSpanExporter,
-)
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-    OTLPSpanExporter as HttpOTLPSpanExporter,
-)
 from opentelemetry.sdk.resources import (
     SERVICE_INSTANCE_ID,
     SERVICE_NAME,
@@ -40,7 +31,6 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
-from ..utils.exceptions import ConfigurationError
 from .attributes import TRACE_ATTRIBUTE_ALLOWLIST
 from .redaction import RedactionFilter, redact_secrets
 
@@ -51,41 +41,13 @@ _LOG_FILE_NAME = "blacki-telemetry.log"
 _SLIM_TRACE_FILE_NAME = "blacki-traces.log"
 _TRACE_DIRECTORY_NAME = "traces"
 _LOG_BACKUP_COUNT = 14
-
-
-@dataclass(frozen=True)
-class OTLPTraceConfig:
-    """Validated, trace-specific OTLP exporter settings."""
-
-    endpoint: str
-    endpoint_is_trace_specific: bool
-    protocol: str
-    headers: Mapping[str, str] | None
-
-
-_OTLP_ENDPOINT_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
-_OTLP_PROTOCOL_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_PROTOCOL",
-)
-_OTLP_HEADER_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    "OTEL_EXPORTER_OTLP_HEADERS",
-)
-_OTLP_PROTOCOLS = frozenset({"grpc", "http/protobuf"})
-_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_HTTP_HEADER_VALUE = re.compile(r"^[\x20-\x7e]*$")
-_HTTP_TRACE_PATH = "v1/traces"
+_OTLP_ENVIRONMENT_PREFIX = "OTEL_EXPORTER_OTLP_"
 
 
 def configure_otel_resource(agent_name: str) -> None:
     """Configure OpenTelemetry resource via environment variables.
 
-    Sets standard OTel resource attributes. Exporters are configured via
-    standard OTel environment variables (OTEL_EXPORTER_OTLP_*) set by the user.
+    Sets standard OTel resource attributes for the local span files.
 
     Args:
         agent_name: Unique service identifier
@@ -294,165 +256,29 @@ class FlatFileSpanExporter(SpanExporter):
         pass
 
 
-def _first_environment_setting(keys: Sequence[str]) -> tuple[str, str] | None:
-    """Return the first non-empty environment setting in precedence order."""
-    for key in keys:
-        value = os.getenv(key, "").strip()
-        if value:
-            return key, value
-    return None
-
-
-def _parse_otlp_headers(headers: str) -> Mapping[str, str]:
-    """Parse OTLP environment headers without logging credential material."""
-    parsed_headers: dict[str, str] = {}
-    for raw_header in headers.split(","):
-        header = raw_header.strip()
-        if not header or "=" not in header:
-            raise ConfigurationError(
-                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
-            )
-
-        raw_name, raw_value = header.split("=", maxsplit=1)
-        name = unquote(raw_name).strip().lower()
-        value = unquote(raw_value).strip()
-        if (
-            not name
-            or _HTTP_HEADER_NAME.fullmatch(name) is None
-            or _HTTP_HEADER_VALUE.fullmatch(value) is None
-        ):
-            raise ConfigurationError(
-                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
-            )
-        parsed_headers[name] = value
-
-    return parsed_headers
-
-
-def _normalize_otlp_endpoint(
-    endpoint: str,
-    *,
-    protocol: str,
-    trace_specific: bool,
-) -> str:
-    """Validate an OTLP endpoint and apply protocol-specific path semantics."""
-    try:
-        parsed = urlparse(endpoint)
-        _ = parsed.port
-    except ValueError:
-        raise ConfigurationError(
-            "Invalid OTLP trace endpoint. Use an http(s) collector URL."
-        ) from None
-
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.params
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ConfigurationError(
-            "Invalid OTLP trace endpoint. Use an http(s) collector URL "
-            "without credentials, queries, or fragments."
-        )
-
-    if protocol == "grpc":
-        if parsed.params or parsed.path not in {"", "/"}:
-            raise ConfigurationError(
-                "Invalid gRPC OTLP trace endpoint. Use a collector URL without a path."
-            )
-        return endpoint
-
-    if trace_specific:
-        return endpoint
-    return f"{endpoint.rstrip('/')}/{_HTTP_TRACE_PATH}"
-
-
-def _load_otlp_trace_config() -> OTLPTraceConfig | None:
-    """Load OTLP trace settings with trace-specific values taking precedence."""
-    endpoint_setting = _first_environment_setting(_OTLP_ENDPOINT_KEYS)
-    protocol_setting = _first_environment_setting(_OTLP_PROTOCOL_KEYS)
-    header_setting = _first_environment_setting(_OTLP_HEADER_KEYS)
-
-    if endpoint_setting is None:
-        if protocol_setting is not None or header_setting is not None:
-            raise ConfigurationError(
-                "OTLP trace protocol or headers require "
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or "
-                "OTEL_EXPORTER_OTLP_ENDPOINT."
-            )
-        return None
-
-    endpoint_key, endpoint = endpoint_setting
-    selected_protocol = (
-        protocol_setting[1].casefold() if protocol_setting is not None else "grpc"
-    )
-    if selected_protocol not in _OTLP_PROTOCOLS:
-        raise ConfigurationError(
-            "Unsupported OTLP trace protocol. This deployment supports "
-            "grpc and http/protobuf."
-        )
-
-    trace_specific = endpoint_key == "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-    normalized_endpoint = _normalize_otlp_endpoint(
-        endpoint,
-        protocol=selected_protocol,
-        trace_specific=trace_specific,
-    )
-    headers = (
-        _parse_otlp_headers(header_setting[1]) if header_setting is not None else None
-    )
-    return OTLPTraceConfig(
-        endpoint=normalized_endpoint,
-        endpoint_is_trace_specific=trace_specific,
-        protocol=selected_protocol,
-        headers=headers,
-    )
-
-
-def _create_otlp_exporter(
-    otlp_config: OTLPTraceConfig,
-) -> tuple[SpanExporter, str]:
-    """Construct the selected network exporter without sending any spans."""
-    exporter_headers = dict(otlp_config.headers) if otlp_config.headers else None
-    if otlp_config.protocol == "grpc":
-        otlp_exporter: SpanExporter = GrpcOTLPSpanExporter(
-            endpoint=otlp_config.endpoint,
-            headers=exporter_headers,
-        )
-    else:
-        otlp_exporter = HttpOTLPSpanExporter(
-            endpoint=otlp_config.endpoint,
-            headers=exporter_headers,
-        )
-    mode = "grpc" if otlp_config.protocol == "grpc" else "http-protobuf"
-    return otlp_exporter, mode
-
-
-def _create_tracer_provider(log_dir: Path) -> tuple[TracerProvider, str]:
-    """Create a provider with the flat-file exporter and optional OTLP export."""
+def _create_tracer_provider(log_dir: Path) -> TracerProvider:
+    """Create a provider that writes spans to local flat files."""
     provider = TracerProvider(resource=Resource.create())
     provider.add_span_processor(BatchSpanProcessor(FlatFileSpanExporter(log_dir)))
-
-    otlp_config = _load_otlp_trace_config()
-    if otlp_config is None:
-        return provider, "local"
-
-    otlp_exporter, mode = _create_otlp_exporter(otlp_config)
-    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-    return provider, f"local+otlp-{mode}"
+    return provider
 
 
-def validate_observability_environment() -> None:
-    """Construct and close the configured exporter without sending spans."""
-    otlp_config = _load_otlp_trace_config()
-    if otlp_config is None:
+def _warn_about_otlp_environment() -> None:
+    """Warn when remote exporter settings are present but ignored.
+
+    The warning lists variable names only.  Values may contain collector
+    credentials and must never reach the logs.
+    """
+    names = sorted(
+        name for name in os.environ if name.startswith(_OTLP_ENVIRONMENT_PREFIX)
+    )
+    if not names:
         return
-
-    otlp_exporter, _ = _create_otlp_exporter(otlp_config)
-    otlp_exporter.shutdown()
+    logger.warning(
+        "Ignoring remote OTLP exporter settings (%s); "
+        "Blacki writes traces only to local files.",
+        ", ".join(names),
+    )
 
 
 def setup_tracing() -> TracerProvider:
@@ -469,9 +295,10 @@ def setup_tracing() -> TracerProvider:
     except OSError as e:
         print(f"⚠️ Failed to create trace directory: {e}")
 
-    provider, mode = _create_tracer_provider(log_dir)
+    _warn_about_otlp_environment()
+    provider = _create_tracer_provider(log_dir)
     trace.set_tracer_provider(provider)
-    logger.info("Trace exporter mode configured: %s", mode)
+    logger.info("Local flat-file trace exporter configured")
     logger.info(
         "ADK span content capture is %s",
         "enabled" if adk_span_content_capture_enabled() else "disabled",

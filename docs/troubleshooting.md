@@ -67,31 +67,13 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 Common causes are missing configuration, an invalid Telegram token, a database
 permission problem, or an exception while an enabled integration starts.
 
-## Startup rejects the OTLP trace protocol
+## Startup warns about OTLP settings
 
-Blacki supports `grpc` and `http/protobuf`. Match the protocol to the collector:
-
-```dotenv
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318
-```
-
-A global HTTP endpoint receives `/v1/traces` automatically. A trace-specific
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` must be the complete signal URL and is used
-exactly as configured. gRPC endpoints cannot contain a path.
-
-Validate the environment against the candidate image without starting the
-service:
-
-```bash
-ENV_FILE=.env docker compose --env-file .env \
-  -f compose.yaml -f compose.prod.yaml run --rm --no-deps --no-build \
-  --entrypoint python agent -c \
-  'from blacki.observability.setup import validate_observability_environment; validate_observability_environment()'
-```
-
-The production workflow runs this preflight before stopping the existing
-container.
+Blacki writes traces only to local files and does not export to a remote
+collector. If any `OTEL_EXPORTER_OTLP_*` variable is set, startup logs a warning
+that names the ignored variables. Remove those variables from `.env` to silence
+the warning. The application never logs their values because they may contain
+collector credentials.
 
 ## /ready returns HTTP 503
 

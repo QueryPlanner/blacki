@@ -249,16 +249,10 @@ stored object remains available for a later restore.
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Duplicate content into OTel log events; keep `false` |
 | `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `true` | Record prompts, tools, and responses on ADK spans |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred complete trace collector URL |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback; HTTP adds `/v1/traces` |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol: `grpc` or `http/protobuf` |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Global protocol fallback |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | unset | Preferred trace authentication headers |
-| `OTEL_EXPORTER_OTLP_HEADERS` | unset | Global authentication-header fallback |
 
-Blacki always exports spans to local JSON. A validated trace-specific or global
-endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
-precedence. See [Observability](observability.md).
+Blacki always exports spans to local JSON. It does not support remote OTLP
+export; any `OTEL_EXPORTER_OTLP_*` variable is ignored at startup with a warning
+that names the variable. See [Observability](observability.md).
 
 ADK span content capture is on by default. Blacki keeps full prompts, tool
 declarations, and responses in owner-readable daily trace files for the private
