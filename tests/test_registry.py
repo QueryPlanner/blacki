@@ -36,7 +36,6 @@ class TestToolConfig:
         assert config.skills_dir is None
         assert config.legacy_workout_tools_enabled is False
         assert config.kokoro_tts_base_url is None
-        assert config.kokoro_tts_voice == "af_heart"
         assert config.gmail_config is None
         assert config.browser_takeover_enabled is False
 
@@ -51,7 +50,6 @@ class TestToolConfig:
             skills_dir=skills_path,
             legacy_workout_tools_enabled=True,
             kokoro_tts_base_url="http://kokoro.internal:8880",
-            kokoro_tts_voice="hf_alpha",
             gmail_config=_gmail_config(),
         )
 
@@ -62,7 +60,6 @@ class TestToolConfig:
         assert config.skills_dir == skills_path
         assert config.legacy_workout_tools_enabled is True
         assert config.kokoro_tts_base_url == "http://kokoro.internal:8880"
-        assert config.kokoro_tts_voice == "hf_alpha"
         assert config.gmail_config is not None
 
 
@@ -183,21 +180,26 @@ class TestBuildTools:
         assert "gmail" not in default_skills._skills
         create.assert_called_once()
 
-    def test_kokoro_tts_tool_is_telegram_root_only(self) -> None:
-        """Private speech delivery must not reach public or worker agents."""
+    def test_kokoro_tts_tools_are_telegram_root_only(self) -> None:
+        """Private speech and voice-list tools must not reach public agents."""
         config = ToolConfig(
             weather_enabled=False,
             kokoro_tts_base_url="http://kokoro.internal:8880",
-            kokoro_tts_voice="af_heart",
         )
 
         root_tools = build_tools(config, include_user_scoped_tools=True)
         worker_tools = build_tools(config, include_user_scoped_tools=False)
         default_tools = build_tools(config)
 
-        assert "send_text_to_speech" in {tool.__name__ for tool in root_tools}
-        assert "send_text_to_speech" not in {tool.__name__ for tool in worker_tools}
-        assert "send_text_to_speech" not in {tool.__name__ for tool in default_tools}
+        root_names = {tool.__name__ for tool in root_tools}
+        worker_names = {tool.__name__ for tool in worker_tools}
+        default_names = {tool.__name__ for tool in default_tools}
+
+        assert {"send_text_to_speech", "list_speech_voices"} <= root_names
+        assert "send_text_to_speech" not in worker_names
+        assert "list_speech_voices" not in worker_names
+        assert "send_text_to_speech" not in default_names
+        assert "list_speech_voices" not in default_names
 
     def test_r2_file_tools_are_telegram_root_only(self) -> None:
         """Durable file tools must never reach public or worker agents."""
@@ -291,7 +293,9 @@ class TestBuildTools:
 
         tools = build_tools(config, include_user_scoped_tools=True)
 
-        assert "send_text_to_speech" not in {tool.__name__ for tool in tools}
+        names = {tool.__name__ for tool in tools}
+        assert "send_text_to_speech" not in names
+        assert "list_speech_voices" not in names
         # The Mini App pair is always on for the root.
         assert {"miniapp_read", "miniapp_write"} <= {tool.__name__ for tool in tools}
         assert len(tools) == 2
@@ -367,7 +371,6 @@ class TestBuildToolConfigFromEnv:
             assert config.skills_dir is not None
             assert config.browser_takeover_enabled is False
             assert config.kokoro_tts_base_url is None
-            assert config.kokoro_tts_voice == "af_heart"
 
     def test_brave_search_api_key_from_env(self) -> None:
         """Should read BRAVE_SEARCH_API_KEY from env."""
@@ -504,20 +507,16 @@ class TestBuildToolConfigFromEnv:
         assert config.gmail_config is not None
         assert config.gmail_config.client_id == "health-client-id"
 
-    def test_kokoro_tts_settings_from_env(self) -> None:
-        """Should strip the optional Kokoro base URL and voice settings."""
+    def test_kokoro_tts_base_url_from_env(self) -> None:
+        """Should strip the optional Kokoro base URL."""
         with patch.dict(
             "os.environ",
-            {
-                "KOKORO_TTS_BASE_URL": " http://100.77.130.71:8880 ",
-                "KOKORO_TTS_VOICE": " hf_alpha ",
-            },
+            {"KOKORO_TTS_BASE_URL": " http://100.77.130.71:8880 "},
             clear=False,
         ):
             config = build_tool_config_from_env()
 
         assert config.kokoro_tts_base_url == "http://100.77.130.71:8880"
-        assert config.kokoro_tts_voice == "hf_alpha"
 
     def test_google_health_settings_enable_private_tool(self) -> None:
         """A complete Google Health secret set enables the Telegram tool."""
@@ -535,17 +534,6 @@ class TestBuildToolConfigFromEnv:
             config = build_tool_config_from_env()
 
         assert config.google_health_enabled is True
-
-    def test_empty_kokoro_voice_uses_default(self) -> None:
-        """An empty voice setting should retain the verified default voice."""
-        with patch.dict(
-            "os.environ",
-            {"KOKORO_TTS_VOICE": "   "},
-            clear=False,
-        ):
-            config = build_tool_config_from_env()
-
-        assert config.kokoro_tts_voice == "af_heart"
 
 
 class TestBuildReminderTools:

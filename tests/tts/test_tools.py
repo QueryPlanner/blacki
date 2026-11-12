@@ -1,4 +1,4 @@
-"""Tests for the private Kokoro speech-delivery tool."""
+"""Tests for the private Kokoro speech-delivery and voice-list tools."""
 
 from __future__ import annotations
 
@@ -16,12 +16,14 @@ from google.adk.tools import ToolContext
 import blacki.tools.speech as tts_module
 from blacki.telegram.api import TelegramApiClient
 from blacki.tools.speech import (
+    DEFAULT_KOKORO_VOICE,
     KOKORO_AUDIO_MIME_TYPE,
     MAX_TTS_AUDIO_BYTES,
     MAX_TTS_TEXT_CHARS,
     KokoroTtsConfig,
     KokoroTtsResponseError,
     _synthesize_mp3,
+    create_list_speech_voices_tool,
     create_send_text_to_speech_tool,
 )
 
@@ -32,6 +34,18 @@ def _audio_response(content: bytes = b"ID3-audio") -> httpx.Response:
         headers={"content-type": "audio/mpeg; charset=binary"},
         content=content,
     )
+
+
+def _audio_handler(
+    requests: list[httpx.Request],
+) -> Callable[[httpx.Request], httpx.Response]:
+    """Serve audio and record every request."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return _audio_response()
+
+    return handler
 
 
 def _telegram_factory() -> tuple[
@@ -52,6 +66,13 @@ def _telegram_factory() -> tuple[
     return factory, client, tokens
 
 
+def _context(state: dict[str, str] | None = None) -> ToolContext:
+    return cast(
+        ToolContext,
+        MockToolContext(state=MockState(state or {"telegram_chat_id": "1"})),
+    )
+
+
 @pytest.mark.parametrize(
     "base_url",
     [
@@ -68,34 +89,169 @@ def test_config_rejects_untrusted_base_urls(base_url: str) -> None:
         KokoroTtsConfig(base_url=base_url)
 
 
-def test_config_normalizes_endpoint_and_voice() -> None:
-    config = KokoroTtsConfig(
-        base_url=" http://100.77.130.71:8880/ ",
-        voice=" af_heart ",
-    )
+def test_config_normalizes_endpoints() -> None:
+    config = KokoroTtsConfig(base_url=" http://100.77.130.71:8880/ ")
 
     assert config.speech_url == "http://100.77.130.71:8880/v1/audio/speech"
-    assert config.normalized_voice == "af_heart"
+    assert config.voices_url == "http://100.77.130.71:8880/v1/audio/voices"
 
 
-def test_config_rejects_invalid_voice() -> None:
-    with pytest.raises(ValueError, match="KOKORO_TTS_VOICE"):
-        KokoroTtsConfig(base_url="http://kokoro.internal", voice="bad voice")
+@pytest.mark.asyncio
+async def test_tool_rejects_malformed_voice_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    requests: list[httpx.Request] = []
+    tool = create_send_text_to_speech_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(_audio_handler(requests)),
+    )
+
+    result = await tool("hello", _context(), "bad voice")
+
+    assert result == {
+        "status": "error",
+        "error": "The requested voice ID is invalid.",
+    }
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_tool_synthesizes_and_sends_to_current_telegram_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
+    requests: list[httpx.Request] = []
+
+    factory, telegram, tokens = _telegram_factory()
+    tool = create_send_text_to_speech_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(_audio_handler(requests)),
+        telegram_client_factory=factory,
+    )
+    context = MockToolContext(
+        state=MockState({"telegram_chat_id": "-12345", "telegram_thread_id": " 77 "})
+    )
+
+    result = await tool("  Hello from Blacki  ", cast(ToolContext, context))
+
+    assert result == {
+        "status": "success",
+        "message": "Speech audio sent to the current Telegram chat.",
+        "format": "mp3",
+        "voice": DEFAULT_KOKORO_VOICE,
+        "bytes": len(b"ID3-audio"),
+    }
+    assert tokens == ["telegram-secret"]
+    telegram.send_audio.assert_awaited_once_with(
+        chat_id=-12345,
+        audio_bytes=b"ID3-audio",
+        filename="blacki-speech.mp3",
+        message_thread_id=77,
+    )
+    assert [request.method for request in requests] == ["POST"]
+    payload = json.loads(requests[0].content)
+    assert payload["input"] == "Hello from Blacki"
+    assert payload["voice"] == DEFAULT_KOKORO_VOICE
+
+
+@pytest.mark.asyncio
+async def test_tool_sends_requested_voice_in_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    requests: list[httpx.Request] = []
+    factory, _, _ = _telegram_factory()
+    tool = create_send_text_to_speech_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(_audio_handler(requests)),
+        telegram_client_factory=factory,
+    )
+
+    result = await tool("hello", _context(), " bf_emma ")
+
+    assert result["status"] == "success"
+    assert result["voice"] == "bf_emma"
+    assert [request.method for request in requests] == ["POST"]
+    assert json.loads(requests[0].content)["voice"] == "bf_emma"
+
+
+@pytest.mark.asyncio
+async def test_list_tool_returns_sorted_voices_and_default() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "voices": [
+                    {"id": "bf_emma"},
+                    "am_michael",
+                    {"id": "af_heart"},
+                    {"name": "no-id"},
+                    "bad voice",
+                    123,
+                ]
+            },
+        )
+
+    tool = create_list_speech_voices_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(handler),
+    )
+
+    result = await tool()
+
+    assert result == {
+        "status": "success",
+        "default_voice": DEFAULT_KOKORO_VOICE,
+        "voices": ["af_heart", "am_michael", "bf_emma"],
+    }
+    assert [request.method for request in requests] == ["GET"]
+    assert str(requests[0].url) == "http://kokoro.internal/v1/audio/voices"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(503),
+        httpx.Response(200, json=None),
+        httpx.Response(200, json={"voices": "af_heart"}),
+        httpx.Response(200, json={"voices": []}),
+    ],
+)
+async def test_list_tool_reports_unusable_voice_list_safely(
+    response: httpx.Response,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tool = create_list_speech_voices_tool(
+        KokoroTtsConfig("http://kokoro.internal"),
+        http_transport=httpx.MockTransport(lambda _: response),
+    )
+
+    result = await tool()
+
+    assert result == {
+        "status": "error",
+        "error": "The Kokoro voice list is unavailable.",
+    }
+    assert "kokoro.internal" not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_synthesize_mp3_uses_verified_openai_contract() -> None:
     seen: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(request)
-        return _audio_response()
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_audio_handler(seen))
+    ) as client:
         audio = await _synthesize_mp3(
             "Speak this",
-            KokoroTtsConfig("http://kokoro.internal", voice="af_heart"),
+            KokoroTtsConfig("http://kokoro.internal"),
             client,
+            voice="af_heart",
         )
 
     assert audio == b"ID3-audio"
@@ -156,6 +312,7 @@ async def test_synthesize_mp3_rejects_invalid_responses(
                 "hello",
                 KokoroTtsConfig("http://kokoro.internal"),
                 client,
+                voice="af_heart",
             )
 
 
@@ -181,47 +338,8 @@ async def test_synthesize_mp3_rejects_oversized_stream(
                 "hello",
                 KokoroTtsConfig("http://kokoro.internal"),
                 client,
+                voice="af_heart",
             )
-
-
-@pytest.mark.asyncio
-async def test_tool_synthesizes_and_sends_to_current_telegram_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "telegram-secret")
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return _audio_response()
-
-    factory, telegram, tokens = _telegram_factory()
-    tool = create_send_text_to_speech_tool(
-        KokoroTtsConfig("http://kokoro.internal", voice="af_heart"),
-        http_transport=httpx.MockTransport(handler),
-        telegram_client_factory=factory,
-    )
-    context = MockToolContext(
-        state=MockState({"telegram_chat_id": "-12345", "telegram_thread_id": " 77 "})
-    )
-
-    result = await tool("  Hello from Blacki  ", cast(ToolContext, context))
-
-    assert result == {
-        "status": "success",
-        "message": "Speech audio sent to the current Telegram chat.",
-        "format": "mp3",
-        "voice": "af_heart",
-        "bytes": len(b"ID3-audio"),
-    }
-    assert tokens == ["telegram-secret"]
-    telegram.send_audio.assert_awaited_once_with(
-        chat_id=-12345,
-        audio_bytes=b"ID3-audio",
-        filename="blacki-speech.mp3",
-        message_thread_id=77,
-    )
-    assert json.loads(requests[0].content)["input"] == "Hello from Blacki"
 
 
 @pytest.mark.asyncio
@@ -304,13 +422,9 @@ async def test_tool_rejects_invalid_input_or_context_without_network(
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
     requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return _audio_response()
-
     tool = create_send_text_to_speech_tool(
         KokoroTtsConfig("http://kokoro.internal"),
-        http_transport=httpx.MockTransport(handler),
+        http_transport=httpx.MockTransport(_audio_handler(requests)),
     )
 
     result = await tool(

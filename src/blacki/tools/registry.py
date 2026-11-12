@@ -33,7 +33,6 @@ class ToolConfig:
         skills_dir: Directory containing skill definitions.
         legacy_workout_tools_enabled: Whether to expose weekly split fallbacks.
         kokoro_tts_base_url: Private Kokoro API base URL.
-        kokoro_tts_voice: Default Kokoro voice ID.
         google_health_enabled: Whether the private Google Health reader is enabled.
     """
 
@@ -45,7 +44,6 @@ class ToolConfig:
     weather_enabled: bool = True
     legacy_workout_tools_enabled: bool = False
     kokoro_tts_base_url: str | None = None
-    kokoro_tts_voice: str = "af_heart"
     google_health_enabled: bool = False
     gmail_config: GmailConfig | None = field(default=None, repr=False)
     r2_files_enabled: bool = False
@@ -93,12 +91,7 @@ def build_tools(
         logger.info("Weather tools enabled")
 
     if include_user_scoped_tools and config.kokoro_tts_base_url:
-        tools.extend(
-            _build_tts_tools(
-                base_url=config.kokoro_tts_base_url,
-                voice=config.kokoro_tts_voice,
-            )
-        )
+        tools.extend(_build_tts_tools(base_url=config.kokoro_tts_base_url))
 
     if include_user_scoped_tools and config.google_health_enabled:
         tools.extend(_build_health_tools())
@@ -304,14 +297,21 @@ def _build_weather_tools() -> list[Any]:
         return []
 
 
-def _build_tts_tools(*, base_url: str, voice: str) -> list[Any]:
-    """Build the private Telegram speech-delivery tool."""
+def _build_tts_tools(*, base_url: str) -> list[Any]:
+    """Build the private Telegram speech-delivery and voice-list tools."""
     try:
-        from blacki.tools.speech import KokoroTtsConfig, create_send_text_to_speech_tool
+        from blacki.tools.speech import (
+            KokoroTtsConfig,
+            create_list_speech_voices_tool,
+            create_send_text_to_speech_tool,
+        )
 
-        config = KokoroTtsConfig(base_url=base_url, voice=voice)
-        logger.info("Kokoro TTS tool enabled for the Telegram root agent")
-        return [create_send_text_to_speech_tool(config)]
+        config = KokoroTtsConfig(base_url=base_url)
+        logger.info("Kokoro TTS tools enabled for the Telegram root agent")
+        return [
+            create_send_text_to_speech_tool(config),
+            create_list_speech_voices_tool(config),
+        ]
     except (ImportError, ValueError) as exc:
         logger.warning("Kokoro TTS disabled: %s", exc)
         return []
@@ -409,8 +409,6 @@ def build_tool_config_from_env() -> ToolConfig:
         .lower()
         in ("true", "1", "yes"),
         kokoro_tts_base_url=os.getenv("KOKORO_TTS_BASE_URL", "").strip() or None,
-        kokoro_tts_voice=os.getenv("KOKORO_TTS_VOICE", "af_heart").strip()
-        or "af_heart",
         google_health_enabled=_google_health_configured(),
         gmail_config=gmail_config,
         r2_files_enabled=os.getenv("R2_FILES_ENABLED", "false").strip().lower()

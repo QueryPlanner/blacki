@@ -99,7 +99,6 @@ its presence changes model routing.
 | `CLOUDFLARE_ACCOUNT_ID` | unset | Cloudflare account ID for Telegram voice transcription |
 | `CLOUDFLARE_API_TOKEN` | unset | Cloudflare Workers AI API token for Telegram voice transcription |
 | `KOKORO_TTS_BASE_URL` | unset | Register private Kokoro speech delivery for Telegram |
-| `KOKORO_TTS_VOICE` | `af_heart` | Kokoro voice ID used for generated MP3 audio |
 | `BROWSER_TAKEOVER_PUBLIC_URL` | unset | HTTPS URL for private Agent Browser takeover |
 | `BROWSER_TAKEOVER_TTL_SECONDS` | `300` | One-time takeover lifetime, from 60 to 900 seconds |
 | `BROWSER_TAKEOVER_STREAM_PORT` | `9223` | Agent Browser stream port inside each sandbox |
@@ -121,7 +120,8 @@ context. The sandbox image must provide the `agent-browser` executable.
 reachable from inside the Blacki container. Do not use `localhost` for a
 Kokoro process on another Tailscale host; configure that host's Tailscale IP or
 MagicDNS name instead. Plain HTTP is suitable only across a trusted private
-network such as the encrypted Tailscale connection.
+network such as the encrypted Tailscale connection. The Telegram root agent
+chooses the voice per request and defaults to `af_heart`.
 
 `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` are an optional pair. When
 both are configured, Telegram voice notes are transcribed with Cloudflare
