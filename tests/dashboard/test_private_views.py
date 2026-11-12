@@ -421,7 +421,7 @@ def test_wiki_distinguishes_empty_unknown_owner_and_unreadable_data(
 
 
 def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) -> None:
-    """The private view reads prompt and tools from ADK's native span attribute."""
+    """The private view reads the full model call from ADK span attributes."""
     request = {
         "model": "openrouter/example",
         "config": {
@@ -429,6 +429,7 @@ def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) 
                 "role": "system",
                 "parts": [{"text": "ADK system prompt."}],
             },
+            "api_key": "sk-or-v1-" + "a" * 24,
             "tools": [
                 {
                     "function_declarations": [
@@ -443,6 +444,23 @@ def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) 
         },
         "contents": [{"role": "user", "parts": [{"text": "User message."}]}],
     }
+    response = {
+        "content": {
+            "role": "model",
+            "parts": [
+                {"text": "Reading the file."},
+                {
+                    "function_call": {
+                        "name": "read_file",
+                        "args": {"path": "notes.txt"},
+                        "id": "call-1",
+                    }
+                },
+            ],
+        },
+        "finish_reason": "STOP",
+        "usage_metadata": {"prompt_token_count": 12, "total_token_count": 18},
+    }
     _write_spans(
         files,
         [
@@ -452,8 +470,26 @@ def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) 
                     "gcp.vertex.agent.invocation_id": "inv-a",
                     "gcp.vertex.agent.session_id": "session-v1",
                     "gcp.vertex.agent.llm_request": json.dumps(request),
+                    "gcp.vertex.agent.llm_response": json.dumps(response),
                 },
-            )
+            ),
+            {
+                "name": "execute_tool read_file",
+                "context": {"trace_id": TRACE, "span_id": f"{2:016x}"},
+                "parent_id": None,
+                "start_time": "2024-10-26T10:00:00+00:00",
+                "end_time": "2024-10-26T10:00:00.250000+00:00",
+                "status": {"status_code": "OK", "description": None},
+                "attributes": {
+                    "gen_ai.operation.name": "execute_tool",
+                    "gen_ai.tool.name": "read_file",
+                    "gen_ai.tool.call.id": "call-1",
+                    "gcp.vertex.agent.tool_call_args": json.dumps(
+                        {"path": "notes.txt"}
+                    ),
+                    "gcp.vertex.agent.tool_response": json.dumps({"content": "hello"}),
+                },
+            },
         ],
     )
     params = {"user_id": USER, "session_id": "session-v1"}
@@ -473,7 +509,38 @@ def test_context_reads_adk_llm_request_capture(client: TestClient, files: Path) 
         }
     ]
     assert detail["partial_tools"] is False
-    assert "User message." not in json.dumps(detail)
+    assert detail["messages"] == [
+        {
+            "role": "user",
+            "text": "User message.",
+            "parts": [{"type": "text", "text": "User message."}],
+        }
+    ]
+    assert detail["response"]["text"] == "Reading the file."
+    assert detail["response"]["finish_reason"] == "STOP"
+    assert detail["response"]["usage"] == {
+        "prompt_token_count": 12,
+        "total_token_count": 18,
+    }
+    assert detail["response"]["parts"][1] == {
+        "type": "function_call",
+        "name": "read_file",
+        "args": {"path": "notes.txt"},
+        "call_id": "call-1",
+    }
+    assert detail["tool_calls"] == [
+        {
+            "name": "read_file",
+            "call_id": "call-1",
+            "args": {"path": "notes.txt"},
+            "response": {"content": "hello"},
+            "status": "OK",
+            "duration_ms": 250,
+        }
+    ]
+    assert '"model": "openrouter/example"' in detail["raw_request"]
+    assert "sk-or-v1-" not in detail["raw_request"]
+    assert "[REDACTED]" in detail["raw_request"]
 
 
 def test_adk_prompt_extraction_handles_all_content_shapes() -> None:
@@ -615,3 +682,279 @@ def test_adk_prompt_extraction_falls_back_when_parts_or_contents_are_unusable() 
         )
         == ""
     )
+
+
+def test_capture_parts_describe_text_reasoning_and_binary_values() -> None:
+    """Parts are normalized without exposing inline bytes or file URIs raw."""
+    from blacki.dashboard.private_data import _normalize_content, _normalize_part
+
+    assert _normalize_part({"text": "plain"}) == {"type": "text", "text": "plain"}
+    assert _normalize_part({"text": "thinking", "thought": True}) == {
+        "type": "thought",
+        "text": "thinking",
+    }
+    assert _normalize_part(
+        {
+            "function_response": {
+                "name": "read_file",
+                "response": {"content": "password: example-secret"},
+                "id": "call-1",
+            }
+        }
+    ) == {
+        "type": "function_response",
+        "name": "read_file",
+        "response": {"content": "password: [REDACTED]"},
+        "call_id": "call-1",
+    }
+    assert _normalize_part({"inline_data": {"mime_type": "image/png"}}) == {
+        "type": "inline_data",
+        "mime_type": "image/png",
+    }
+    assert _normalize_part({"inline_data": {"mime_type": 7}}) == {
+        "type": "inline_data",
+        "mime_type": "",
+    }
+    assert _normalize_part(
+        {"file_data": {"mime_type": "text/plain", "file_uri": "gs://bucket/file"}}
+    ) == {
+        "type": "file_data",
+        "mime_type": "text/plain",
+        "file_uri": "gs://bucket/file",
+    }
+    assert _normalize_part({"file_data": {"mime_type": 1, "file_uri": 2}}) == {
+        "type": "file_data",
+        "mime_type": "",
+        "file_uri": "",
+    }
+    assert _normalize_part({"thought_signature": "opaque"}) == {
+        "type": "other",
+        "keys": ["thought_signature"],
+    }
+
+    assert _normalize_content(
+        {
+            "role": 7,
+            "parts": [
+                {"text": "one"},
+                {"text": "two", "thought": True},
+                "not a part",
+            ],
+        }
+    ) == {
+        "role": "",
+        "text": "one\ntwo",
+        "parts": [
+            {"type": "text", "text": "one"},
+            {"type": "thought", "text": "two"},
+        ],
+    }
+    assert _normalize_content({"role": "user", "parts": "not-a-list"}) == {
+        "role": "user",
+        "text": "",
+        "parts": [],
+    }
+
+
+def test_capture_messages_requires_a_decoded_request() -> None:
+    """Messages are empty when the request is absent or malformed."""
+    from blacki.dashboard.private_data import _messages
+
+    assert _messages({}) == []
+    assert (
+        _messages(
+            {"gcp.vertex.agent.llm_request": json.dumps({"contents": "not-a-list"})}
+        )
+        == []
+    )
+    assert _messages(
+        {
+            "gcp.vertex.agent.llm_request": json.dumps(
+                {"contents": ["not-an-object", {"role": "user"}]}
+            )
+        }
+    ) == [{"role": "user", "text": "", "parts": []}]
+
+
+def test_capture_response_normalizes_errors_and_usage() -> None:
+    """Response metadata is optional and credential-shaped text is redacted."""
+    from blacki.dashboard.private_data import _response
+
+    assert _response({}) is None
+    assert _response({"gcp.vertex.agent.llm_response": "not JSON"}) is None
+    assert _response({"gcp.vertex.agent.llm_response": json.dumps({})}) == {
+        "text": "",
+        "parts": [],
+    }
+    response = _response(
+        {
+            "gcp.vertex.agent.llm_response": json.dumps(
+                {
+                    "error_code": 429,
+                    "error_message": "api_key: example-secret",
+                    "interrupted": True,
+                    "turn_complete": False,
+                    "partial": True,
+                    "model_version": "example-v1",
+                    "usage_metadata": {"prompt_token_count": 3},
+                }
+            )
+        }
+    )
+    assert response == {
+        "text": "",
+        "parts": [],
+        "error_code": 429,
+        "error_message": "api_key: [REDACTED]",
+        "interrupted": True,
+        "turn_complete": False,
+        "partial": True,
+        "model_version": "example-v1",
+        "usage": {"prompt_token_count": 3},
+    }
+    assert _response(
+        {
+            "gcp.vertex.agent.llm_response": json.dumps(
+                {"usage_metadata": "not-an-object"}
+            )
+        }
+    ) == {"text": "", "parts": []}
+
+
+def test_capture_tool_calls_pair_results_and_skip_unusable_parts() -> None:
+    """Tool calls use response arguments and tolerate missing execution spans."""
+    from blacki.dashboard.private_data import _tool_calls
+
+    assert _tool_calls({}, {}) == []
+    assert (
+        _tool_calls({"gcp.vertex.agent.llm_response": json.dumps({"content": {}})}, {})
+        == []
+    )
+    assert (
+        _tool_calls(
+            {
+                "gcp.vertex.agent.llm_response": json.dumps(
+                    {"content": {"parts": [{"text": "no call"}]}}
+                )
+            },
+            {},
+        )
+        == []
+    )
+    response = {
+        "gcp.vertex.agent.llm_response": json.dumps(
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "function_call": {
+                                "name": "read_file",
+                                "args": None,
+                                "id": 7,
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+    }
+    assert _tool_calls(response, {}) == [
+        {
+            "name": "read_file",
+            "call_id": "",
+            "args": {},
+            "response": None,
+            "status": None,
+            "duration_ms": None,
+        }
+    ]
+    record = {
+        "start_time": "2024-10-26T10:00:00+00:00",
+        "end_time": "2024-10-26T10:00:00.125000+00:00",
+        "status": {"status_code": 7},
+        "attributes": {
+            "gcp.vertex.agent.tool_call_args": json.dumps({"path": "notes.txt"}),
+            "gcp.vertex.agent.tool_response": json.dumps({"content": "hello"}),
+        },
+    }
+    assert _tool_calls(
+        {
+            "gcp.vertex.agent.llm_response": json.dumps(
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "function_call": {
+                                    "name": "read_file",
+                                    "id": "call-1",
+                                }
+                            }
+                        ]
+                    }
+                }
+            )
+        },
+        {"call-1": record},
+    ) == [
+        {
+            "name": "read_file",
+            "call_id": "call-1",
+            "args": {"path": "notes.txt"},
+            "response": {"content": "hello"},
+            "status": None,
+            "duration_ms": 125,
+        }
+    ]
+
+
+def test_tool_span_index_and_duration_ignore_damaged_records() -> None:
+    """Only tool spans with a usable call ID are indexed."""
+    from blacki.dashboard.private_data import _duration_ms, _tool_span_index
+
+    valid = {
+        "attributes": {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.call.id": "call-1",
+        }
+    }
+    assert _tool_span_index(
+        [
+            {},
+            {"attributes": {"gen_ai.operation.name": "invoke_agent"}},
+            {"attributes": {"gen_ai.operation.name": "execute_tool"}},
+            valid,
+        ]
+    ) == {"call-1": valid}
+
+    assert _duration_ms(None) is None
+    assert _duration_ms({"start_time": 1}) is None
+    assert _duration_ms({"start_time": 2, "end_time": 1}) is None
+
+
+def test_raw_request_is_redacted_and_rejects_recursive_values() -> None:
+    """Raw request rendering redacts text and degrades on a recursive object."""
+    from blacki.dashboard.private_data import _raw_request
+
+    assert _raw_request({}) is None
+    raw = _raw_request(
+        {
+            "gcp.vertex.agent.llm_request": json.dumps(
+                {"model": "example", "config": {"api_key": "sk-or-v1-" + "a" * 24}}
+            )
+        }
+    )
+    assert raw is not None
+    assert '"model": "example"' in raw
+    assert "sk-or-v1-" not in raw
+    recursive: dict[str, object] = {}
+    recursive["self"] = recursive
+    assert _raw_request({"gcp.vertex.agent.llm_request": recursive}) is None
+
+
+def test_redact_value_walks_lists_and_keeps_scalars() -> None:
+    """Nested JSON values are redacted recursively without changing scalars."""
+    from blacki.dashboard.private_data import _redact_value
+
+    assert _redact_value(
+        ["sk-or-v1-" + "a" * 24, {"password": "example-secret"}, 7, None]
+    ) == ["[REDACTED]", {"password": "[REDACTED]"}, 7, None]

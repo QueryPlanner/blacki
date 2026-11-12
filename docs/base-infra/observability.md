@@ -132,11 +132,14 @@ Telegram `/reset` starts the next versioned ADK session and leaves earlier
 session rows available. The append-only log and trace files are not deleted by
 `/reset`, so the dashboard continues to show that history.
 
-The Sessions view reads the system instruction and tool declarations from ADK's
-`gcp.vertex.agent.llm_request` span attribute in the daily trace files. It
+The Sessions view opens a model-call inspector for each captured request. It
+reads the system instruction, tool declarations, conversation messages, model
+response, tool arguments and results, and the raw ADK request body from ADK's
+`gcp.vertex.agent.llm_request` and `gcp.vertex.agent.llm_response` span
+attributes and the matching `execute_tool` spans in the daily trace files. It
 verifies each capture against the selected ADK session and filters common
 credential patterns. Because content capture is on by default, recent requests
-normally include their captured system instructions and tool descriptions.
+normally include the complete model call.
 
 The User wiki tab lists the saved Markdown pages for the selected direct
 Telegram user and shows the selected page as plain text. It respects the

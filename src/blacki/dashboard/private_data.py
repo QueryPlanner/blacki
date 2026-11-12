@@ -7,7 +7,7 @@ import json
 import re
 import sqlite3
 from collections import defaultdict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,11 @@ _SESSION_KEYS = (
     "session.id",
 )
 _USER_KEYS = ("blacki.user_id", "user.id")
+_SECRET_KEY = re.compile(
+    r"(?i)^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|"
+    r"client[_-]?secret|password|passwd|secret|authorization|cookie|"
+    r"telegram[_-]?bot[_-]?token|bot[_-]?token|api[_-]?token|token)$"
+)
 
 
 def valid_capture_id(trace_id: str, span_id: str) -> bool:
@@ -182,6 +187,205 @@ def _tools(attributes: JsonObject) -> tuple[list[JsonObject], bool]:
             tools.append({"name": _redact(name), "description": _redact(description)})
     gaps = bool(entries) and [i for i, _ in entries] != list(range(len(entries)))
     return tools, len(tools) != len(definitions) or gaps
+
+
+def _redact_value(value: Any) -> Any:
+    """Redact credential-shaped strings inside a decoded JSON value."""
+    if isinstance(value, str):
+        return _redact(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): (
+                "[REDACTED]" if _SECRET_KEY.fullmatch(str(key)) else _redact_value(item)
+            )
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
+def _normalize_part(part: Mapping[str, Any]) -> JsonObject:
+    """Describe one Gemini content part without exposing large binary blobs."""
+    text = part.get("text")
+    if isinstance(text, str):
+        return {
+            "type": "thought" if part.get("thought") is True else "text",
+            "text": _redact(text),
+        }
+    call = part.get("function_call")
+    if isinstance(call, Mapping):
+        return {
+            "type": "function_call",
+            "name": _redact(str(call.get("name") or "")),
+            "args": _redact_value(call.get("args") or {}),
+            "call_id": _redact(str(call.get("id") or "")),
+        }
+    response = part.get("function_response")
+    if isinstance(response, Mapping):
+        return {
+            "type": "function_response",
+            "name": _redact(str(response.get("name") or "")),
+            "response": _redact_value(response.get("response") or {}),
+            "call_id": _redact(str(response.get("id") or "")),
+        }
+    inline = part.get("inline_data")
+    if isinstance(inline, Mapping):
+        mime_type = inline.get("mime_type")
+        return {
+            "type": "inline_data",
+            "mime_type": _redact(mime_type) if isinstance(mime_type, str) else "",
+        }
+    file_data = part.get("file_data")
+    if isinstance(file_data, Mapping):
+        mime_type, uri = file_data.get("mime_type"), file_data.get("file_uri")
+        return {
+            "type": "file_data",
+            "mime_type": _redact(mime_type) if isinstance(mime_type, str) else "",
+            "file_uri": _redact(uri) if isinstance(uri, str) else "",
+        }
+    return {"type": "other", "keys": sorted(str(key) for key in part)}
+
+
+def _normalize_content(content: Mapping[str, Any]) -> JsonObject:
+    """Normalize one content object into a role, text summary, and parts."""
+    parts = content.get("parts")
+    normalized = (
+        [_normalize_part(part) for part in parts if isinstance(part, Mapping)]
+        if isinstance(parts, list)
+        else []
+    )
+    texts = [
+        part["text"]
+        for part in normalized
+        if part["type"] in {"text", "thought"} and part.get("text")
+    ]
+    role = content.get("role")
+    return {
+        "role": role if isinstance(role, str) else "",
+        "text": "\n".join(texts),
+        "parts": normalized,
+    }
+
+
+def _messages(attributes: JsonObject) -> list[JsonObject]:
+    """Return the conversation messages included in the model request."""
+    request = _adk_request(attributes)
+    if request is None:
+        return []
+    contents = request.get("contents")
+    if not isinstance(contents, list):
+        return []
+    return [
+        _normalize_content(content)
+        for content in contents
+        if isinstance(content, Mapping)
+    ]
+
+
+def _response(attributes: JsonObject) -> JsonObject | None:
+    """Normalize the model response captured on an ADK span."""
+    response = _decode(attributes.get("gcp.vertex.agent.llm_response"))
+    if not isinstance(response, Mapping):
+        return None
+    content = _as_dict(response.get("content"))
+    normalized = (
+        _normalize_content(content)
+        if content
+        else {"role": "model", "text": "", "parts": []}
+    )
+    result: JsonObject = {
+        "text": normalized["text"],
+        "parts": normalized["parts"],
+    }
+    for field in (
+        "finish_reason",
+        "error_code",
+        "error_message",
+        "interrupted",
+        "turn_complete",
+        "partial",
+        "model_version",
+    ):
+        value = response.get(field)
+        if value is not None:
+            result[field] = _redact(value) if isinstance(value, str) else value
+    usage = response.get("usage_metadata")
+    if isinstance(usage, Mapping):
+        result["usage"] = _redact_value(usage)
+    return result
+
+
+def _duration_ms(record: JsonObject | None) -> int | None:
+    """Return a span's wall-clock duration in whole milliseconds."""
+    if record is None:
+        return None
+    start = _trace_time(record, "start_time")
+    end = _trace_time(record, "end_time")
+    if start is None or end is None or end < start:
+        return None
+    return round((end - start) * 1000)
+
+
+def _tool_span_index(records: Iterable[JsonObject]) -> dict[str, JsonObject]:
+    """Index tool execution spans by their provider call ID."""
+    index: dict[str, JsonObject] = {}
+    for record in records:
+        attributes = _as_dict(record.get("attributes"))
+        if attributes.get("gen_ai.operation.name") != "execute_tool":
+            continue
+        call_id = attributes.get("gen_ai.tool.call.id")
+        if isinstance(call_id, str) and call_id:
+            index[call_id] = record
+    return index
+
+
+def _tool_calls(
+    attributes: JsonObject, index: Mapping[str, JsonObject]
+) -> list[JsonObject]:
+    """Pair function calls in a model response with their execution spans."""
+    response = _decode(attributes.get("gcp.vertex.agent.llm_response"))
+    if not isinstance(response, Mapping):
+        return []
+    parts = _as_dict(response.get("content")).get("parts")
+    if not isinstance(parts, list):
+        return []
+    calls: list[JsonObject] = []
+    for part in parts:
+        call = _as_dict(part).get("function_call")
+        if not isinstance(call, Mapping):
+            continue
+        raw_call_id = call.get("id")
+        call_id = raw_call_id if isinstance(raw_call_id, str) else ""
+        record = index.get(call_id)
+        tool_attributes = _as_dict(record.get("attributes")) if record else {}
+        args = call.get("args")
+        if args is None:
+            args = _decode(tool_attributes.get("gcp.vertex.agent.tool_call_args"))
+        result = _decode(tool_attributes.get("gcp.vertex.agent.tool_response"))
+        status = _as_dict(record.get("status")).get("status_code") if record else None
+        calls.append(
+            {
+                "name": _redact(str(call.get("name") or "")),
+                "call_id": _redact(call_id),
+                "args": _redact_value(args) if args is not None else {},
+                "response": _redact_value(result) if result is not None else None,
+                "status": status if isinstance(status, str) else None,
+                "duration_ms": _duration_ms(record),
+            }
+        )
+    return calls
+
+
+def _raw_request(attributes: JsonObject) -> str | None:
+    """Render the captured ADK request as redacted, readable JSON."""
+    request = _adk_request(attributes)
+    if request is None:
+        return None
+    try:
+        return _redact(json.dumps(request, ensure_ascii=False, indent=2, default=str))
+    except (TypeError, ValueError):
+        return None
 
 
 def _scan_trace_dir_sync(path: Path) -> _JsonlScan:
@@ -367,6 +571,7 @@ class DashboardPrivateStore:
                         }
                         if key:
                             tools, partial = _tools(attributes)
+                            tool_index = _tool_span_index(scan.records)
                             return {
                                 "status": "available",
                                 "capture": {
@@ -374,6 +579,10 @@ class DashboardPrivateStore:
                                     "system_prompt": _redact(prompt),
                                     "tools": tools,
                                     "partial_tools": partial,
+                                    "messages": _messages(attributes),
+                                    "response": _response(attributes),
+                                    "tool_calls": _tool_calls(attributes, tool_index),
+                                    "raw_request": _raw_request(attributes),
                                 },
                             }
                         captures.append(item)
