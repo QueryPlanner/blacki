@@ -6,13 +6,17 @@ from collections.abc import AsyncGenerator
 
 import pytest
 from cryptography.fernet import Fernet
+from google.adk.apps import App
 from google.adk.models import BaseLlm, LlmRequest, LlmResponse
 from google.adk.sessions import InMemorySessionService
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from blacki.agent import create_agent, create_app
-from blacki.models.openrouter_request import build_chat_request
+from blacki.agent import TelegramModelOverridePlugin, create_agent, create_app
+from blacki.models.openai_items import item_metadata
+from blacki.models.openai_request import build_responses_request
+from blacki.models.openai_responses import OpenAIResponsesLlm
+from blacki.models.openai_summarizer import OpenAIEventsSummarizer
 from blacki.runtime.adk import AdkRuntime, SessionLocator
 from blacki.telegram.progress_callbacks import recover_telegram_tool_error
 
@@ -148,8 +152,25 @@ async def test_telegram_tool_failure_does_not_fail_the_root_runner(
     assert response.content == "Recovered after tool failure."
 
 
+REASONING_ITEM = {
+    "type": "reasoning",
+    "id": "rs_test",
+    "encrypted_content": "encrypted-test-reasoning",
+    "summary": [{"type": "summary_text", "text": "Test reasoning from the provider."}],
+}
+ANSWER_ITEM = {
+    "type": "message",
+    "id": "msg_test",
+    "role": "assistant",
+    "status": "completed",
+    "content": [
+        {"type": "output_text", "text": "The answer is 42.", "annotations": []}
+    ],
+}
+
+
 class ReasoningLlm(BaseLlm):
-    """Return a final answer with a provider-marked reasoning part."""
+    """Return a final answer with its stored OpenAI reasoning and message items."""
 
     requests: list[LlmRequest] = []
 
@@ -161,18 +182,32 @@ class ReasoningLlm(BaseLlm):
             content=types.Content(
                 role="model",
                 parts=[
-                    types.Part(text="Test reasoning from the provider.", thought=True),
-                    types.Part(text="The answer is 42."),
+                    types.Part(
+                        text="Test reasoning from the provider.",
+                        thought=True,
+                        part_metadata=item_metadata(self.model, REASONING_ITEM),
+                    ),
+                    types.Part(
+                        text="The answer is 42.",
+                        part_metadata=item_metadata(self.model, ANSWER_ITEM),
+                    ),
                 ],
             ),
         )
 
 
-async def test_telegram_reply_excludes_reasoning_but_follow_up_retains_it() -> None:
-    model = ReasoningLlm(model="reasoning-test")
+async def test_telegram_reply_excludes_reasoning_but_follow_up_replays_items(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Build the app with an OpenAI root so stored items are kept. The plugin
+    # reads the root type here, so the stub model is swapped in afterwards.
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ROOT_AGENT_MODEL", "gpt-6-luna")
     agent = create_agent(include_user_scoped_tools=True)
+    composed = create_app(agent)
+    model = ReasoningLlm(model="gpt-6-luna")
     agent.model = model
-    runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
+    runtime = AdkRuntime(InMemorySessionService(), agent_app=composed)
     locator = SessionLocator(
         user_id="telegram-chat-42", session_id_prefix="telegram-reasoning"
     )
@@ -182,9 +217,47 @@ async def test_telegram_reply_excludes_reasoning_but_follow_up_retains_it() -> N
 
     await runtime.run_user_turn(locator=locator, message_text="How did you get that?")
     _, follow_up = model.requests
-    request = build_chat_request(follow_up, model="google/gemini-2.5-flash")
-    assert {
-        "role": "assistant",
-        "content": "The answer is 42.",
-        "reasoning": "Test reasoning from the provider.",
-    } in request.messages
+    request = build_responses_request(follow_up, model="gpt-6-luna")
+    assert REASONING_ITEM in request.input
+    assert ANSWER_ITEM in request.input
+
+
+def _override_plugin(app_: App) -> TelegramModelOverridePlugin:
+    plugins = [p for p in app_.plugins if isinstance(p, TelegramModelOverridePlugin)]
+    assert len(plugins) == 1
+    return plugins[0]
+
+
+@pytest.mark.parametrize("model_name", ["gpt-6-luna", "gpt-6.1-terra"])
+def test_openai_root_wires_openai_summarizer_and_session_labels(
+    model_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ROOT_AGENT_MODEL", model_name)
+
+    agent = create_agent()
+    composed = create_app(agent)
+
+    assert isinstance(agent.model, OpenAIResponsesLlm)
+    config = composed.events_compaction_config
+    assert config is not None
+    summarizer = config.summarizer
+    assert isinstance(summarizer, OpenAIEventsSummarizer)
+    assert summarizer._llm is agent.model
+    assert _override_plugin(composed)._root_is_openai is True
+
+
+def test_native_root_keeps_adk_default_summarizer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("ROOT_AGENT_MODEL", "gemini-2.5-flash")
+
+    agent = create_agent()
+    composed = create_app(agent)
+
+    assert agent.model == "gemini-2.5-flash"
+    config = composed.events_compaction_config
+    assert config is not None
+    assert config.summarizer is None
+    assert _override_plugin(composed)._root_is_openai is False

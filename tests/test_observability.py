@@ -82,6 +82,42 @@ def test_genai_defaults_fill_only_unset_variables(
     assert os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] == "false"
 
 
+@pytest.mark.parametrize("operator_value", ["true", "TRUE", " 1 ", "yes", ""])
+def test_legacy_span_capture_is_forced_off_with_warning(
+    genai_environment: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    operator_value: str,
+) -> None:
+    """An operator value that enables legacy span content is overridden."""
+    genai_environment.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, operator_value)
+
+    with caplog.at_level(logging.WARNING, logger="blacki.utils.observability"):
+        configure_genai_telemetry()
+
+    assert os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] == "false"
+    assert "is overridden to false" in caplog.text
+    assert "encrypted reasoning" in caplog.text
+
+
+@pytest.mark.parametrize("operator_value", [None, "false", "FALSE", "0"])
+def test_legacy_span_capture_off_values_are_kept_without_warning(
+    genai_environment: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    operator_value: str | None,
+) -> None:
+    """Values that already disable legacy span content need no warning."""
+    if operator_value is None:
+        genai_environment.delenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, raising=False)
+    else:
+        genai_environment.setenv(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS, operator_value)
+
+    with caplog.at_level(logging.WARNING, logger="blacki.utils.observability"):
+        configure_genai_telemetry()
+
+    assert os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] == "false"
+    assert "overridden" not in caplog.text
+
+
 @pytest.mark.parametrize(
     ("opt_in", "mode", "expected"),
     [

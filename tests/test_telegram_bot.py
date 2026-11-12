@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import pytest
 from google.genai import types
 
+from blacki.models.catalog import supported_model_ids
 from blacki.models.inference import InferenceProfile
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import (
@@ -1090,16 +1091,16 @@ class TestFormatForTelegram:
 
 The file handles model selection dynamically:
 
-* Dynamic Routing: It supports both native Google Gemini and OpenRouter.
-* LiteLLM Integration: If an OPENROUTER_API_KEY is present."""
+* Dynamic Routing: It supports both native Google Gemini and OpenAI.
+* LiteLLM Integration: If an OPENAI_API_KEY is present."""
         formatted = format_for_telegram(text)
 
         expected = r"""*1\. Model Configuration*
 
 The file handles model selection dynamically:
 
-• Dynamic Routing: It supports both native Google Gemini and OpenRouter\.
-• LiteLLM Integration: If an OPENROUTER\_API\_KEY is present\."""
+• Dynamic Routing: It supports both native Google Gemini and OpenAI\.
+• LiteLLM Integration: If an OPENAI\_API\_KEY is present\."""
         assert formatted == expected
 
     def test_format_for_telegram_converts_markdown_table_to_code_block(self) -> None:
@@ -1238,6 +1239,33 @@ class TestTelegramBotCommands:
         mock_api.send_message.assert_called_once()
         call_args = mock_api.send_message.call_args
         assert "Commands" in call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_start_and_help_name_openai_model_ids(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        mock_message: Message,
+    ) -> None:
+        """Plain /start and MarkdownV2 /help both name an OpenAI model example."""
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api.send_message = AsyncMock()
+        bot._api = mock_api
+        example = "gpt-6.1-terra"
+        assert example in supported_model_ids()
+        expected = f"/model <model-id> - Use an OpenAI model (e.g. {example})"
+
+        await bot._handle_command(mock_message, "/start")
+        start_text = mock_api.send_message.call_args.kwargs["text"]
+        await bot._handle_command(mock_message, "/help")
+        help_text = mock_api.send_message.call_args.kwargs["text"]
+
+        # MarkdownV2 escapes are backslashes; drop them to read the words.
+        for text in (start_text, help_text):
+            plain = text.replace("\\", "")
+            assert expected in plain
+            assert "OpenRouter" not in plain
 
     @pytest.mark.asyncio
     async def test_handle_reset_command(
@@ -1405,8 +1433,8 @@ class TestTelegramBotMessageHandling:
         runtime_recorder.run_user_turn_side_effects = [
             EmptyModelResponseError(
                 "empty response",
-                model="openrouter/test-model",
-                provider="openrouter",
+                model="openai/test-model",
+                provider="openai",
                 invocation_id="empty-invocation",
             ),
             "Recovered response",
@@ -1438,8 +1466,8 @@ class TestTelegramBotMessageHandling:
             call["message_text"] for call in runtime_recorder.run_user_turn_calls
         ] == ["same user message", "same user message"]
         assert "Recovered response" in mock_api.send_message.call_args.kwargs["text"]
-        assert "model=openrouter/test-model" in caplog.text
-        assert "provider=openrouter" in caplog.text
+        assert "model=openai/test-model" in caplog.text
+        assert "provider=openai" in caplog.text
         assert "conversation_id=chat-123456789" in caplog.text
         assert "invocation_id=empty-invocation" in caplog.text
         assert "retry_count=1" in caplog.text
@@ -1456,14 +1484,14 @@ class TestTelegramBotMessageHandling:
         runtime_recorder.run_user_turn_side_effects = [
             EmptyModelResponseError(
                 "empty response",
-                model="openrouter/test-model",
-                provider="openrouter",
+                model="openai/test-model",
+                provider="openai",
                 invocation_id="empty-invocation-1",
             ),
             EmptyModelResponseError(
                 "empty response",
-                model="openrouter/test-model",
-                provider="openrouter",
+                model="openai/test-model",
+                provider="openai",
                 invocation_id="empty-invocation-2",
             ),
         ]
@@ -1499,8 +1527,8 @@ class TestTelegramBotMessageHandling:
         runtime_recorder.run_user_turn_side_effects = [
             EmptyModelResponseError(
                 "empty response after tool call",
-                model="openrouter/test-model",
-                provider="openrouter",
+                model="openai/test-model",
+                provider="openai",
                 invocation_id="tool-invocation",
                 tool_calls_seen=True,
             )

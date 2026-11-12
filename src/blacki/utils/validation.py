@@ -40,10 +40,10 @@ def validate_api_keys() -> None:
     Raises:
         MissingAPIKeyError: If no API key is configured.
     """
-    has_openrouter = bool(os.getenv("OPENROUTER_API_KEY"))
+    has_openai = bool(os.getenv("OPENAI_API_KEY"))
     has_google = bool(os.getenv("GOOGLE_API_KEY"))
 
-    if not has_openrouter and not has_google:
+    if not has_openai and not has_google:
         raise MissingAPIKeyError()
 
 
@@ -83,7 +83,7 @@ def validate_configuration(
         warnings.append(
             "⚠️  ROOT_AGENT_MODEL is not set. Using default model.\n"
             "   Set ROOT_AGENT_MODEL in .env for explicit model selection.\n"
-            "   Example: ROOT_AGENT_MODEL=openrouter/google/gemini-2.0-flash-001"
+            "   Example: ROOT_AGENT_MODEL=gpt-6.1-terra"
         )
 
     return warnings

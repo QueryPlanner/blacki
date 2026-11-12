@@ -147,7 +147,7 @@ class TestLoadSandboxConfig:
             "SANDBOX_GEMINI_API_KEY": "sandbox-gemini-canary",
             "GEMINI_API_KEY": "gemini-canary",
             "GOOGLE_API_KEY": "google-canary",
-            "OPENROUTER_API_KEY": "openrouter-canary",
+            "OPENAI_API_KEY": "openai-canary",
             "SANDBOX_GITHUB_TOKEN": "sandbox-github-canary",
             "GITHUB_TOKEN": "github-canary",
             "TELEGRAM_BOT_TOKEN": "telegram-canary",

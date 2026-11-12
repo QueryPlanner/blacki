@@ -8,13 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Select an exact OpenRouter model with Telegram `/model <author/model-id>`
+- Select a supported OpenAI model with Telegram `/model <model-id>`
 - Add a tested Material for MkDocs documentation site
 - Add a safe first-VPS deployment and operations contract
 - Add private Kokoro speech delivery for Telegram replies
 - Let the Telegram root agent choose a Kokoro voice per request, defaulting to `af_heart`, and list available voices; this replaces the deployment-wide `KOKORO_TTS_VOICE` setting
 
 ### Changed
+- **BREAKING:** Call OpenAI's Responses API directly with `OPENAI_API_KEY` instead of routing through OpenRouter. `OPENROUTER_API_KEY` and `openrouter/` model ids are removed. Set `ROOT_AGENT_MODEL` to a catalog id such as `gpt-6-luna`; the legacy `openrouter/openai/<id>` form still reads as `<id>`, and native Gemini uses a plain `gemini-*` id with `GOOGLE_API_KEY`. The deploy workflow reads an `OPENAI_API_KEY` GitHub Actions secret instead of `OPENROUTER_API_KEY`, so add that secret before deploying.
 - Replace Telegram model presets with current settings and command usage
 - Make Docker Compose private, persistent, and health-checked by default
 - Enable the same-privilege ADK task worker by default

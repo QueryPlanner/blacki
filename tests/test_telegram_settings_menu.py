@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 import aiosqlite
 import pytest
 
+from blacki.models.catalog import supported_model_ids
 from blacki.models.inference import (
     INFERENCE_PROFILE_PREFERENCE_KEY,
     LEGACY_MODEL_PREFERENCE_KEY,
@@ -119,7 +120,7 @@ async def test_handle_callback_query_unknown_model(
     )
     await menu.handle_callback(cq)
     mock_api.answer_callback_query.assert_called_once_with(
-        "cq1", text="Model preset expired. Use /model <author/model-id>."
+        "cq1", text="Model preset expired. Use /model <model-id>."
     )
 
 
@@ -218,7 +219,7 @@ async def test_message_less_settings_mutation_does_not_write(
 @pytest.mark.asyncio
 @patch("blacki.telegram.settings_menu.get_preferences_storage")
 @patch(
-    "blacki.telegram.settings_menu.OpenRouterModelCapabilitiesResolver",
+    "blacki.telegram.settings_menu.CatalogCapabilitiesResolver",
 )
 async def test_reasoning_callback_preserves_model(
     mock_resolver_cls,
@@ -228,7 +229,7 @@ async def test_reasoning_callback_preserves_model(
     load_profile,
 ) -> None:
     load_profile.return_value = InferenceProfile(
-        model="openrouter/openai/gpt-oss-120b",
+        model="gpt-6.1-terra",
         reasoning=ReasoningConfig(effort=ReasoningEffort.HIGH),
     )
     mock_storage = AsyncMock()
@@ -260,7 +261,7 @@ async def test_reasoning_callback_preserves_model(
         "123",
         {"reasoning": ReasoningConfig(effort=ReasoningEffort.MAX)},
         base_profile=InferenceProfile(
-            model="openrouter/openai/gpt-oss-120b",
+            model="gpt-6.1-terra",
             reasoning=ReasoningConfig(effort=ReasoningEffort.HIGH),
         ),
     )
@@ -410,10 +411,10 @@ async def test_reasoning_menu_hides_off_for_mandatory_model(menu: SettingsMenu) 
 async def test_thinking_menu_falls_back_when_capability_client_fails(
     menu: SettingsMenu, mock_api: MagicMock, load_profile: AsyncMock
 ) -> None:
-    load_profile.return_value = InferenceProfile(model="openrouter/openai/gpt-5.6-luna")
+    load_profile.return_value = InferenceProfile(model="gpt-6-luna")
 
     with patch(
-        "blacki.telegram.settings_menu.OpenRouterModelCapabilitiesResolver",
+        "blacki.telegram.settings_menu.CatalogCapabilitiesResolver",
         side_effect=RuntimeError("capability client unavailable"),
     ):
         await menu.send_thinking_menu(chat_id=123, message_thread_id=None)
@@ -563,7 +564,7 @@ async def test_callback_model_none_value_is_rejected_without_write(
 
     update.assert_not_awaited()
     assert mock_api.answer_callback_query.await_args_list[-1].kwargs["text"] == (
-        "Model preset expired. Use /model <author/model-id>."
+        "Model preset expired. Use /model <model-id>."
     )
 
 
@@ -766,16 +767,14 @@ async def test_resolve_capabilities_uses_cached_resolver(menu: SettingsMenu) -> 
     resolver.resolve.return_value = None
     menu._capabilities_resolver = resolver
 
-    assert await menu._resolve_capabilities("openrouter/openai/gpt-5.6-luna") is None
+    assert await menu._resolve_capabilities("gpt-6-luna") is None
 
     resolver.resolve.assert_awaited_once()
-    assert resolver.resolve.await_args.args == ("openrouter/openai/gpt-5.6-luna",)
+    assert resolver.resolve.await_args.args == ("gpt-6-luna",)
 
 
 def test_model_display_name_handles_unknown_future_model(menu: SettingsMenu) -> None:
-    assert (
-        menu._model_display_name("openrouter/acme/future-model") == "acme/future-model"
-    )
+    assert menu._model_display_name("acme/future-model") == "acme/future-model"
 
 
 def test_model_display_name_handles_system_default(menu: SettingsMenu) -> None:
@@ -825,3 +824,227 @@ def test_reasoning_options_skip_empty_and_inherit_values() -> None:
 def test_reasoning_config_handles_inherit_and_invalid_values() -> None:
     assert SettingsMenu._reasoning_config("inherit") is None
     assert SettingsMenu._reasoning_config("not-an-effort") is None
+
+
+def _settings_query(data: str) -> CallbackQuery:
+    return CallbackQuery(
+        id="cq1",
+        from_user=User(id=1, is_bot=False, first_name="Test"),
+        chat_instance="inst",
+        data=data,
+        message=Message(
+            message_id=42,
+            date="2024-01-01T00:00:00Z",
+            chat=Chat(id=123, type="private"),
+        ),
+    )
+
+
+def _callback_values(markup: InlineKeyboardMarkup) -> list[str | None]:
+    return [button.callback_data for row in markup.inline_keyboard for button in row]
+
+
+def test_model_display_name_uses_catalog_display_name(menu: SettingsMenu) -> None:
+    assert menu._model_display_name("openrouter/openai/gpt-6-luna") == "GPT-6 Luna"
+    assert menu._model_display_name("gpt-6.1-terra") == "GPT-6.1 Terra"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "saved_id", "display_name"),
+    [
+        ("gpt-6-luna", "gpt-6-luna", "GPT-6 Luna"),
+        ("openrouter/openai/gpt-6-luna", "gpt-6-luna", "GPT-6 Luna"),
+        ("  GPT-6.1-Terra ", "gpt-6.1-terra", "GPT-6.1 Terra"),
+    ],
+)
+@patch("blacki.telegram.settings_menu.get_preferences_storage")
+async def test_set_model_saves_plain_catalog_id(
+    mock_get_prefs,
+    menu: SettingsMenu,
+    mock_api: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    model_id: str,
+    saved_id: str,
+    display_name: str,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_storage = AsyncMock()
+    mock_get_prefs.return_value = mock_storage
+
+    with patch(
+        "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+    ) as update:
+        await menu.set_model(chat_id=123, message_thread_id=7, model_id=model_id)
+
+    update.assert_awaited_once_with(
+        mock_storage, "123", {"model": saved_id, "reasoning": None}
+    )
+    kwargs = mock_api.send_message.await_args.kwargs
+    assert kwargs["text"].startswith(f"Model saved for the next turn: {display_name}\n")
+    assert kwargs["message_thread_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_set_model_lists_supported_ids_for_unknown_model(
+    menu: SettingsMenu, mock_api: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+    with patch(
+        "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+    ) as update:
+        await menu.set_model(
+            chat_id=123, message_thread_id=None, model_id="some/other-model"
+        )
+
+    update.assert_not_awaited()
+    text = mock_api.send_message.await_args.kwargs["text"]
+    assert "Unknown model: some/other-model" in text
+    for model_id in supported_model_ids():
+        assert model_id in text
+    assert "Use /model <model-id> or /model default." in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_key", [None, "", "   "])
+async def test_set_model_refuses_openai_model_without_api_key(
+    menu: SettingsMenu,
+    mock_api: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    api_key: str | None,
+) -> None:
+    if api_key is None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("OPENAI_API_KEY", api_key)
+
+    with patch(
+        "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+    ) as update:
+        await menu.set_model(chat_id=123, message_thread_id=None, model_id="gpt-6-luna")
+
+    update.assert_not_awaited()
+    assert mock_api.send_message.await_args.kwargs["text"] == (
+        "OpenAI is not configured. Set OPENAI_API_KEY before selecting an OpenAI model."
+    )
+
+
+@pytest.mark.asyncio
+@patch("blacki.telegram.settings_menu.get_preferences_storage")
+async def test_set_model_default_clears_selection_without_api_key(
+    mock_get_prefs, menu: SettingsMenu, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    mock_storage = AsyncMock()
+    mock_get_prefs.return_value = mock_storage
+
+    with patch(
+        "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+    ) as update:
+        await menu.set_model(chat_id=123, message_thread_id=None, model_id="default")
+
+    update.assert_awaited_once_with(
+        mock_storage, "123", {"model": None, "reasoning": None}
+    )
+
+
+@pytest.mark.asyncio
+@patch("blacki.telegram.settings_menu.get_preferences_storage")
+async def test_set_model_reports_save_failure(
+    mock_get_prefs,
+    menu: SettingsMenu,
+    mock_api: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    mock_get_prefs.return_value = AsyncMock()
+
+    with patch(
+        "blacki.telegram.settings_menu.update_inference_profile",
+        new=AsyncMock(side_effect=RuntimeError("disk full")),
+    ):
+        await menu.set_model(chat_id=123, message_thread_id=None, model_id="gpt-6-luna")
+
+    assert (
+        mock_api.send_message.await_args.kwargs["text"]
+        == "Could not save settings. Please try again."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "offers_none"),
+    [
+        ("gpt-6-luna", True),
+        ("gpt-6.1-terra", True),
+        ("gpt-6.1-sol", False),
+        ("gpt-6-astra", False),
+    ],
+)
+async def test_thinking_menu_offers_none_only_where_the_model_accepts_it(
+    menu: SettingsMenu, model_id: str, offers_none: bool
+) -> None:
+    _, markup = await menu._build_thinking_menu(InferenceProfile(model=model_id))
+
+    values = _callback_values(markup)
+    assert ("s:r:none" in values) is offers_none
+    assert "s:r:max" in values
+    assert values[-1] == "s:b"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model_id", "effort"),
+    [("gpt-6.1-sol", "none"), ("gpt-6-astra", "none")],
+)
+async def test_stale_effort_is_refused_for_the_selected_model(
+    menu: SettingsMenu,
+    mock_api: MagicMock,
+    load_profile: AsyncMock,
+    model_id: str,
+    effort: str,
+) -> None:
+    load_profile.return_value = InferenceProfile(model=model_id)
+
+    with (
+        patch(
+            "blacki.telegram.settings_menu.get_preferences_storage",
+            return_value=AsyncMock(),
+        ),
+        patch(
+            "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+        ) as update,
+    ):
+        await menu.handle_callback(_settings_query(f"s:r:{effort}"))
+
+    update.assert_not_awaited()
+    text = mock_api.edit_message_text.await_args.kwargs["text"]
+    assert "not available for this model" in text
+
+
+@pytest.mark.asyncio
+async def test_offered_effort_is_saved_for_the_selected_model(
+    menu: SettingsMenu, load_profile: AsyncMock
+) -> None:
+    profile = InferenceProfile(model="gpt-6.1-sol")
+    load_profile.return_value = profile
+    storage = AsyncMock()
+
+    with (
+        patch(
+            "blacki.telegram.settings_menu.get_preferences_storage",
+            return_value=storage,
+        ),
+        patch(
+            "blacki.telegram.settings_menu.update_inference_profile", new=AsyncMock()
+        ) as update,
+    ):
+        await menu.handle_callback(_settings_query("s:r:low"))
+
+    update.assert_awaited_once_with(
+        storage,
+        "123",
+        {"reasoning": ReasoningConfig(effort=ReasoningEffort.LOW)},
+        base_profile=profile,
+    )

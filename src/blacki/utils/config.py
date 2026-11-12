@@ -131,10 +131,10 @@ class ServerEnv(BaseModel):
         description="Path to SQLite database file (default: {AGENT_DIR}/.adk/tools.db)",
     )
 
-    openrouter_api_key: str | None = Field(
+    openai_api_key: str | None = Field(
         default=None,
-        alias="OPENROUTER_API_KEY",
-        description="OpenRouter API key for model access",
+        alias="OPENAI_API_KEY",
+        description="OpenAI API key for model access",
     )
 
     allow_origins: str = Field(
@@ -188,8 +188,8 @@ class ServerEnv(BaseModel):
         print(f"RELOAD_AGENTS:         {self.reload_agents}")
         print(f"AGENT_ENGINE:          {self.agent_engine}")
         print(f"SQLITE_PATH:          {self.sqlite_path}")
-        masked_key = "********" if self.openrouter_api_key else "[not set]"
-        print(f"OPENROUTER_KEY:        {masked_key}")
+        masked_key = "********" if self.openai_api_key else "[not set]"
+        print(f"OPENAI_API_KEY:        {masked_key}")
         print(f"HOST:                  {self.host}")
         print(f"PORT:                  {self.port}")
         print(f"ALLOW_ORIGINS:         {self.allow_origins}")

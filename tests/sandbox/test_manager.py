@@ -165,7 +165,7 @@ class TestSandboxManager:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The sandbox request carries only the per-sandbox Jupyter settings."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "host-secret-canary")
+        monkeypatch.setenv("OPENAI_API_KEY", "host-secret-canary")
         config = SandboxConfig(enabled=True, domain="localhost:9090")
         manager = SandboxManager(config)
         tool_context = MagicMock()
@@ -191,7 +191,7 @@ class TestSandboxManager:
         assert set(sandbox_env) == {"JUPYTER_HOST", "JUPYTER_TOKEN"}
         assert sandbox_env["JUPYTER_HOST"] == "http://127.0.0.1:44771"
         assert len(sandbox_env["JUPYTER_TOKEN"]) == 32
-        assert "OPENROUTER_API_KEY" not in sandbox_env
+        assert "OPENAI_API_KEY" not in sandbox_env
 
     @pytest.mark.asyncio
     async def test_sdk_error_details_are_redacted(

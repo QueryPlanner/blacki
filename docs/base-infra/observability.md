@@ -224,17 +224,16 @@ Tailscale device IP, or the full hostname provided by Tailscale Serve. The
 application checks the browser's request host and blocks cross-origin reads.
 Operator access still depends on the loopback or Tailscale controls below.
 
-For OpenRouter-backed requests, Blacki also writes a content-free SQLite usage
+For OpenAI-backed requests, Blacki also writes a content-free SQLite usage
 ledger at `{AGENT_DIR}/.adk/costs.db` (override with
 `BLACKI_COST_LEDGER_PATH`). The ledger stores identity, model, token, provider
 response, and fixed-point cost fields, but never prompts, responses, or tool
-arguments. Provider-reported OpenRouter account cost and upstream inference
-cost are kept separately; historical gateway estimates remain labelled
-estimated, while new OpenRouter rows use provider-reported costs only.
+arguments. Rows written by earlier OpenRouter-backed requests keep the cost
+labels they were stored with.
 The dashboard uses UTC calendar months for monthly totals and averages. The
 average is across users with an exact or estimated cost in the current month;
 users with unavailable cost are excluded and the reported coverage is shown.
-Records created before cost capture, or responses without a provider cost,
+Records created before cost capture, or calls whose model has no catalog price,
 remain unavailable rather than being treated as zero.
 
 This is an admin-only, private-data surface. The application does not add
@@ -259,3 +258,20 @@ is not an acceptable boundary for conversation logs. If you use the direct
 bind, never set `HOST_BIND_IP=0.0.0.0`. The current command syntax is documented
 in the official
 [Tailscale Serve CLI reference](https://tailscale.com/docs/reference/tailscale-cli/serve).
+
+### Estimated OpenAI costs
+
+OpenAI does not report a cost for each call. Blacki estimates one from the token
+counts OpenAI returns and the standard prices in its model catalog, in USD per
+million tokens:
+
+- uncached input tokens at the input rate;
+- cached input tokens at the cached-input rate;
+- cache-write tokens at the cache-write rate, when OpenAI reports them;
+- output tokens at the output rate. Reasoning tokens are already part of output
+  tokens and are not priced twice.
+
+Each estimate is stored with `cost_kind` set to `estimate` and `cost_source` set
+to `catalog_price`. The estimate uses standard rates only. It leaves out the
+surcharge for prompts over 272K input tokens, Batch and Flex discounts, fast
+mode, and regional processing premiums, so it can be lower than the bill.

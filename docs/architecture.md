@@ -48,13 +48,13 @@ python -m blacki.server
 Telegram long polling, and exposes `/live`, `/ready`, and `/health`.
 It also mounts the package-backed private observability dashboard at
 `/dashboard` with APIs for aggregate statistics, users, sessions, local logs,
-and local traces. OpenRouter-backed requests additionally write content-free
-usage and cost records to the local SQLite ledger so the dashboard can show
+and local traces. OpenAI-backed requests additionally write content-free usage
+and estimated-cost records to the local SQLite ledger so the dashboard can show
 per-user and per-session spend without parsing prompts or responses.
 
 `src/blacki/agent.py` creates the `LlmAgent`, selects a native Gemini model or an
-OpenRouter-routed model from the environment, registers tools, and assembles
-the ADK application plugins.
+OpenAI model from the environment, registers tools, and assembles the ADK
+application plugins.
 
 ## Application composition
 
@@ -71,8 +71,8 @@ server -> runtime.adk -> ADK sessions and runners
 `agent.py` is the ADK composition and discovery entry point. It selects tool
 lists from `tools/registry.py`, selects models through `models/factory.py`, and
 assembles the prompt and observability plugins. `models/inference.py` owns
-request-scoped model settings. `models/capabilities.py` keeps OpenRouter
-metadata at the provider boundary.
+request-scoped model settings. `models/capabilities.py` answers `/thinking`
+from the static model catalog in `models/catalog.py`.
 
 `runtime/adk.py` owns the shared ADK runner, session versioning, confirmation
 handling, and Telegram-facing turn orchestration. `prompts/instructions.py`
@@ -88,10 +88,11 @@ sessions across Telegram topics, or read a session's stored transcript in
 chronological order. List and read results provide a cursor for the next
 page. Sessions from before `/reset` remain available while retained in SQLite.
 
-The Telegram runtime derives an opaque
-OpenRouter routing ID from each versioned ADK session. Tool calls reuse that ID
-and `/reset` starts a new one. The cost ledger records cache reads and writes,
-the resolved model, and the selected provider when OpenRouter reports them.
+The Telegram runtime labels each OpenAI request with an opaque key derived from
+its versioned ADK session. Tool calls in one session share that key, and
+`/reset` starts a new session. Blacki never sends the key to OpenAI. The cost
+ledger records input, cached input, cache-write and output tokens, and the
+estimated cost of each call.
 
 Keep `blacki.agent`, `blacki.server:main`, and `python -m blacki.server` as the
 stable discovery and execution interfaces. New internal imports should point to
@@ -187,11 +188,33 @@ bounds session database growth and image replay costs while preserving
 multimodal context. Non-image Telegram documents continue to use the temporary
 per-session sandbox path.
 
+## Model provider data
+
+With an OpenAI root model, Blacki calls OpenAI's Responses API directly with
+`OPENAI_API_KEY`. Native Gemini uses `GOOGLE_API_KEY` through ADK and receives
+no OpenAI data.
+
+- Every request sets `store: false`. OpenAI keeps no response state, and Blacki
+  never refers to a stored response.
+- Output items from the model, including reasoning with its encrypted content,
+  are stored with their turn in the local SQLite session database. They have the
+  same lifetime as the messages next to them.
+- The same model gets its stored items back unchanged on later requests. A
+  different model never receives another model's reasoning. It gets the earlier
+  text and tool calls instead.
+- Without zero data retention approved for the OpenAI organization, OpenAI keeps
+  abuse-monitoring logs for up to 30 days. Requesting that approval is an account
+  decision outside Blacki.
+- Encrypted reasoning never appears in application logs, exported trace
+  attributes, or the usage ledger. Readable reasoning summaries can appear in
+  traces wherever message-content capture is on.
+- Compaction summaries keep only readable text.
+
 ## Managed integrations
 
 Optional tools follow the project's cloud-first principle:
 
-- models use OpenRouter or Google;
+- models use OpenAI or Google;
 - search can use Exa with Brave as a fallback;
 - browser automation uses the dedicated `agent_browser(args)` tool inside the
   current session's OpenSandbox instance. Its argument array is shell-quoted,
@@ -247,7 +270,7 @@ nested-agent instructions. Any of those inputs can attempt prompt injection or
 run shell commands that inspect the process environment. Blacki therefore treats
 every general-purpose sandbox as untrusted:
 
-- model, repository, search, OpenRouter, Google, Telegram, and application
+- model, repository, search, OpenAI, Google, Telegram, and application
   credentials are never copied into the sandbox environment;
 - `SANDBOX_API_KEY` authenticates the host-side OpenSandbox connection only;
 - sandbox SDK exception details are not returned to tools or written to logs,

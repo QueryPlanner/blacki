@@ -17,7 +17,7 @@ from google.adk.tools import BaseTool, FunctionTool
 from google.genai import types
 
 from blacki.container import AppContainer, reset_container_for_tests, set_container
-from blacki.models.openrouter_request import build_chat_request
+from blacki.models.openai_request import build_responses_request
 from blacki.prompts.instructions import (
     TemporalContextPlugin,
     return_instruction_root,
@@ -44,9 +44,9 @@ class ReplayLlm(BaseLlm):
     async def generate_content_async(
         self, llm_request: LlmRequest, stream: bool = False
     ) -> AsyncGenerator[LlmResponse, None]:
-        wire = build_chat_request(
-            llm_request, model="google/gemini-2.5-flash"
-        ).create_kwargs(stream=False)
+        wire = build_responses_request(llm_request, model="gpt-6-luna").create_kwargs(
+            stream=False
+        )
         self.records.append(
             {"input": tokens(wire), "tools": tokens(wire.get("tools", []))}
         )
@@ -194,9 +194,7 @@ async def main() -> None:
     for name, tools in tool_groups:
         req = LlmRequest()
         req.append_tools(tools)
-        subtotals[name] = tokens(
-            build_chat_request(req, model="google/gemini-2.5-flash").tools
-        )
+        subtotals[name] = tokens(build_responses_request(req, model="gpt-6-luna").tools)
     results["meals_schema"] = subtotals
     print(json.dumps(results, indent=2))
 

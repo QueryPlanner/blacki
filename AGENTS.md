@@ -15,7 +15,7 @@ use a managed service or an isolated sandbox whenever possible:
 - **Browser automation** → `agent-browser` inside the session OpenSandbox
   (not host Chromium, local Playwright, or Puppeteer)
 - **Search** → Brave Search API (not self-hosted SearXNG)
-- **LLM** → OpenRouter/Google (not self-hosted Ollama)
+- **LLM** → OpenAI Responses API with native Gemini fallback (not self-hosted Ollama)
 
 This architecture keeps the agent host footprint minimal. Managed services
 handle maintenance, scaling, updates, and geographic distribution; the
@@ -122,7 +122,7 @@ observable foundation that can run on bare metal, a VPS, or a private cloud.
 ### Key Technologies
 *   **Language:** Python 3.13+
 *   **Framework:** Google ADK (`google-adk`)
-*   **Model Interface:** OpenRouter (OpenAI-compatible HTTP) with native Google ADK Gemini fallback
+*   **Model Interface:** OpenAI Responses API with native Google ADK Gemini fallback
 *   **Server:** FastAPI
 *   **Database:** PostgreSQL (via `asyncpg`)
 *   **Observability:** OpenTelemetry (OTel) with local JSON trace files
@@ -140,7 +140,7 @@ observable foundation that can run on bare metal, a VPS, or a private cloud.
     Copy `.env.example` to `.env` and set the required variables:
     *   `AGENT_NAME`: Unique ID for the agent.
     *   `DATABASE_URL`: Postgres connection string.
-    *   `OPENROUTER_API_KEY` / `GOOGLE_API_KEY`: LLM API keys.
+    *   `OPENAI_API_KEY` / `GOOGLE_API_KEY`: LLM API keys.
 
 2.  **Install Dependencies:**
     ```bash

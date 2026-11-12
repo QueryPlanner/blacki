@@ -38,7 +38,7 @@ def _record(
         user_id=user_id,
         session_id=session_id,
         invocation_id=f"inv-{key}",
-        model="openrouter/test-model",
+        model="openai/test-model",
         provider_response_id=f"response-{key}",
         input_tokens=10,
         output_tokens=5,

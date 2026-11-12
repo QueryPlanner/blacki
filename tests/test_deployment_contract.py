@@ -110,8 +110,8 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     values = _parse_env(".env.minimal")
 
     assert values["AGENT_NAME"] == "replace-me"
-    assert values["ROOT_AGENT_MODEL"].startswith("openrouter/")
-    assert values["OPENROUTER_API_KEY"] == "replace-me"
+    assert values["ROOT_AGENT_MODEL"] == "gpt-6-luna"
+    assert values["OPENAI_API_KEY"] == "replace-me"
     assert "GOOGLE_API_KEY" not in values
     assert values["TELEGRAM_ENABLED"] == "true"
     assert values["TELEGRAM_BOT_TOKEN"] == "replace-me"  # noqa: S105
@@ -129,7 +129,7 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     """The full sample must not enable multiple providers or Telegram by accident."""
     values = _parse_env(".env.example")
 
-    assert values["OPENROUTER_API_KEY"] == "replace-me"
+    assert values["OPENAI_API_KEY"] == "replace-me"
     assert "GOOGLE_API_KEY" not in values
     assert values["TELEGRAM_ENABLED"] == "false"
     assert "TELEGRAM_BOT_TOKEN" not in values
@@ -501,7 +501,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert "source /tmp/deploy.env" not in workflow
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
     assert "TELEGRAM_ENABLED=false" not in workflow
-    assert "--env OPENROUTER_API_KEY" not in workflow
+    assert "--env OPENAI_API_KEY" not in workflow
 
 
 def test_production_deployment_serializes_host_bind_secret() -> None:

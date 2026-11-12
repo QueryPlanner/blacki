@@ -12,11 +12,11 @@ documented options. Keep `.env` private.
 
 **One model API key**
 
-:   Set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`. Startup validation fails when
+:   Set `OPENAI_API_KEY` or `GOOGLE_API_KEY`. Startup validation fails when
     both are absent.
 
-An explicit `ROOT_AGENT_MODEL` is strongly recommended so provider routing does
-not depend on a default.
+An explicit `ROOT_AGENT_MODEL` is strongly recommended. When it is unset, Blacki
+uses `gpt-6-luna` if `OPENAI_API_KEY` is set and `gemini-2.5-flash` otherwise.
 
 ## Docker Compose host settings
 
@@ -62,16 +62,26 @@ ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
 
 ## Model providers
 
-=== "OpenRouter"
+=== "OpenAI"
 
     ```dotenv
-    ROOT_AGENT_MODEL=openrouter/google/gemini-2.5-flash
-    OPENROUTER_API_KEY=replace-me
+    ROOT_AGENT_MODEL=gpt-6-luna
+    OPENAI_API_KEY=replace-me
     ```
 
-    Blacki builds an OpenRouter adapter and normalizes common model
-    identifiers to OpenRouter form when this key is present. Both
-    `openrouter/author/slug` and `author/slug` are accepted.
+    Blacki calls OpenAI's Responses API directly with this key. Set
+    `ROOT_AGENT_MODEL` to one of these catalog ids:
+
+    | Model id | Reasoning efforts |
+    | --- | --- |
+    | `gpt-6-luna` | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+    | `gpt-6.1-terra` | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
+    | `gpt-6.1-sol` | `low`, `medium`, `high`, `xhigh`, `max` |
+    | `gpt-6-astra` | `low`, `medium`, `high`, `xhigh`, `max` |
+
+    The legacy form `openrouter/openai/<id>` is still accepted and read as
+    `<id>`. Any other `openrouter/...` value stops startup. Requests always set
+    `store: false`; see [Model provider data](../architecture.md#model-provider-data).
 
     Set `ROOT_AGENT_REASONING_EFFORT` to configure the process-wide reasoning
     fallback. Supported values are `max`, `xhigh`, `high`, `medium`, `low`,
@@ -86,8 +96,9 @@ ALLOW_ORIGINS=["http://127.0.0.1","http://127.0.0.1:8080"]
     GOOGLE_API_KEY=replace-me
     ```
 
-Do not leave a fake `OPENROUTER_API_KEY` active in a Google-only configuration;
-its presence changes model routing.
+Do not leave a placeholder `OPENAI_API_KEY` active in a Google-only
+configuration. Its presence changes the default model when `ROOT_AGENT_MODEL` is
+unset, and it lets `/model` select OpenAI models.
 
 ## Telegram
 

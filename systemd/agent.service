@@ -17,7 +17,7 @@ WorkingDirectory=/home/ubuntu/blacki
 EnvironmentFile=/home/ubuntu/blacki/.env
 # Option B: Set explicitly
 # Environment="DATABASE_URL=postgresql://..."
-# Environment="OPENROUTER_API_KEY=sk-..."
+# Environment="OPENAI_API_KEY=sk-..."
 # Environment="AGENT_NAME=my-agent"
 
 # Path to 'uv' or 'python' executable

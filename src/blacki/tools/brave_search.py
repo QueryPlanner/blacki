@@ -58,7 +58,7 @@ async def brave_search(
     """Search the web using Brave Search API.
 
     This is a model-agnostic alternative to Google Search that works with
-    Blacki's OpenRouter-routed or native Gemini model. Set
+    Blacki's OpenAI or native Gemini model. Set
     BRAVE_SEARCH_API_KEY in your environment.
 
     Args:
