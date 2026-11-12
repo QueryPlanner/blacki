@@ -58,7 +58,8 @@ Docker Compose plugin.
 - SQLite and optional local memory data are stored in host-mounted directories.
 - HTTP and ADK web sessions are in memory and reset on restart.
 - OpenTelemetry logs and spans are written to two local JSON Lines files.
-  ADK's OTLP exporters can be added later through `OTEL_EXPORTER_OTLP_*`.
+  Setting `OTEL_EXPORTER_OTLP_*` also exports traces, logs, and metrics to an
+  OTLP/HTTP backend such as OpenObserve.
 
 ## Next steps
 

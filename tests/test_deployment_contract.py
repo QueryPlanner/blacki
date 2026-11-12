@@ -88,6 +88,23 @@ def test_litellm_is_absent_from_declared_and_locked_dependencies() -> None:
     assert "litellm" not in package_names
 
 
+def test_otlp_http_exporter_is_a_declared_dependency() -> None:
+    """Remote OTLP export needs the HTTP exporter ADK imports at startup."""
+    pyproject = tomllib.loads(_read("pyproject.toml"))
+    declared = [
+        dependency.lower() for dependency in pyproject["project"]["dependencies"]
+    ]
+
+    assert any(
+        dependency.startswith("opentelemetry-exporter-otlp-proto-http")
+        for dependency in declared
+    )
+
+    lock = tomllib.loads(_read("uv.lock"))
+    package_names = {package["name"] for package in lock["package"]}
+    assert "opentelemetry-exporter-otlp-proto-http" in package_names
+
+
 def test_minimal_environment_is_safe_and_complete() -> None:
     """The golden-path sample selects one provider and private host defaults."""
     values = _parse_env(".env.minimal")
@@ -485,7 +502,6 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
     assert "TELEGRAM_ENABLED=false" not in workflow
     assert "--env OPENROUTER_API_KEY" not in workflow
-    assert "OTEL_EXPORTER_OTLP" not in workflow
 
 
 def test_production_deployment_serializes_host_bind_secret() -> None:
@@ -631,6 +647,28 @@ def test_production_deployment_serializes_google_health_settings() -> None:
         "GOOGLE_HEALTH_CLIENT_SECRET",
         "GOOGLE_HEALTH_REDIRECT_URI",
         "GOOGLE_HEALTH_TOKEN_ENCRYPTION_KEY",
+    ):
+        assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
+        assert setting in writer_names
+
+
+def test_production_deployment_serializes_otlp_export_settings() -> None:
+    """OTLP credentials must reach the remote Compose environment."""
+    workflow = _load_yaml(".github/workflows/docker-publish.yml")
+    deploy_step = next(
+        step
+        for step in workflow["jobs"]["deploy"]["steps"]
+        if step["name"] == "Deploy to Server via Tailscale"
+    )
+    deploy_script = deploy_step["run"]
+    writer_start = deploy_script.index("python3 scripts/write_compose_env.py")
+    writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
+    writer_names = deploy_script[writer_start:writer_end].split()
+
+    for setting in (
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PROTOCOL",
+        "OTEL_EXPORTER_OTLP_HEADERS",
     ):
         assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
         assert setting in writer_names

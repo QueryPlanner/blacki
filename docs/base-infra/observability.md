@@ -75,12 +75,111 @@ At `LOG_LEVEL=DEBUG`, `LoggingCallbacks` also logs full model request contents
 and tool payloads, including Gmail and health data, to stdout and
 `blacki-telemetry.log`.
 
-## Remote export
+## Remote export with OTLP
 
-ADK adds its OTLP HTTP exporters when `OTEL_EXPORTER_OTLP_ENDPOINT` or a
-signal-specific endpoint is set. The local files keep working alongside them.
-The OTLP exporter package is not installed by default; startup fails with a
-clear error if those variables are set without it.
+`opentelemetry-exporter-otlp-proto-http` is a declared dependency, so the image
+can export over OTLP/HTTP. ADK adds span, log, and metric exporters when
+`OTEL_EXPORTER_OTLP_ENDPOINT` or a signal-specific endpoint is set. The local
+JSON Lines files keep working alongside them, so this is a dual export rather
+than a replacement.
+
+Use the base endpoint when you want traces, logs, and metrics:
+
+| Variable | Example |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://openobserve.internal:5080/api/default` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Basic%20<base64(email:password)>` |
+
+The HTTP exporter appends `/v1/traces`, `/v1/logs`, and `/v1/metrics` to the
+base endpoint. Do not add a trailing slash and do not include `/v1/...` in
+`OTEL_EXPORTER_OTLP_ENDPOINT`.
+
+Signal-specific variables are used verbatim, so they must include the full
+path. Use them when you want only some signals:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://openobserve.internal:5080/api/default/v1/traces
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=http://openobserve.internal:5080/api/default/v1/logs
+```
+
+### OpenObserve
+
+OpenObserve accepts OTLP/HTTP at `http://<host>:5080/api/<organization>`. For
+the `default` organization:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://100.77.130.71:5080/api/default
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<token>
+```
+
+Build the Basic token from the OpenObserve login, then URL-encode the space:
+
+```bash
+printf '%s' 'user@example.com:password' | base64
+# Prefix the result with: Authorization=Basic%20
+```
+
+OpenObserve Cloud uses `https://api.openobserve.ai/api/<organization>`.
+
+When OpenObserve runs on the Docker host, use `host.docker.internal`; Compose
+already maps it:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:5080/api/default
+```
+
+You can select a stream with an extra header:
+
+```bash
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<token>,stream-name=blacki
+```
+
+### Production secrets
+
+The deployment workflow writes these GitHub Actions secrets into the generated
+`.env`:
+
+| Secret | Value |
+| --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP endpoint, for example `http://100.77.130.71:5080/api/default` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Basic%20<base64(email:password)>` |
+
+Leave all three unset to keep local files only. Do not also set
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS`, or `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL`
+unless you intentionally want to override the base endpoint for one signal.
+The deployment workflow does not pass those signal-specific variables.
+
+### What leaves the host
+
+The OTLP export sends the same spans and log records as the local files. That
+includes full prompts, personal messages, tool arguments, tool results, Gmail
+and health data, and any content logged at `LOG_LEVEL=DEBUG`. There is no
+redaction. Before enabling remote export:
+
+- use HTTPS or a private network path you trust;
+- restrict access to the OpenObserve organization and its credentials;
+- choose a retention period that matches the data;
+- keep `LOG_LEVEL` at `INFO` unless you intend to ship full lifecycle payloads.
+
+The local files remain the fallback, but OpenObserve becomes a second copy of
+the same private data.
+
+### Verify ingestion
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST "$OTEL_EXPORTER_OTLP_ENDPOINT/v1/traces" \
+  -H "Authorization: Basic <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"resourceSpans":[]}'
+```
+
+A `200` means the endpoint and credentials are correct. In OpenObserve, check
+**Streams → Traces**, **Streams → Logs**, and **Streams → Metrics**.
 
 ## Retention
 
