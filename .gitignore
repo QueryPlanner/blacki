@@ -78,6 +78,10 @@ pip-wheel-metadata/
 # Cursor (if project settings end up committed locally)
 .cursor/
 
+# AI assistant tooling (local config, skills, and worktrees)
+.claude/
+.gemini/
+
 # Vim / swap files
 *.swp
 *.swo
