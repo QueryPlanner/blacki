@@ -1,4 +1,4 @@
-"""Kokoro speech synthesis and Telegram delivery tool."""
+"""Kokoro speech synthesis, voice listing, and Telegram delivery tools."""
 
 from __future__ import annotations
 
@@ -19,9 +19,11 @@ from blacki.telegram.api import TelegramApiClient
 logger = logging.getLogger(__name__)
 
 KOKORO_SPEECH_PATH = "/v1/audio/speech"
+KOKORO_VOICES_PATH = "/v1/audio/voices"
 KOKORO_MODEL = "kokoro"
 KOKORO_RESPONSE_FORMAT = "mp3"
 KOKORO_AUDIO_MIME_TYPE = "audio/mpeg"
+DEFAULT_KOKORO_VOICE = "af_heart"
 MAX_TTS_TEXT_CHARS = 4096
 # The agent targets 512 MiB-class VPS instances. Keep the response far below
 # Telegram's transport ceiling because bytearray-to-bytes conversion and the
@@ -30,11 +32,12 @@ MAX_TTS_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_CONCURRENT_TTS_DELIVERIES = 1
 TTS_CONNECT_TIMEOUT_SECONDS = 5.0
 TTS_READ_TIMEOUT_SECONDS = 60.0
+VOICES_READ_TIMEOUT_SECONDS = 10.0
 _VOICE_PATTERN = re.compile(r"[A-Za-z0-9_.+-]{1,128}")
 
 
 class KokoroTtsResponseError(RuntimeError):
-    """Raised when Kokoro returns an unusable audio response."""
+    """Raised when Kokoro returns an unusable audio or voice response."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,7 +45,6 @@ class KokoroTtsConfig:
     """Trusted deployment configuration for one Kokoro endpoint."""
 
     base_url: str
-    voice: str = "af_heart"
 
     def __post_init__(self) -> None:
         parsed = urlsplit(self.base_url.strip())
@@ -58,8 +60,6 @@ class KokoroTtsConfig:
                 "KOKORO_TTS_BASE_URL must be an http(s) base URL without "
                 "credentials, query, or fragment"
             )
-        if not _VOICE_PATTERN.fullmatch(self.voice.strip()):
-            raise ValueError("KOKORO_TTS_VOICE is invalid")
 
     @property
     def speech_url(self) -> str:
@@ -67,21 +67,45 @@ class KokoroTtsConfig:
         return f"{self.base_url.strip().rstrip('/')}{KOKORO_SPEECH_PATH}"
 
     @property
-    def normalized_voice(self) -> str:
-        """Return the whitespace-normalized voice ID."""
-        return self.voice.strip()
+    def voices_url(self) -> str:
+        """Return the configured Kokoro voice-list endpoint."""
+        return f"{self.base_url.strip().rstrip('/')}{KOKORO_VOICES_PATH}"
+
+
+def _parse_voices(payload: Any) -> tuple[str, ...]:
+    """Extract sorted voice IDs from a Kokoro voice-list response."""
+    entries = payload.get("voices") if isinstance(payload, dict) else None
+    if not isinstance(entries, list):
+        raise KokoroTtsResponseError("Kokoro returned an invalid voice list")
+
+    voices: list[str] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            voice: Any = entry
+        elif isinstance(entry, dict):
+            voice = entry.get("id")
+        else:
+            voice = None
+        if isinstance(voice, str) and _VOICE_PATTERN.fullmatch(voice):
+            voices.append(voice)
+
+    if not voices:
+        raise KokoroTtsResponseError("Kokoro returned no usable voices")
+    return tuple(sorted(set(voices)))
 
 
 async def _synthesize_mp3(
     text: str,
     config: KokoroTtsConfig,
     client: httpx.AsyncClient,
+    *,
+    voice: str,
 ) -> bytes:
     """Synthesize a bounded MP3 response without persisting it."""
     payload: dict[str, Any] = {
         "model": KOKORO_MODEL,
         "input": text,
-        "voice": config.normalized_voice,
+        "voice": voice,
         "response_format": KOKORO_RESPONSE_FORMAT,
         "stream": False,
     }
@@ -138,13 +162,14 @@ def create_send_text_to_speech_tool(
     *,
     http_transport: httpx.AsyncBaseTransport | None = None,
     telegram_client_factory: Callable[[str], TelegramApiClient] | None = None,
-) -> Callable[[str, ToolContext], Awaitable[dict[str, Any]]]:
+) -> Callable[..., Awaitable[dict[str, Any]]]:
     """Create the private, Telegram-scoped Kokoro speech tool."""
     delivery_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TTS_DELIVERIES)
 
     async def send_text_to_speech(
         text: str,
         tool_context: ToolContext,
+        voice: str = "",
     ) -> dict[str, Any]:
         """Synthesize text and send the MP3 to the current Telegram chat.
 
@@ -152,6 +177,9 @@ def create_send_text_to_speech_tool(
 
         Args:
             text: The exact text to speak, from 1 to 4096 characters.
+            voice: Optional Kokoro voice ID. Omit it to use `af_heart`, the
+                American English default. Call `list_speech_voices` to
+                discover the available voice IDs.
 
         Returns:
             A small delivery-status dictionary. Audio bytes are never returned.
@@ -166,6 +194,10 @@ def create_send_text_to_speech_tool(
                     f"Speech text must be at most {MAX_TTS_TEXT_CHARS} characters."
                 ),
             }
+
+        resolved_voice = voice.strip() or DEFAULT_KOKORO_VOICE
+        if not _VOICE_PATTERN.fullmatch(resolved_voice):
+            return {"status": "error", "error": "The requested voice ID is invalid."}
 
         try:
             chat_id, thread_id = _telegram_target(tool_context)
@@ -194,6 +226,7 @@ def create_send_text_to_speech_tool(
                         normalized_text,
                         config,
                         client,
+                        voice=resolved_voice,
                     )
             except Exception as exc:
                 logger.warning(
@@ -225,10 +258,57 @@ def create_send_text_to_speech_tool(
                 "status": "success",
                 "message": "Speech audio sent to the current Telegram chat.",
                 "format": KOKORO_RESPONSE_FORMAT,
-                "voice": config.normalized_voice,
+                "voice": resolved_voice,
                 "bytes": len(audio_bytes),
             }
 
         return result
 
     return send_text_to_speech
+
+
+def create_list_speech_voices_tool(
+    config: KokoroTtsConfig,
+    *,
+    http_transport: httpx.AsyncBaseTransport | None = None,
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """Create the private tool that lists the endpoint's Kokoro voices."""
+
+    async def list_speech_voices() -> dict[str, Any]:
+        """List the Kokoro voices available for `send_text_to_speech`.
+
+        Use this before choosing a non-default voice.
+
+        Returns:
+            A status dictionary with the default voice and every voice ID.
+        """
+        timeout = httpx.Timeout(
+            VOICES_READ_TIMEOUT_SECONDS,
+            connect=TTS_CONNECT_TIMEOUT_SECONDS,
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=timeout,
+                follow_redirects=False,
+                transport=http_transport,
+            ) as client:
+                response = await client.get(config.voices_url)
+                response.raise_for_status()
+                voices = _parse_voices(response.json())
+        except Exception as exc:
+            logger.warning(
+                "Kokoro voice list request failed (%s)",
+                type(exc).__name__,
+            )
+            return {
+                "status": "error",
+                "error": "The Kokoro voice list is unavailable.",
+            }
+
+        return {
+            "status": "success",
+            "default_voice": DEFAULT_KOKORO_VOICE,
+            "voices": list(voices),
+        }
+
+    return list_speech_voices

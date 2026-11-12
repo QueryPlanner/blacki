@@ -46,6 +46,7 @@ def test_root_agent_has_direct_tools_without_delegation(
     assert "agent_browser" in names
     assert "preload_memory" not in names
     assert ("send_text_to_speech" in names) is private
+    assert ("list_speech_voices" in names) is private
     assert ("get_health_summary" in names) is private
     assert ("query_health_data" in names) is private
     assert agent.on_tool_error_callback is (

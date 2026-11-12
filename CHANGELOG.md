@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add a tested Material for MkDocs documentation site
 - Add a safe first-VPS deployment and operations contract
 - Add private Kokoro speech delivery for Telegram replies
+- Let the Telegram root agent choose a Kokoro voice per request, defaulting to `af_heart`, and list available voices; this replaces the deployment-wide `KOKORO_TTS_VOICE` setting
 
 ### Changed
 - Replace Telegram model presets with current settings and command usage

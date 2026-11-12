@@ -68,7 +68,6 @@ To let the Telegram-only root agent turn text into playable MP3 audio, add:
 
 ```dotenv
 KOKORO_TTS_BASE_URL=http://100.x.y.z:8880
-KOKORO_TTS_VOICE=af_heart
 ```
 
 Use the Tailscale IP or MagicDNS name that is reachable from the Blacki
@@ -76,8 +75,9 @@ container. `localhost` refers to the Blacki container itself, not a Kokoro
 server on another machine. Blacki calls Kokoro's OpenAI-compatible
 `/v1/audio/speech` endpoint, keeps the bounded MP3 in memory, and uploads it to
 the current Telegram chat or topic. Synthesis and upload are serialized so only
-one audio payload is retained at a time. The tool is not registered on the
-public ADK HTTP runner.
+one audio payload is retained at a time. The tools are not registered on the
+public ADK HTTP runner. The agent chooses the voice per request, defaulting to
+`af_heart`, and `list_speech_voices` lists the voices Kokoro advertises.
 
 When this tool is configured, tool notifications may show that speech synthesis
 is running and can include the requested text. Full prompts, tool arguments, and

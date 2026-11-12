@@ -561,8 +561,8 @@ def test_production_deployment_shell_is_valid_bash() -> None:
     )
 
 
-def test_production_deployment_serializes_kokoro_tts_settings() -> None:
-    """The private Kokoro endpoint and voice must survive deployment."""
+def test_production_deployment_serializes_kokoro_tts_endpoint() -> None:
+    """The private Kokoro endpoint must survive deployment."""
     workflow = _load_yaml(".github/workflows/docker-publish.yml")
     deploy_step = next(
         step
@@ -574,9 +574,11 @@ def test_production_deployment_serializes_kokoro_tts_settings() -> None:
     writer_end = deploy_script.index("printf '%s' \"$GH_TOKEN\"")
     writer_names = deploy_script[writer_start:writer_end].split()
 
-    for setting in ("KOKORO_TTS_BASE_URL", "KOKORO_TTS_VOICE"):
-        assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
-        assert setting in writer_names
+    setting = "KOKORO_TTS_BASE_URL"
+    assert deploy_step["env"][setting] == f"${{{{ secrets.{setting} }}}}"
+    assert setting in writer_names
+    assert "KOKORO_TTS_VOICE" not in deploy_step["env"]
+    assert "KOKORO_TTS_VOICE" not in writer_names
 
 
 def test_production_publishes_miniapp_on_loopback_only() -> None:
