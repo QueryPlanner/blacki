@@ -12,7 +12,6 @@ from google.adk.agents import LlmAgent
 from google.adk.apps import App
 from google.adk.apps.app import EventsCompactionConfig
 from google.adk.plugins.base_plugin import BasePlugin
-from google.adk.plugins.logging_plugin import LoggingPlugin
 
 from .models.factory import build_model, normalize_model_for_openrouter
 from .models.inference import (
@@ -221,7 +220,6 @@ def create_app(agent: LlmAgent | None = None) -> App:
         *([UserFilesPromptPlugin(name="user_files")] if user_files_enabled() else []),
         *([WikiMemoryPlugin(name="owner_memory")] if wiki_tools_enabled else []),
         TemporalContextPlugin(),
-        LoggingPlugin(),
     ]
 
     return App(

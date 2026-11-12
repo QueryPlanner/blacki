@@ -398,8 +398,8 @@ def test_daily_trace_file_uses_utc_end_date(tmp_path: Path) -> None:
     assert (tmp_path / "traces" / f"{expected}.jsonl").is_file()
 
 
-def test_json_formatter_redacts_and_correlates_trace_ids() -> None:
-    """Structured logs redact credentials and include the active trace IDs."""
+def test_json_formatter_keeps_raw_messages_and_correlates_trace_ids() -> None:
+    """Structured logs keep raw content and include the active trace IDs."""
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
@@ -418,7 +418,7 @@ def test_json_formatter_redacts_and_correlates_trace_ids() -> None:
         context = trace.get_current_span().get_span_context()
     provider.shutdown()
 
-    assert formatted["message"] == "token=[REDACTED]"
+    assert formatted["message"] == "token=super-secret-value"
     assert formatted["trace_id"] == format(context.trace_id, "032x")
     assert formatted["span_id"] == format(context.span_id, "016x")
 
@@ -459,43 +459,6 @@ def test_exporter_handles_empty_batches(tmp_path: Path) -> None:
 
     assert exporter.export([]).name == "SUCCESS"
     assert not (tmp_path / "blacki-traces.log").exists()
-
-
-def test_redaction_filter_rewrites_messages_with_secrets() -> None:
-    """The logging filter rewrites a rendered record before a handler writes it."""
-    from blacki.observability.redaction import RedactionFilter
-
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="api_key=%s",
-        args=("sk-or-v1-" + "a" * 24,),
-        exc_info=None,
-    )
-
-    assert RedactionFilter().filter(record) is True
-    assert record.args == ()
-    assert "sk-or-v1-" not in record.msg
-    assert "[REDACTED]" in record.msg
-
-
-def test_redaction_filter_keeps_unparsable_records() -> None:
-    """A record whose arguments cannot be formatted is passed through untouched."""
-    from blacki.observability.redaction import RedactionFilter
-
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="%d",
-        args=("not-an-int",),
-        exc_info=None,
-    )
-
-    assert RedactionFilter().filter(record) is True
 
 
 def test_iso_timestamp_returns_none_for_missing_nanoseconds() -> None:

@@ -23,6 +23,13 @@ MAX_LOG_PAGE_SIZE = 200
 MAX_TRACE_PAGE_SIZE = 200
 MAX_SEARCH_LENGTH = 128
 MAX_JSONL_LINE_BYTES = 1 * 1024 * 1024
+# A model request (system prompt, tool declarations, and full history) is stored
+# on a single trace line, so the private trace view needs a larger bound than
+# application logs to keep long sessions inspectable.
+MAX_TRACE_JSONL_LINE_BYTES = 8 * 1024 * 1024
+# Daily trace files are never deleted by the application.  The dashboard scans
+# only the newest files so a page load stays bounded after months of use.
+MAX_TRACE_SCAN_FILES = 7
 # A bounded tail keeps scans recent and predictable even when the process has
 # accumulated months of local telemetry.  The scanner retains only the last
 # 10,000 valid records from this tail.

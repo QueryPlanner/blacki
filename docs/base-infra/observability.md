@@ -55,8 +55,16 @@ Content capture is a deliberate operator feature, not an external export.
 `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` stays `false` so the same
 content is not duplicated into OTel log events. Treat the local log directory as
 private user data: it can contain personal messages, tool arguments, and tool
-results. Common credential patterns are redacted before writes, but redaction is
-best-effort and is not a substitute for protecting the log volume.
+results. Application logs and the daily trace files are raw operator records and
+are not redacted; the dashboard reader masks common credential patterns when it
+renders them in a browser. Protecting the log volume is the primary control for
+log and trace content.
+
+At the default `INFO` level, lifecycle logging omits message and tool payloads.
+Setting `LOG_LEVEL=DEBUG` logs full model request contents and tool arguments
+and results through `LoggingCallbacks`, including Gmail and health data, to
+stdout and the JSON application log. Enable it only for a bounded debugging
+session.
 
 ## Remote export
 
@@ -69,18 +77,20 @@ credentials. Remove those variables from `.env` to silence the warning.
 
 `blacki-telemetry.log` rotates at UTC midnight and keeps fourteen daily backups
 (`blacki-telemetry.log.YYYY-MM-DD`). The slim trace log and the daily
-`traces/YYYY-MM-DD.jsonl` files are append-only and are not rotated by the
-application. Docker's stdout log-driver rotation does not rotate `./logs/*.log`.
+`traces/YYYY-MM-DD.jsonl` files are append-only and are never deleted or rotated
+by the application. Docker's stdout log-driver rotation does not rotate
+`./logs/*.log`.
 
-Monitor them:
+Trace files grow without an application-side bound, so disk usage is the
+operator's responsibility. Monitor it:
 
 ```bash
 du -sh logs
 ```
 
-Configure host-side retention for the trace directory before long-running use.
 Archive or clear files only during a maintenance window after preserving
-anything needed for an incident.
+anything needed for an incident. The dashboard scans only the newest seven daily
+trace files, so keeping old files does not slow down normal page loads.
 
 ## Failure behavior
 

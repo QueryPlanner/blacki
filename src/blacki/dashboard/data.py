@@ -480,7 +480,9 @@ def _load_telegram_identities_sync(path: Path) -> dict[int, tuple[str, str | Non
             connection.close()
 
 
-def _iter_raw_jsonl_lines(handle: Any) -> Iterator[tuple[bytes, bool]]:
+def _iter_raw_jsonl_lines(
+    handle: Any, *, max_line_bytes: int = MAX_JSONL_LINE_BYTES
+) -> Iterator[tuple[bytes, bool]]:
     """Yield bounded lines and flag oversized lines without allocating them."""
     buffer = bytearray()
     oversized = False
@@ -498,11 +500,11 @@ def _iter_raw_jsonl_lines(handle: Any) -> Iterator[tuple[bytes, bool]]:
             if oversized:
                 oversized = False
                 yield b"", True
-            elif len(line.rstrip(b"\r")) > MAX_JSONL_LINE_BYTES:
+            elif len(line.rstrip(b"\r")) > max_line_bytes:
                 yield b"", True
             else:
                 yield line.rstrip(b"\r"), False
-        if not oversized and len(buffer) > MAX_JSONL_LINE_BYTES:
+        if not oversized and len(buffer) > max_line_bytes:
             # Discard the already-read prefix.  The rest is consumed in
             # bounded chunks until the newline marks the end of this record.
             buffer.clear()
@@ -533,7 +535,9 @@ def _discard_partial_jsonl_line(handle: Any) -> None:
             return
 
 
-def _scan_jsonl_sync(path: Path) -> _JsonlScan:
+def _scan_jsonl_sync(
+    path: Path, *, max_line_bytes: int = MAX_JSONL_LINE_BYTES
+) -> _JsonlScan:
     records: deque[dict[str, Any]] = deque(maxlen=MAX_ACCEPTED_JSONL_RECORDS)
     invalid = 0
     oversized = 0
@@ -551,7 +555,9 @@ def _scan_jsonl_sync(path: Path) -> _JsonlScan:
             truncated = True
             handle.seek(tail_offset)
             _discard_partial_jsonl_line(handle)
-        for raw_line, was_oversized in _iter_raw_jsonl_lines(handle):
+        for raw_line, was_oversized in _iter_raw_jsonl_lines(
+            handle, max_line_bytes=max_line_bytes
+        ):
             if was_oversized:
                 oversized += 1
                 continue

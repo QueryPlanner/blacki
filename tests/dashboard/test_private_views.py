@@ -640,15 +640,49 @@ def test_trace_directory_scan_handles_io_and_partial_files(
     (tmp_path / "b.jsonl").write_text("{}\n", encoding="utf-8")
     real_scan = private_data._scan_jsonl_sync
 
-    def selective_scan(path: Path) -> _JsonlScan:
+    def selective_scan(path: Path, *, max_line_bytes: int = 0) -> _JsonlScan:
         if path.name == "a.jsonl":
             return _JsonlScan((), 0, 0, 0, unavailable=True)
-        return real_scan(path)
+        return real_scan(path, max_line_bytes=max_line_bytes)
 
     monkeypatch.setattr(private_data, "_scan_jsonl_sync", selective_scan)
     scan = private_data._scan_trace_dir_sync(tmp_path)
     assert scan.unavailable is False
     assert scan.accepted == 1
+
+
+def test_trace_directory_scan_reads_only_newest_files(tmp_path: Path) -> None:
+    """Old daily files stay on disk but do not slow down every request."""
+    from blacki.dashboard.models import MAX_TRACE_SCAN_FILES
+    from blacki.dashboard.private_data import _scan_trace_dir_sync
+
+    for index in range(MAX_TRACE_SCAN_FILES + 2):
+        (tmp_path / f"2024-01-{index + 1:02d}.jsonl").write_text(
+            json.dumps({"marker": index}) + "\n",
+            encoding="utf-8",
+        )
+
+    scan = _scan_trace_dir_sync(tmp_path)
+
+    markers = {record["marker"] for record in scan.records}
+    assert markers == set(range(2, MAX_TRACE_SCAN_FILES + 2))
+
+
+def test_trace_directory_scan_accepts_large_model_requests(tmp_path: Path) -> None:
+    """A request over the log limit is still readable in the trace view."""
+    from blacki.dashboard.data import _scan_jsonl_sync
+    from blacki.dashboard.models import MAX_JSONL_LINE_BYTES
+    from blacki.dashboard.private_data import _scan_trace_dir_sync
+
+    record = {"payload": "x" * (MAX_JSONL_LINE_BYTES + 1024)}
+    path = tmp_path / "2024-01-01.jsonl"
+    path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    assert _scan_jsonl_sync(path).oversized == 1
+    scan = _scan_trace_dir_sync(tmp_path)
+    assert scan.oversized == 0
+    assert scan.accepted == 1
+    assert scan.records[0]["payload"] == record["payload"]
 
 
 def test_trace_directory_scan_reports_empty_directory(tmp_path: Path) -> None:

@@ -19,16 +19,18 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 ```
 
 Blacki also appends application JSON logs and traces to `logs/` on the host.
-Those files are separate from Docker's stdout logs and are not rotated by
-Docker log-driver settings. Monitor their size:
+Application logs rotate at UTC midnight and keep fourteen daily backups. The
+slim trace log and the daily `logs/traces/YYYY-MM-DD.jsonl` files are kept
+indefinitely and are never deleted by the application, so they need monitoring
+even when Docker's log-driver rotation is enabled:
 
 ```bash
 du -sh logs
 ```
 
-Define a host retention or log-rotation policy before long-running production
-use. Archive or clear old files only during a maintenance window after keeping
-anything required for incident analysis.
+The dashboard scans only the newest seven daily trace files, so old files do not
+slow down normal page loads. Archive or clear old files only during a
+maintenance window after keeping anything required for incident analysis.
 
 ## Restart
 

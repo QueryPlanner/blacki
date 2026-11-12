@@ -32,7 +32,6 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from .attributes import TRACE_ATTRIBUTE_ALLOWLIST
-from .redaction import RedactionFilter, redact_secrets
 
 logger = logging.getLogger("blacki.utils.observability")
 
@@ -85,7 +84,7 @@ class JSONFormatter(logging.Formatter):
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "name": record.name,
-            "message": redact_secrets(record.getMessage()),
+            "message": record.getMessage(),
             "process_id": record.process,
             "thread_id": record.thread,
         }
@@ -94,9 +93,7 @@ class JSONFormatter(logging.Formatter):
             log_record["trace_id"] = format(span_context.trace_id, "032x")
             log_record["span_id"] = format(span_context.span_id, "016x")
         if record.exc_info:
-            log_record["exception"] = redact_secrets(
-                self.formatException(record.exc_info)
-            )
+            log_record["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_record, default=str, ensure_ascii=False)
 
 
@@ -110,14 +107,12 @@ def setup_logging(log_level: str) -> None:
         log_level: Logging verbosity level as string
     """
     level = getattr(logging, log_level.upper(), logging.INFO)
-    redaction_filter = RedactionFilter()
 
     # Configure stdout handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
-    console_handler.addFilter(redaction_filter)
 
     handlers: list[logging.Handler] = [console_handler]
 
@@ -133,7 +128,6 @@ def setup_logging(log_level: str) -> None:
             encoding="utf-8",
         )
         file_handler.setFormatter(JSONFormatter())
-        file_handler.addFilter(redaction_filter)
         handlers.append(file_handler)
     except OSError as e:
         print(f"⚠️ Failed to create log directory or file handler: {e}")

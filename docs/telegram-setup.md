@@ -320,7 +320,8 @@ The query runs against an owner- and account-scoped read-only host connection.
 The full archive stays on the host. Only selected results, up to 100 records and
 32 KiB per call, enter the model and private conversation history. The tool does
 not execute model-written SQL or Python, copy files into a sandbox, upload to R2,
-or send a file through Telegram. Private logging filters redact query payloads.
+or send a file through Telegram. Query payloads can appear in local logs and
+trace files, which are raw operator records; protect the log volume.
 
 Queries select the latest observed version per provider record ID. Anonymous
 payloads remain separate observations. Sums and averages over anonymous inputs

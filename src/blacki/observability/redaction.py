@@ -1,13 +1,13 @@
-"""Shared secret redaction for local logs and dashboard data.
+"""Shared secret redaction for dashboard data.
 
-Blacki keeps full model and tool content in local files.  Credentials must not
-be written to those files, so the same patterns are used by the logging filter,
-the dashboard sanitizers, and the private capture reader.
+Blacki keeps full model and tool content in local files.  The dashboard masks
+common credential shapes before rendering private data in the browser.  The
+same patterns are intentionally not applied to logs or trace files, which are
+operator-only raw records.
 """
 
 from __future__ import annotations
 
-import logging
 import re
 
 BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
@@ -30,18 +30,3 @@ def redact_secrets(text: str) -> str:
     text = TELEGRAM_TOKEN_RE.sub("[REDACTED]", text)
     text = PROVIDER_SECRET_RE.sub("[REDACTED]", text)
     return KEY_VALUE_SECRET_RE.sub(r"\1[REDACTED]", text)
-
-
-class RedactionFilter(logging.Filter):
-    """Redact a log record's rendered message before a handler writes it."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            message = record.getMessage()
-        except Exception:  # pragma: no cover - defensive against bad log args
-            return True
-        redacted = redact_secrets(message)
-        if redacted != message:
-            record.msg = redacted
-            record.args = ()
-        return True

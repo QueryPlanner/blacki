@@ -21,7 +21,12 @@ from .data import (
     _scan_jsonl_sync,
     _trace_time,
 )
-from .models import MAX_ACCEPTED_JSONL_RECORDS, JsonObject
+from .models import (
+    MAX_ACCEPTED_JSONL_RECORDS,
+    MAX_TRACE_JSONL_LINE_BYTES,
+    MAX_TRACE_SCAN_FILES,
+    JsonObject,
+)
 
 _TRACE_ID = re.compile(r"(?:0x)?[0-9a-f]{32}")
 _SPAN_ID = re.compile(r"(?:0x)?[0-9a-f]{16}")
@@ -389,9 +394,14 @@ def _raw_request(attributes: JsonObject) -> str | None:
 
 
 def _scan_trace_dir_sync(path: Path) -> _JsonlScan:
-    """Scan the daily trace files, newest data winning inside the record cap."""
+    """Scan the newest daily trace files, newest data winning inside the cap.
+
+    Daily trace files are kept forever, so reading every file would make each
+    dashboard request slower as the directory grows.  Only the newest files are
+    scanned; the inspector works with recent model calls.
+    """
     try:
-        files = sorted(path.glob("*.jsonl"))
+        files = sorted(path.glob("*.jsonl"))[-MAX_TRACE_SCAN_FILES:]
     except OSError:
         return _JsonlScan((), 0, 0, 0, unavailable=True)
     if not files:
@@ -401,7 +411,7 @@ def _scan_trace_dir_sync(path: Path) -> _JsonlScan:
     accepted = invalid = oversized = 0
     truncated = False
     for file_path in files:
-        scan = _scan_jsonl_sync(file_path)
+        scan = _scan_jsonl_sync(file_path, max_line_bytes=MAX_TRACE_JSONL_LINE_BYTES)
         if scan.unavailable:
             continue
         accepted += scan.accepted
