@@ -11,7 +11,6 @@ from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
 
-from ..security.tool_privacy import is_private_tool, private_tool_privacy_enabled
 from .costs import (
     _attach_cost_metadata,
     _begin_cost_capture,
@@ -72,9 +71,7 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if not private_tool_privacy_enabled() and (
-            user_content := callback_context.user_content
-        ):
+        if user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -93,9 +90,7 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        if not private_tool_privacy_enabled() and (
-            user_content := callback_context.user_content
-        ):
+        if user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
@@ -126,19 +121,15 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        redact_content = private_tool_privacy_enabled()
-        if not redact_content and (user_content := callback_context.user_content):
+        if user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
         self.logger.debug(f"LLM request contains {len(llm_request.contents)} messages:")
-        if redact_content:
-            self.logger.debug("LLM request content redacted in private-tool mode")
-        else:
-            for i, content in enumerate(llm_request.contents, start=1):
-                self.logger.debug(
-                    f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
-                )
+        for i, content in enumerate(llm_request.contents, start=1):
+            self.logger.debug(
+                f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
+            )
 
         return None
 
@@ -160,14 +151,11 @@ class LoggingCallbacks:
         )
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
-        redact_content = private_tool_privacy_enabled()
-        if not redact_content and (user_content := callback_context.user_content):
+        if user_content := callback_context.user_content:
             content_data = user_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"User Content: {content_data}")
 
-        if redact_content:
-            self.logger.debug("LLM response content redacted in private-tool mode")
-        elif llm_content := llm_response.content:
+        if llm_content := llm_response.content:
             response_data = llm_content.model_dump(exclude_none=True, mode="json")
             self.logger.debug(f"LLM response: {response_data}")
 
@@ -208,12 +196,6 @@ class LoggingCallbacks:
             f"'{tool_context.agent_name}' with invocation_id "
             f"'{tool_context.invocation_id}' ***"
         )
-        if private_tool_privacy_enabled():
-            self.logger.debug("Tool payload redacted in private-tool mode")
-            return None
-        if is_private_tool(tool):
-            self.logger.debug("Private tool payload redacted")
-            return None
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:
@@ -248,12 +230,6 @@ class LoggingCallbacks:
             f"'{tool_context.agent_name}' with invocation_id "
             f"'{tool_context.invocation_id}' ***"
         )
-        if private_tool_privacy_enabled():
-            self.logger.debug("Tool payload redacted in private-tool mode")
-            return None
-        if is_private_tool(tool):
-            self.logger.debug("Private tool payload redacted")
-            return None
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:

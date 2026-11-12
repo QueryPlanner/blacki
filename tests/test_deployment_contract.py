@@ -102,8 +102,10 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["SERVE_WEB_INTERFACE"] == "false"
     assert values["RELOAD_AGENTS"] == "false"
-    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert values["OTEL_SEMCONV_STABILITY_OPT_IN"] == "gen_ai_latest_experimental"
+    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "SPAN_ONLY"
+    assert "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS" not in values
+    assert values["LOG_LEVEL"] == "DEBUG"
 
 
 def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
@@ -116,8 +118,9 @@ def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
     assert "TELEGRAM_BOT_TOKEN" not in values
     assert values["HOST_BIND_IP"] == "127.0.0.1"
     assert values["HOST"] == "127.0.0.1"
-    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "false"
-    assert values["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] == "false"
+    assert values["OTEL_SEMCONV_STABILITY_OPT_IN"] == "gen_ai_latest_experimental"
+    assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "SPAN_ONLY"
+    assert "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS" not in values
 
 
 def test_compose_defaults_are_private_persistent_and_live() -> None:
@@ -380,7 +383,6 @@ def test_deployment_ci_covers_the_contract_and_native_image_build() -> None:
         "docker build --tag blacki:contract-test .",
         "-f compose.smoke.yaml up -d",
         'docker exec "$CONTAINER_ID" python -c',
-        "validate_observability_environment",
     ):
         assert command in workflow
 
@@ -483,13 +485,7 @@ def test_production_deployment_preflights_before_stopping_service() -> None:
     assert '--password-stdin < "$GHCR_TOKEN_FILE"' in workflow
     assert "TELEGRAM_ENABLED=false" not in workflow
     assert "--env OPENROUTER_API_KEY" not in workflow
-
-    for setting in (
-        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    ):
-        assert workflow.count(f"{setting}: ${{{{ secrets.{setting} }}}}") == 1
-        assert f'{setting}="${{{setting}}}"' not in workflow
+    assert "OTEL_EXPORTER_OTLP" not in workflow
 
 
 def test_production_deployment_serializes_host_bind_secret() -> None:

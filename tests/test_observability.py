@@ -1,76 +1,51 @@
-"""Tests for local and OTLP observability configuration."""
+"""Tests for the OpenTelemetry file exporters and GenAI telemetry defaults."""
 
 from __future__ import annotations
 
-import importlib
+import io
 import json
 import logging
 import os
-import sys
-import traceback
+import stat
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Thread
-from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import grpc
 import pytest
-from opentelemetry.proto.collector.trace.v1 import (
-    trace_service_pb2,
-    trace_service_pb2_grpc,
-)
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import ProxyTracerProvider
 
 from blacki.observability.setup import (
-    JSONFileSpanExporter,
-    JSONFormatter,
-    _create_tracer_provider,
-    _load_otlp_trace_config,
+    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS,
+    GENAI_TELEMETRY_DEFAULTS,
+    LOG_FILE_NAME,
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+    OTEL_SEMCONV_STABILITY_OPT_IN,
+    TRACE_FILE_NAME,
+    FileLogRecordExporter,
+    FileSpanExporter,
+    TelemetryProviders,
+    _otel_hooks,
+    configure_genai_telemetry,
     configure_otel_resource,
+    genai_content_capture_enabled,
     get_log_dir,
+    open_private_append,
     setup_logging,
     setup_tracing,
     shutdown_tracing,
-    validate_observability_environment,
-)
-from blacki.utils.exceptions import ConfigurationError
-
-OTLP_ENVIRONMENT_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    "OTEL_EXPORTER_OTLP_HEADERS",
 )
 
-
-@pytest.fixture(autouse=True)
-def clear_otlp_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep every exporter test independent from the developer's shell."""
-    for key in OTLP_ENVIRONMENT_KEYS:
-        monkeypatch.delenv(key, raising=False)
+_SETUP = "blacki.observability.setup"
 
 
-def test_observability_setup_has_stable_import_path() -> None:
-    """Deployment preflight must import the relocated setup module."""
-    module = importlib.import_module("blacki.observability.setup")
-
-    assert (
-        module.validate_observability_environment is validate_observability_environment
-    )
-
-
-def test_shutdown_tracing_handles_missing_and_configured_providers() -> None:
-    """Tracing teardown should be safe when setup could not create a provider."""
-    provider = MagicMock()
-
-    shutdown_tracing(None)
-    shutdown_tracing(provider)
-
-    provider.shutdown.assert_called_once_with()
+@pytest.fixture
+def genai_environment(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """Start every test without GenAI telemetry variables from the shell."""
+    for name in GENAI_TELEMETRY_DEFAULTS:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
 
 
 @pytest.fixture
@@ -92,574 +67,224 @@ def preserve_logging_configuration() -> Iterator[None]:
         urllib3_logger.setLevel(original_urllib3_level)
 
 
-class RecordingCollector(trace_service_pb2_grpc.TraceServiceServicer):
-    """Minimal local gRPC collector that records export requests."""
-
-    def __init__(self) -> None:
-        self.requests: list[trace_service_pb2.ExportTraceServiceRequest] = []
-        self.authorizations: list[str | bytes | None] = []
-
-    def Export(  # noqa: N802
-        self,
-        request: trace_service_pb2.ExportTraceServiceRequest,
-        context: grpc.ServicerContext,
-    ) -> trace_service_pb2.ExportTraceServiceResponse:
-        self.requests.append(request)
-        metadata = dict(context.invocation_metadata())
-        self.authorizations.append(metadata.get("authorization"))
-        return trace_service_pb2.ExportTraceServiceResponse()
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
-class RecordingHttpHandler(BaseHTTPRequestHandler):
-    """Minimal local HTTP/protobuf collector that records export requests."""
-
-    requests: ClassVar[
-        list[
-            tuple[
-                str, str | None, str | None, trace_service_pb2.ExportTraceServiceRequest
-            ]
-        ]
-    ] = []
-
-    def do_POST(self) -> None:  # noqa: N802
-        """Decode and record one OTLP HTTP/protobuf export request."""
-        content_length = int(self.headers["Content-Length"])
-        request = trace_service_pb2.ExportTraceServiceRequest.FromString(
-            self.rfile.read(content_length)
-        )
-        self.requests.append(
-            (
-                self.path,
-                self.headers.get("Content-Type"),
-                self.headers.get("Authorization"),
-                request,
-            )
-        )
-        self.send_response(200)
-        self.end_headers()
-
-    def log_message(self, _format: str, *args: object) -> None:
-        """Keep the fake collector silent during tests."""
-        _ = args
-
-
-def _span_names(collector: RecordingCollector) -> list[str]:
-    return [
-        span.name
-        for request in collector.requests
-        for resource_spans in request.resource_spans
-        for scope_spans in resource_spans.scope_spans
-        for span in scope_spans.spans
-    ]
-
-
-def _request_span_names(
-    requests: list[trace_service_pb2.ExportTraceServiceRequest],
-) -> list[str]:
-    """Return every span name recorded by HTTP or gRPC requests."""
-    return [
-        span.name
-        for request in requests
-        for resource_spans in request.resource_spans
-        for scope_spans in resource_spans.scope_spans
-        for span in scope_spans.spans
-    ]
-
-
-def test_local_only_provider_writes_span_without_otlp(
-    tmp_path: Path,
+def test_genai_defaults_fill_only_unset_variables(
+    genai_environment: pytest.MonkeyPatch,
 ) -> None:
-    """Default mode writes local JSON and never constructs a network exporter."""
-    log_path = tmp_path / "traces.jsonl"
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "")
+    configure_genai_telemetry()
 
-    with (
-        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
-    ):
-        provider, mode = _create_tracer_provider(log_path)
-        tracer = provider.get_tracer("test.local")
-        with tracer.start_as_current_span("agent.local"):
-            pass
-        assert provider.force_flush()
-        provider.shutdown()
-
-    assert mode == "local"
-    mock_grpc_exporter.assert_not_called()
-    mock_http_exporter.assert_not_called()
-    written = [json.loads(line) for line in log_path.read_text().splitlines()]
-    assert [span["name"] for span in written] == ["agent.local"]
+    assert os.environ[OTEL_SEMCONV_STABILITY_OPT_IN] == "gen_ai_latest_experimental"
+    assert os.environ[OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT] == ""
+    assert os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] == "false"
 
 
-def test_otlp_export_reaches_local_grpc_collector(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize(
+    ("opt_in", "mode", "expected"),
+    [
+        ("gen_ai_latest_experimental", "SPAN_ONLY", True),
+        ("http, gen_ai_latest_experimental", "span_and_event", True),
+        ("gen_ai_latest_experimental", "EVENT_ONLY", False),
+        ("gen_ai_latest_experimental", "", False),
+        ("", "SPAN_ONLY", False),
+    ],
+)
+def test_genai_content_capture_needs_experimental_span_content(
+    genai_environment: pytest.MonkeyPatch, opt_in: str, mode: str, expected: bool
 ) -> None:
-    """A representative agent span reaches a real local OTLP gRPC service."""
-    collector = RecordingCollector()
-    server = grpc.server(ThreadPoolExecutor(max_workers=1))
-    trace_service_pb2_grpc.add_TraceServiceServicer_to_server(collector, server)
-    port = server.add_insecure_port("127.0.0.1:0")
-    server.start()
+    genai_environment.setenv(OTEL_SEMCONV_STABILITY_OPT_IN, opt_in)
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, mode)
 
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        f"http://127.0.0.1:{port}",
-    )
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-        "authorization=Bearer%20grpc-token",
-    )
-    provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
+    assert genai_content_capture_enabled() is expected
+
+
+def test_file_exporters_write_every_span_and_log_record(tmp_path: Path) -> None:
+    hooks = _otel_hooks(tmp_path)
+    assert hooks is not None
+
+    tracer_provider = TracerProvider()
+    for span_processor in hooks.span_processors:
+        tracer_provider.add_span_processor(span_processor)
+    logger_provider = LoggerProvider()
+    for log_processor in hooks.log_record_processors:
+        logger_provider.add_log_record_processor(log_processor)
+    test_logger = logging.getLogger("blacki.test.exporters")
+    test_logger.propagate = False
+    test_logger.setLevel(logging.INFO)
+    handler = LoggingHandler(logger_provider=logger_provider)
+    test_logger.addHandler(handler)
+    prompt = "password: example-secret\n" * 1000
     try:
-        tracer = provider.get_tracer("blacki.agent")
-        with tracer.start_as_current_span("agent.turn") as span:
-            span.set_attribute("blacki.channel", "telegram")
-        assert provider.force_flush(timeout_millis=5_000)
+        with tracer_provider.get_tracer("test").start_as_current_span("model") as span:
+            span.set_attribute("gen_ai.system_instructions", prompt)
+            test_logger.info("inside %s", "span")
     finally:
-        provider.shutdown()
-        server.stop(grace=None).wait(timeout=5)
+        test_logger.removeHandler(handler)
+        tracer_provider.shutdown()
+        logger_provider.shutdown()
 
-    assert mode == "local+otlp-grpc"
-    assert "agent.turn" in _span_names(collector)
-    assert collector.authorizations == ["Bearer grpc-token"]
+    [span_record] = [
+        json.loads(line)
+        for line in (tmp_path / TRACE_FILE_NAME).read_text().splitlines()
+    ]
+    assert span_record["name"] == "model"
+    assert span_record["attributes"]["gen_ai.system_instructions"] == prompt
+    assert span_record["context"]["trace_id"].startswith("0x")
+    [log_record] = [
+        json.loads(line) for line in (tmp_path / LOG_FILE_NAME).read_text().splitlines()
+    ]
+    assert log_record["body"] == "inside span"
+    assert log_record["severity_text"] == "INFO"
+    assert log_record["trace_id"] == span_record["context"]["trace_id"]
+    assert log_record["instrumentation_scope"]["name"] == "blacki.test.exporters"
+    assert _mode(tmp_path / TRACE_FILE_NAME) == 0o600
+    assert _mode(tmp_path / LOG_FILE_NAME) == 0o600
 
 
-def test_otlp_export_reaches_local_http_collector(
+def test_private_append_tightens_existing_files_and_appends(tmp_path: Path) -> None:
+    path = tmp_path / "nested" / "telemetry.log"
+    path.parent.mkdir()
+    path.write_text("old\n", encoding="utf-8")
+    path.chmod(0o644)
+
+    with open_private_append(path) as handle:
+        handle.write("new\n")
+
+    assert path.read_text(encoding="utf-8") == "old\nnew\n"
+    assert _mode(path) == 0o600
+
+
+def test_private_append_closes_descriptor_when_wrapping_fails(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A representative span reaches a real OTLP HTTP/protobuf endpoint."""
-    RecordingHttpHandler.requests = []
-    server = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHttpHandler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = server.server_address[1]
-
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        f"http://127.0.0.1:{port}/custom/v1/traces",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_HEADERS",
-        "authorization=Bearer%20test-token",
-    )
-    provider, mode = _create_tracer_provider(tmp_path / "traces.jsonl")
-    try:
-        tracer = provider.get_tracer("blacki.agent")
-        with tracer.start_as_current_span("agent.http-turn"):
-            pass
-        assert provider.force_flush(timeout_millis=5_000)
-    finally:
-        provider.shutdown()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-    assert not thread.is_alive()
-    assert mode == "local+otlp-http-protobuf"
-    assert len(RecordingHttpHandler.requests) == 1
-    path, content_type, authorization, request = RecordingHttpHandler.requests[0]
-    assert path == "/custom/v1/traces"
-    assert content_type == "application/x-protobuf"
-    assert authorization == "Bearer test-token"
-    assert "agent.http-turn" in _request_span_names([request])
-
-
-def test_trace_specific_otlp_values_take_precedence(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Trace-specific endpoint, protocol, and headers override global values."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://global.example:4317")
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "https://traces.example:4317",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "grpc")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "global=value")
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "trace=value")
-
-    config = _load_otlp_trace_config()
-
-    assert config is not None
-    assert config.endpoint == "https://traces.example:4317"
-    assert config.endpoint_is_trace_specific
-    assert config.protocol == "grpc"
-    assert config.headers == {"trace": "value"}
-
-
-def test_otlp_protocol_defaults_to_grpc(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An endpoint without an explicit protocol uses the installed gRPC exporter."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example:4317",
-    )
-
-    config = _load_otlp_trace_config()
-
-    assert config is not None
-    assert config.protocol == "grpc"
-
-
-def test_http_global_endpoint_appends_trace_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A global HTTP endpoint is a base URL and receives the signal path."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example/otlp/",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-
-    config = _load_otlp_trace_config()
-
-    assert config is not None
-    assert config.endpoint == "https://collector.example/otlp/v1/traces"
-    assert not config.endpoint_is_trace_specific
-    assert config.protocol == "http/protobuf"
-
-
-def test_http_trace_endpoint_is_used_exactly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A trace-specific HTTP endpoint already includes its complete path."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        "https://collector.example/custom/traces",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-
-    config = _load_otlp_trace_config()
-
-    assert config is not None
-    assert config.endpoint == "https://collector.example/custom/traces"
-    assert config.endpoint_is_trace_specific
-
-
-def test_otlp_headers_are_parsed_for_both_transports(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Environment headers become the mapping required by the HTTP exporter."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example:4318",
-    )
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_HEADERS",
-        "authorization=Bearer%20token,x-api-key=value%3Dwith-equals",
-    )
-
-    config = _load_otlp_trace_config()
-
-    assert config is not None
-    assert config.headers == {
-        "authorization": "Bearer token",
-        "x-api-key": "value=with-equals",
-    }
-
-
-def test_observability_preflight_constructs_and_closes_selected_exporter(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Deployment validation proves the selected exporter can be constructed."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example:4318",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
-
     with (
-        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
+        patch(f"{_SETUP}.os.fdopen", side_effect=OSError("wrap failed")),
+        patch(f"{_SETUP}.os.close", wraps=os.close) as close,
+        pytest.raises(OSError, match="wrap failed"),
     ):
-        validate_observability_environment()
+        open_private_append(tmp_path / "telemetry.log")
 
-    mock_grpc_exporter.assert_not_called()
-    mock_http_exporter.assert_called_once_with(
-        endpoint="https://collector.example:4318/v1/traces",
-        headers=None,
-    )
-    mock_http_exporter.return_value.shutdown.assert_called_once_with()
+    close.assert_called_once()
 
 
-def test_observability_preflight_local_mode_constructs_no_exporter() -> None:
-    """Local-only preflight has no network-exporter lifecycle."""
-    with (
-        patch("blacki.observability.setup.GrpcOTLPSpanExporter") as mock_grpc_exporter,
-        patch("blacki.observability.setup.HttpOTLPSpanExporter") as mock_http_exporter,
-    ):
-        validate_observability_environment()
+def test_hooks_are_skipped_when_either_file_cannot_open(tmp_path: Path) -> None:
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("", encoding="utf-8")
+    assert _otel_hooks(blocked) is None
 
-    mock_grpc_exporter.assert_not_called()
-    mock_http_exporter.assert_not_called()
+    (tmp_path / LOG_FILE_NAME).mkdir()
+    assert _otel_hooks(tmp_path) is None
+    assert (tmp_path / TRACE_FILE_NAME).exists()
 
 
-@pytest.mark.parametrize(
-    ("protocol", "endpoint"),
-    [
-        ("grpc", "not-a-url"),
-        ("grpc", "ftp://collector.example:4317"),
-        ("grpc", "https://user:password@collector.example:4317"),
-        ("grpc", "https://collector.example:4317/path"),
-        ("http/protobuf", "https://collector.example/path;token=endpoint-canary"),
-        (
-            "http/protobuf",
-            "https://collector.example/path?token=endpoint-canary",
-        ),
-        ("http/protobuf", "https://collector.example:invalid-port"),
-    ],
-)
-def test_invalid_otlp_endpoint_is_rejected_without_echoing_value(
-    protocol: str,
-    endpoint: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Malformed and credential-bearing endpoints fail with secret-free text."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
-
-    with pytest.raises(ConfigurationError) as error:
-        _load_otlp_trace_config()
-
-    formatted_error = "".join(
-        traceback.format_exception(error.type, error.value, error.tb)
-    )
-    assert endpoint not in formatted_error
-    assert "password" not in formatted_error
-    assert "endpoint-canary" not in formatted_error
-
-
-@pytest.mark.parametrize(
-    ("key", "value"),
-    [
-        ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
-        ("OTEL_EXPORTER_OTLP_HEADERS", "authorization=header-canary"),
-    ],
-)
-def test_otlp_options_without_endpoint_fail_startup(
-    key: str,
-    value: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Protocol or headers alone must not silently create a default network path."""
-    monkeypatch.setenv(key, value)
-
-    with pytest.raises(ConfigurationError) as error:
-        _load_otlp_trace_config()
-
-    assert value not in str(error.value)
-    assert "require" in str(error.value)
-
-
-@pytest.mark.parametrize(
-    "header_canary",
-    [
-        "authorization header-credential-canary",
-        "invalid header=header-credential-canary",
-        "authorization=Bearer%20header-credential-canary%0D%0AX-Injected%3Ayes",
-    ],
-)
-def test_malformed_otlp_headers_fail_without_echoing_value(
-    header_canary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Malformed headers fail startup without exposing credential material."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example:4317",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", header_canary)
-
-    with pytest.raises(ConfigurationError, match="Invalid OTLP trace headers") as error:
-        _load_otlp_trace_config()
-
-    formatted_error = "".join(
-        traceback.format_exception(error.type, error.value, error.tb)
-    )
-    assert header_canary not in formatted_error
-    assert "header-credential-canary" not in formatted_error
-
-
-@pytest.mark.parametrize("protocol", ["http/json", "json", "grpc/protobuf"])
-def test_unsupported_otlp_protocol_fails_startup(
-    protocol: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Only the two installed OTLP transports may be selected."""
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "https://collector.example:4317",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_PROTOCOL", protocol)
-
-    with pytest.raises(ConfigurationError, match="grpc and http/protobuf"):
-        _load_otlp_trace_config()
-
-
-@pytest.mark.parametrize(
-    ("protocol", "endpoint_suffix", "expected_mode"),
-    [
-        ("grpc", ":4317", "local+otlp-grpc"),
-        ("http/protobuf", ":4318/v1/traces", "local+otlp-http-protobuf"),
-    ],
-)
-def test_setup_tracing_logs_only_selected_mode(
-    protocol: str,
-    endpoint_suffix: str,
-    expected_mode: str,
+def test_setup_tracing_installs_adk_providers_and_bridges_logging(
     tmp_path: Path,
+    genai_environment: pytest.MonkeyPatch,
+    preserve_logging_configuration: None,
+) -> None:
+    tracer_provider, logger_provider = TracerProvider(), LoggerProvider()
+    with (
+        patch(f"{_SETUP}.get_log_dir", return_value=tmp_path),
+        patch(f"{_SETUP}.maybe_set_otel_providers", autospec=True) as install,
+        patch(f"{_SETUP}.trace.get_tracer_provider", return_value=tracer_provider),
+        patch(f"{_SETUP}._logs.get_logger_provider", return_value=logger_provider),
+    ):
+        providers = setup_tracing()
+
+    [hooks] = install.call_args.args[0]
+    assert len(hooks.span_processors) == len(hooks.log_record_processors) == 1
+    assert providers == TelemetryProviders(tracer_provider, logger_provider)
+    assert any(isinstance(h, LoggingHandler) for h in logging.getLogger().handlers)
+    assert genai_content_capture_enabled()
+    shutdown_tracing(providers)
+    for processor in hooks.span_processors:
+        processor.shutdown()
+    for processor in hooks.log_record_processors:
+        processor.shutdown()
+
+
+def test_setup_tracing_installs_a_provider_without_files_and_warns(
+    tmp_path: Path,
+    genai_environment: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Startup logs exporter mode once without endpoint or header material."""
-    endpoint_canary = "collector-canary.example"
-    header_canary = "header-credential-canary"
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-        f"https://{endpoint_canary}{endpoint_suffix}",
-    )
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", protocol)
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-        f"authorization={header_canary}",
-    )
-    caplog.set_level(logging.INFO)
-
+    blocked = tmp_path / "blocked"
+    blocked.write_text("", encoding="utf-8")
+    genai_environment.setenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "")
     with (
-        patch("blacki.observability.setup.get_log_dir", return_value=tmp_path),
-        patch("blacki.observability.setup.trace.set_tracer_provider"),
+        patch(f"{_SETUP}.get_log_dir", return_value=blocked),
+        patch(f"{_SETUP}.maybe_set_otel_providers", autospec=True) as install,
+        patch(
+            f"{_SETUP}.trace.get_tracer_provider", return_value=ProxyTracerProvider()
+        ),
+        patch(f"{_SETUP}.trace.set_tracer_provider") as set_provider,
+        patch(f"{_SETUP}._logs.get_logger_provider", return_value=object()),
+        caplog.at_level(logging.WARNING, logger="blacki.utils.observability"),
     ):
-        provider = setup_tracing()
+        providers = setup_tracing()
 
-    assert provider is not None
-    provider.shutdown()
-    mode_records = [
-        record
-        for record in caplog.records
-        if "Trace exporter mode configured" in record.message
-    ]
-    assert len(mode_records) == 1
-    assert expected_mode in mode_records[0].message
-    assert endpoint_canary not in caplog.text
-    assert header_canary not in caplog.text
+    assert install.call_args.args[0] == []
+    set_provider.assert_called_once_with(providers.tracer)
+    assert providers.logger is None
+    assert "GenAI content capture is off" in caplog.text
+    shutdown_tracing(providers)
 
 
-def test_observability_formatters_and_resource_configuration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Resource attributes and JSON log records remain structured."""
+def test_setup_tracing_explains_missing_otlp_exporter(tmp_path: Path) -> None:
+    with (
+        patch(f"{_SETUP}.get_log_dir", return_value=tmp_path),
+        patch(
+            f"{_SETUP}.maybe_set_otel_providers",
+            autospec=True,
+            side_effect=ImportError("opentelemetry.exporter"),
+        ),
+        pytest.raises(RuntimeError, match="no OTLP exporter package"),
+    ):
+        setup_tracing()
+
+
+def test_shutdown_tracing_accepts_missing_providers() -> None:
+    shutdown_tracing(None)
+
+
+def test_resource_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TELEMETRY_NAMESPACE", "tests")
     monkeypatch.setenv("K_REVISION", "revision-1")
     configure_otel_resource("blacki-test")
 
-    attributes = os.getenv("OTEL_RESOURCE_ATTRIBUTES")
-    assert attributes is not None
+    attributes = os.environ["OTEL_RESOURCE_ATTRIBUTES"]
     assert "service.name=blacki-test" in attributes
     assert "service.namespace=tests" in attributes
     assert "service.version=revision-1" in attributes
 
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.INFO,
-        pathname=__file__,
-        lineno=1,
-        msg="hello",
-        args=(),
-        exc_info=None,
-    )
-    formatted = json.loads(JSONFormatter().format(record))
-    assert formatted["message"] == "hello"
-    assert formatted["name"] == "blacki.test"
-
-
-def test_json_formatter_includes_exception_details() -> None:
-    """Structured logs should retain exception type and message."""
-    try:
-        raise ValueError("formatting failed")
-    except ValueError:
-        exc_info = sys.exc_info()
-
-    record = logging.LogRecord(
-        name="blacki.test",
-        level=logging.ERROR,
-        pathname=__file__,
-        lineno=1,
-        msg="failed",
-        args=(),
-        exc_info=exc_info,
-    )
-
-    formatted = json.loads(JSONFormatter().format(record))
-
-    assert "ValueError: formatting failed" in formatted["exception"]
-
 
 @pytest.mark.parametrize(
     ("in_container", "expected"),
-    [
-        (True, Path("/app/logs")),
-        (False, Path("./logs")),
-    ],
+    [(True, Path("/app/logs")), (False, Path("./logs"))],
 )
 def test_get_log_dir_selects_container_or_local_path(
-    in_container: bool,
-    expected: Path,
+    in_container: bool, expected: Path
 ) -> None:
-    """Log paths should follow the runtime environment."""
     with patch.object(Path, "exists", return_value=in_container):
         assert get_log_dir() == expected
 
 
-def test_setup_logging_adds_json_file_handler(
-    tmp_path: Path,
+def test_setup_logging_writes_to_stdout_at_the_requested_level(
     preserve_logging_configuration: None,
 ) -> None:
-    """A writable log directory should receive structured file logs."""
-    with patch("blacki.observability.setup.get_log_dir", return_value=tmp_path):
-        setup_logging("DEBUG")
-        logging.getLogger("blacki.test").info("file message")
-        for handler in logging.getLogger().handlers:
-            handler.flush()
+    setup_logging("DEBUG")
 
-    log_path = tmp_path / "blacki-telemetry.log"
-    records = [json.loads(line) for line in log_path.read_text().splitlines()]
-    assert records[-1]["message"] == "file message"
-    assert logging.getLogger().level == logging.DEBUG
+    root = logging.getLogger()
+    assert root.level == logging.DEBUG
+    assert [type(handler) for handler in root.handlers] == [logging.StreamHandler]
     assert logging.getLogger("urllib3").level == logging.WARNING
 
 
-def test_setup_logging_falls_back_to_stdout(
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-    preserve_logging_configuration: None,
-) -> None:
-    """An unavailable local log directory does not prevent process logging."""
-    blocked = Path("/blocked")
-    with (
-        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
-        patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
-    ):
-        setup_logging("INFO")
-
-    assert "Continuing with stdout logging only" in capsys.readouterr().out
-
-
-def test_setup_tracing_returns_none_for_unwritable_directory() -> None:
-    """Tracing should degrade safely when its directory cannot be created."""
-    blocked = Path("/blocked")
-    with (
-        patch("blacki.observability.setup.get_log_dir", return_value=blocked),
-        patch.object(Path, "mkdir", side_effect=OSError("permission denied")),
-    ):
-        provider = setup_tracing()
-
-    assert provider is None
-
-
-def test_json_span_exporter_reports_write_failure(tmp_path: Path) -> None:
-    """Local exporter failure is reported without crashing the application."""
-    exporter = JSONFileSpanExporter(str(tmp_path))
-
-    assert exporter.export([]).name == "FAILURE"
-    exporter.shutdown()
+def test_file_exporters_close_their_file_on_shutdown() -> None:
+    traces, logs = io.StringIO(), io.StringIO()
+    FileSpanExporter(out=traces).shutdown()
+    FileLogRecordExporter(out=logs).shutdown()
+    assert traces.closed and logs.closed

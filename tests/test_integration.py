@@ -81,7 +81,6 @@ class TestAppIntegration:
             "declarative_db",
             "stored_preferences",
             "temporal_context",
-            "logging_plugin",
         ]
 
 

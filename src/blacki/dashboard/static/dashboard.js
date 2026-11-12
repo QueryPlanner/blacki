@@ -5,7 +5,7 @@ const refresh = document.getElementById("refresh");
 const pageSize = 50;
 const maxPageSize = 200;
 const views = {
-  sessions: ["Sessions", "Read conversations, inspect captured model context, and browse a user’s wiki."],
+  sessions: ["Sessions", "Read conversations, inspect captured model calls, and browse a user’s wiki."],
   overview: ["Overview", "Review activity, token use, and reported costs in the local files."],
   traces: ["Traces", "Inspect recorded spans, timing, and trace status."],
   logs: ["Logs", "Search the application log by message or severity."],
@@ -363,8 +363,8 @@ function requestContext(params, signal) {
   mark.setAttribute("aria-hidden", "true");
   const caret = el("span", "caret");
   caret.setAttribute("aria-hidden", "true");
-  const title = el("span", "context-title", "System prompt & tools");
-  const subtitle = el("span", "context-subtitle", "Inspect the context recorded for a model request");
+  const title = el("span", "context-title", "Model call inspector");
+  const subtitle = el("span", "context-subtitle", "Inspect the recorded request, response, and tool calls");
   title.append(subtitle);
   summary.append(mark, title, caret);
   const contents = el("div", "context-body");
@@ -472,11 +472,141 @@ function renderTranscript(body, transcript, params, signal) {
   warnings(body, transcript);
 }
 
+const roleLabels = { user: "User", model: "Blacki", system: "System", tool: "Tool" };
+
+function jsonText(value) {
+  if (value === undefined) return "undefined";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
+}
+
+function captureBlock(label, text) {
+  const block = el("div", "capture-block");
+  block.append(el("span", "capture-label", label), el("pre", "prompt", text));
+  return block;
+}
+
+function capturePart(part) {
+  const type = part?.type;
+  if (type === "text" || type === "thought") {
+    const node = el("p", type === "thought" ? "message-text capture-thought" : "message-text", part.text);
+    if (type === "thought") node.prepend(el("span", "capture-label", "Reasoning"));
+    return node;
+  }
+  if (type === "function_call") return captureBlock("Function call · " + (part.name || "unnamed"), jsonText(part.args));
+  if (type === "function_response") return captureBlock("Function result · " + (part.name || "unnamed"), jsonText(part.response));
+  if (type === "inline_data") return el("p", "help", "Inline data · " + (part.mime_type || "unknown type"));
+  if (type === "file_data") {
+    const location = part.file_uri ? " · " + part.file_uri : "";
+    return el("p", "help", "File data · " + (part.mime_type || "unknown type") + location);
+  }
+  const keys = Array.isArray(part?.keys) ? part.keys.join(", ") : "";
+  return el("p", "help", keys ? "Unsupported part · " + keys : "Unsupported part");
+}
+
+function captureParts(container, parts) {
+  for (const part of parts ?? []) container.append(capturePart(part));
+}
+
+function captureMessages(output, messages) {
+  if (!messages?.length) {
+    output.append(el("p", "help", "This request did not record any conversation messages."));
+    return;
+  }
+  const list = el("ol", "capture-messages");
+  for (const message of messages) {
+    const item = el("li", "capture-message");
+    const head = el("div", "capture-message-head");
+    head.append(
+      el("b", "", roleLabels[message.role] || message.role || "Message"),
+      el("span", "", plural(message.parts?.length ?? 0, "part")),
+    );
+    item.append(head);
+    captureParts(item, message.parts);
+    if (!message.parts?.length && message.text) item.append(el("p", "message-text", message.text));
+    list.append(item);
+  }
+  output.append(list);
+}
+
+function captureResponse(output, response) {
+  if (!response) {
+    output.append(el("p", "help", "This request did not record a model response."));
+    return;
+  }
+  const metadata = [];
+  if (response.finish_reason != null) metadata.push(["Finish reason", String(response.finish_reason)]);
+  if (response.model_version != null) metadata.push(["Model version", String(response.model_version)]);
+  if (response.interrupted != null) metadata.push(["Interrupted", response.interrupted ? "Yes" : "No"]);
+  if (response.turn_complete != null) metadata.push(["Turn complete", response.turn_complete ? "Yes" : "No"]);
+  if (response.partial != null) metadata.push(["Partial", response.partial ? "Yes" : "No"]);
+  if (response.error_code != null) metadata.push(["Error code", String(response.error_code)]);
+  if (response.error_message) metadata.push(["Error", response.error_message]);
+  if (metadata.length) output.append(facts(metadata, "capture-facts"));
+  if (response.parts?.length) captureParts(output, response.parts);
+  else output.append(el("p", "help", "The response did not include any content parts."));
+  if (response.usage && Object.keys(response.usage).length) {
+    output.append(el("h4", "capture-subhead", "Token usage"));
+    output.append(facts(
+      Object.entries(response.usage).map(([key, value]) => [
+        key.replaceAll("_", " "),
+        typeof value === "object" && value !== null ? jsonText(value) : String(value),
+      ]),
+      "capture-facts",
+    ));
+  }
+}
+
+function captureToolCalls(output, calls) {
+  if (!calls?.length) {
+    output.append(el("p", "help", "This response did not call any tools."));
+    return;
+  }
+  const list = el("ol", "tool-call-list");
+  for (const call of calls) {
+    const item = el("li", "tool-call");
+    const head = el("div", "tool-call-head");
+    const meta = [call.status, call.duration_ms == null ? null : formatMs(call.duration_ms)]
+      .filter(Boolean).join(" · ");
+    head.append(el("b", "", call.name || "Unnamed tool"), el("span", "", meta || "No result recorded"));
+    item.append(head, captureBlock("Arguments", jsonText(call.args ?? {})));
+    if (call.response != null) item.append(captureBlock("Result", jsonText(call.response)));
+    else item.append(el("p", "help", "No tool result was recorded."));
+    list.append(item);
+  }
+  output.append(list);
+}
+
+function captureRaw(output, rawSpan) {
+  if (!rawSpan) {
+    output.append(el("p", "help", "This model call has no recorded span."));
+    return;
+  }
+  output.append(
+    el("pre", "prompt", rawSpan),
+    el("p", "help", "This is the model-call span as it is stored in blacki-traces.log, with JSON attributes decoded."),
+  );
+}
+
 function renderCapture(container, capture, selectedSection, onSelect) {
   const controls = el("nav", "detail-tabs capture-tabs");
-  controls.setAttribute("aria-label", "Captured request sections");
+  controls.setAttribute("aria-label", "Captured model call sections");
   const output = el("div", "capture-output");
   const buttons = new Map();
+  const tools = capture.tools ?? [];
+  const messages = capture.messages ?? [];
+  const toolCalls = capture.tool_calls ?? [];
+  const sections = [
+    ["prompt", "System prompt"],
+    ["tools", `Tools (${count(tools.length)})`],
+    ["messages", `Messages sent (${count(messages.length)})`],
+    ["response", "Response"],
+    ["tool_calls", `Tool calls (${count(toolCalls.length)})`],
+    ["raw", "Raw span"],
+  ];
 
   function showSection(section) {
     onSelect(section);
@@ -484,27 +614,38 @@ function renderCapture(container, capture, selectedSection, onSelect) {
       if (id === section) button.setAttribute("aria-current", "true");
       else button.removeAttribute("aria-current");
     }
-    if (section === "prompt") {
-      output.replaceChildren(el("pre", "prompt", capture.system_prompt));
-      return;
-    }
-    const toolList = el("div", "tool-list");
-    for (const tool of capture.tools) {
-      const item = el("details", "tool");
-      const title = el("summary", "", tool.name);
-      const caret = el("span", "caret");
-      caret.setAttribute("aria-hidden", "true");
-      title.append(caret);
-      item.append(title, el("p", "message-text", tool.description));
-      toolList.append(item);
-    }
     output.replaceChildren();
-    if (capture.tools.length) output.append(toolList);
-    else output.append(el("p", "help", "This request did not record tool descriptions."));
-    if (capture.partial_tools) output.append(el("p", "warning", "Some tool declarations were missing or could not be read."));
+    if (section === "prompt") {
+      output.append(el("pre", "prompt", capture.system_prompt));
+    } else if (section === "tools") {
+      if (tools.length) {
+        const toolList = el("div", "tool-list");
+        for (const tool of tools) {
+          const item = el("details", "tool");
+          const title = el("summary", "", tool.name);
+          const caret = el("span", "caret");
+          caret.setAttribute("aria-hidden", "true");
+          title.append(caret);
+          item.append(title, el("p", "message-text", tool.description));
+          toolList.append(item);
+        }
+        output.append(toolList);
+      } else {
+        output.append(el("p", "help", "This request did not record tool descriptions."));
+      }
+      if (capture.partial_tools) output.append(el("p", "warning", "Some tool declarations were missing or could not be read."));
+    } else if (section === "messages") {
+      captureMessages(output, messages);
+    } else if (section === "response") {
+      captureResponse(output, capture.response);
+    } else if (section === "tool_calls") {
+      captureToolCalls(output, toolCalls);
+    } else {
+      captureRaw(output, capture.raw_span);
+    }
   }
 
-  for (const [id, label] of [["prompt", "System prompt"], ["tools", `Tool descriptions (${count(capture.tools.length)})`]]) {
+  for (const [id, label] of sections) {
     const button = action(label, "", () => showSection(id));
     buttons.set(id, button);
     controls.append(button);
@@ -512,7 +653,7 @@ function renderCapture(container, capture, selectedSection, onSelect) {
   container.replaceChildren();
   if (capture.model) container.append(el("p", "help", capture.model));
   container.append(controls, output);
-  showSection(selectedSection);
+  showSection(sections.some(([id]) => id === selectedSection) ? selectedSection : "prompt");
 }
 
 function renderMessage(message) {
@@ -668,7 +809,7 @@ function filterBar(view, signal, update) {
   search.placeholder = view === "traces" ? "Find a trace" : "Find a log entry";
   search.value = state[view].search;
   const field = view === "traces" ? "status" : "level";
-  const values = view === "traces" ? ["OK", "ERROR", "UNSET"] : ["INFO", "WARNING", "ERROR", "CRITICAL", "DEBUG"];
+  const values = view === "traces" ? ["OK", "ERROR", "UNSET"] : ["INFO", "WARN", "ERROR", "FATAL", "DEBUG"];
   const picker = options([["", "All"], ...values.map((value) => [value, value])], state[view][field]);
   const submit = el("button", "control", "Apply filters");
   submit.type = "submit";
@@ -724,7 +865,7 @@ function renderLog(entry) {
   const item = el("details", "log-entry");
   const title = el("summary");
   const level = el("span", "level", entry.level || "LOG");
-  if (["ERROR", "CRITICAL"].includes(entry.level)) level.setAttribute("data-error", "");
+  if (["ERROR", "FATAL"].includes(entry.level)) level.setAttribute("data-error", "");
   const message = typeof entry.message === "string" ? entry.message : "Structured log entry";
   title.append(level, el("strong", "", message.length > 150 ? `${message.slice(0, 149)}…` : message), dateNode(entry.timestamp, true));
   const body = el("div", "entry-body");

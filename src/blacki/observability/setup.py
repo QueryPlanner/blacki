@@ -1,27 +1,35 @@
-"""OpenTelemetry and Logging setup for bare-metal adaptation.
+"""OpenTelemetry and logging setup.
 
-This module provides consolidated observability configuration using standard
-OpenTelemetry environment variables for vendor-neutral operation.
+Blacki uses ADK's OpenTelemetry setup (``google.adk.telemetry.setup``) with the
+experimental GenAI semantic conventions, so every model call carries its system
+instructions, input messages, output messages, and tool definitions as
+standard ``gen_ai.*`` span attributes.
+
+The OpenTelemetry SDK console exporters write two local JSON Lines files:
+
+* ``blacki-traces.log``: every span, unfiltered.
+* ``blacki-telemetry.log``: every log record, unfiltered.
+
+Both files are created with mode ``0600`` and are never rotated or trimmed.
+ADK also adds its OTLP exporters when ``OTEL_EXPORTER_OTLP_*`` is set, which
+requires installing an OTLP exporter package first.
 """
 
 import json
 import logging
 import os
-import re
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from typing import TextIO
 
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-    OTLPSpanExporter as GrpcOTLPSpanExporter,
-)
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-    OTLPSpanExporter as HttpOTLPSpanExporter,
+from google.adk.telemetry.setup import OTelHooks, maybe_set_otel_providers
+from opentelemetry import _logs, trace
+from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler, ReadableLogRecord
+from opentelemetry.sdk._logs.export import (
+    BatchLogRecordProcessor,
+    ConsoleLogRecordExporter,
 )
 from opentelemetry.sdk.resources import (
     SERVICE_INSTANCE_ID,
@@ -31,50 +39,41 @@ from opentelemetry.sdk.resources import (
     Resource,
 )
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import (
-    BatchSpanProcessor,
-    SpanExporter,
-    SpanExportResult,
-)
-
-from ..utils.exceptions import ConfigurationError
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 
 logger = logging.getLogger("blacki.utils.observability")
 
+LOG_FILE_NAME = "blacki-telemetry.log"
+TRACE_FILE_NAME = "blacki-traces.log"
+
+OTEL_SEMCONV_STABILITY_OPT_IN = "OTEL_SEMCONV_STABILITY_OPT_IN"
+OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
+    "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+)
+ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS = "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"
+GENAI_EXPERIMENTAL_OPT_IN = "gen_ai_latest_experimental"
+
+# Defaults applied unless the operator already set the variable.  Content goes
+# on spans in the experimental GenAI format.  ADK's legacy content attributes
+# would store a second copy of every request, so they are off.
+GENAI_TELEMETRY_DEFAULTS = {
+    OTEL_SEMCONV_STABILITY_OPT_IN: GENAI_EXPERIMENTAL_OPT_IN,
+    OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "SPAN_ONLY",
+    ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false",
+}
+_SPAN_CONTENT_MODES = frozenset({"SPAN_ONLY", "SPAN_AND_EVENT"})
+
 
 @dataclass(frozen=True)
-class OTLPTraceConfig:
-    """Validated, trace-specific OTLP exporter settings."""
+class TelemetryProviders:
+    """The process-wide providers installed by :func:`setup_tracing`."""
 
-    endpoint: str
-    endpoint_is_trace_specific: bool
-    protocol: str
-    headers: Mapping[str, str] | None
-
-
-_OTLP_ENDPOINT_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-)
-_OTLP_PROTOCOL_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
-    "OTEL_EXPORTER_OTLP_PROTOCOL",
-)
-_OTLP_HEADER_KEYS = (
-    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-    "OTEL_EXPORTER_OTLP_HEADERS",
-)
-_OTLP_PROTOCOLS = frozenset({"grpc", "http/protobuf"})
-_HTTP_HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
-_HTTP_HEADER_VALUE = re.compile(r"^[\x20-\x7e]*$")
-_HTTP_TRACE_PATH = "v1/traces"
+    tracer: TracerProvider
+    logger: LoggerProvider | None
 
 
 def configure_otel_resource(agent_name: str) -> None:
     """Configure OpenTelemetry resource via environment variables.
-
-    Sets standard OTel resource attributes. Exporters are configured via
-    standard OTel environment variables (OTEL_EXPORTER_OTLP_*) set by the user.
 
     Args:
         agent_name: Unique service identifier
@@ -89,311 +88,165 @@ def configure_otel_resource(agent_name: str) -> None:
     )
 
 
+def configure_genai_telemetry() -> None:
+    """Apply the GenAI telemetry defaults without overriding operator values."""
+    for name, value in GENAI_TELEMETRY_DEFAULTS.items():
+        os.environ.setdefault(name, value)
+
+
+def genai_content_capture_enabled() -> bool:
+    """Return whether ADK writes GenAI content onto spans.
+
+    The dashboard builds its model-call views from these attributes, so the
+    views are empty when this is off.
+    """
+    opt_ins = os.getenv(OTEL_SEMCONV_STABILITY_OPT_IN, "")
+    mode = os.getenv(OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT, "")
+    return (
+        GENAI_EXPERIMENTAL_OPT_IN in {item.strip() for item in opt_ins.split(",")}
+        and mode.strip().upper() in _SPAN_CONTENT_MODES
+    )
+
+
 def get_log_dir() -> Path:
     """Get the appropriate log directory based on environment."""
     return Path("/app/logs") if Path("/.dockerenv").exists() else Path("./logs")
 
 
-class JSONFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        log_record = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
-            "level": record.levelname,
-            "name": record.name,
-            "message": record.getMessage(),
-            "process_id": record.process,
-            "thread_id": record.thread,
-        }
-        if record.exc_info:
-            log_record["exception"] = self.formatException(record.exc_info)
-        return json.dumps(log_record, default=str)
-
-
 def setup_logging(log_level: str) -> None:
-    """Set up basic logging with local JSON file export.
+    """Send Python logging to stdout at the configured level.
 
-    Configures Python logging to output to stdout and append to a local JSON file.
+    :func:`setup_tracing` adds the OpenTelemetry handler that writes the same
+    records to ``blacki-telemetry.log``.
 
     Args:
         log_level: Logging verbosity level as string
     """
     level = getattr(logging, log_level.upper(), logging.INFO)
-
-    # Configure stdout handler
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setFormatter(
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
-
-    handlers: list[logging.Handler] = [console_handler]
-
-    # Configure local JSON file handler
-    log_dir = get_log_dir()
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_dir / "blacki-telemetry.log")
-        file_handler.setFormatter(JSONFormatter())
-        handlers.append(file_handler)
-    except OSError as e:
-        print(f"⚠️ Failed to create log directory or file handler: {e}")
-        print("   Continuing with stdout logging only...")
-
-    # Configure root logger
-    logging.basicConfig(level=level, handlers=handlers, force=True)
-
-    # Set levels for some noisy libraries if needed
+    logging.basicConfig(level=level, handlers=[console_handler], force=True)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-class JSONFileSpanExporter(SpanExporter):
-    """Exports OpenTelemetry Spans to a local JSON Lines file."""
+def span_line(span: ReadableSpan) -> str:
+    """Format one span as the SDK's JSON on a single line."""
+    return str(span.to_json(indent=None)) + "\n"
 
-    def __init__(self, log_path: str):
-        self.log_path = log_path
 
-    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        try:
-            with Path(self.log_path).open("a") as f:
-                for span in spans:
-                    # Convert span attributes and events to serializable dicts
-                    span_data = {
-                        "name": span.name,
-                        "context": {
-                            "trace_id": format(span.context.trace_id, "032x"),
-                            "span_id": format(span.context.span_id, "016x"),
-                        },
-                        "parent_id": format(span.parent.span_id, "016x")
-                        if span.parent
-                        else None,
-                        "kind": span.kind.name if span.kind else None,
-                        "start_time": datetime.fromtimestamp(
-                            span.start_time / 1e9, tz=UTC
-                        ).isoformat()
-                        if span.start_time
-                        else None,
-                        "end_time": datetime.fromtimestamp(
-                            span.end_time / 1e9, tz=UTC
-                        ).isoformat()
-                        if span.end_time
-                        else None,
-                        "status": {
-                            "status_code": span.status.status_code.name
-                            if span.status
-                            else None,
-                            "description": span.status.description
-                            if span.status
-                            else None,
-                        },
-                        "attributes": dict(span.attributes) if span.attributes else {},
-                        "events": [
-                            {
-                                "name": event.name,
-                                "timestamp": datetime.fromtimestamp(
-                                    event.timestamp / 1e9, tz=UTC
-                                ).isoformat()
-                                if event.timestamp
-                                else None,
-                                "attributes": dict(event.attributes)
-                                if event.attributes
-                                else {},
-                            }
-                            for event in span.events
-                        ]
-                        if span.events
-                        else [],
-                    }
-                    f.write(json.dumps(span_data, default=str) + "\n")
-            return SpanExportResult.SUCCESS
-        except Exception as e:
-            print(f"⚠️ Failed to write trace to {self.log_path}: {e}")
-            return SpanExportResult.FAILURE
+def log_line(record: ReadableLogRecord) -> str:
+    """Format one log record as the SDK's JSON on a single line.
+
+    The SDK's JSON leaves out the instrumentation scope, which holds the Python
+    logger name, so it is added here.
+    """
+    data = json.loads(record.to_json(indent=None))
+    scope = record.instrumentation_scope
+    data["instrumentation_scope"] = (
+        {"name": scope.name, "version": scope.version} if scope else None
+    )
+    return json.dumps(data, ensure_ascii=False) + "\n"
+
+
+def open_private_append(path: Path) -> TextIO:
+    """Open a UTF-8 file for appending, readable only by its owner."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        path.chmod(0o600)
+        return os.fdopen(descriptor, "a", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+class FileSpanExporter(ConsoleSpanExporter):
+    """The SDK console span exporter, closing its file on shutdown."""
 
     def shutdown(self) -> None:
-        pass
+        self.out.close()
 
 
-def _first_environment_setting(keys: Sequence[str]) -> tuple[str, str] | None:
-    """Return the first non-empty environment setting in precedence order."""
-    for key in keys:
-        value = os.getenv(key, "").strip()
-        if value:
-            return key, value
-    return None
+class FileLogRecordExporter(ConsoleLogRecordExporter):
+    """The SDK console log exporter, closing its file on shutdown."""
+
+    def shutdown(self) -> None:
+        self.out.close()
 
 
-def _parse_otlp_headers(headers: str) -> Mapping[str, str]:
-    """Parse OTLP environment headers without logging credential material."""
-    parsed_headers: dict[str, str] = {}
-    for raw_header in headers.split(","):
-        header = raw_header.strip()
-        if not header or "=" not in header:
-            raise ConfigurationError(
-                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
-            )
-
-        raw_name, raw_value = header.split("=", maxsplit=1)
-        name = unquote(raw_name).strip().lower()
-        value = unquote(raw_value).strip()
-        if (
-            not name
-            or _HTTP_HEADER_NAME.fullmatch(name) is None
-            or _HTTP_HEADER_VALUE.fullmatch(value) is None
-        ):
-            raise ConfigurationError(
-                "Invalid OTLP trace headers. Use comma-separated name=value pairs."
-            )
-        parsed_headers[name] = value
-
-    return parsed_headers
-
-
-def _normalize_otlp_endpoint(
-    endpoint: str,
-    *,
-    protocol: str,
-    trace_specific: bool,
-) -> str:
-    """Validate an OTLP endpoint and apply protocol-specific path semantics."""
+def _otel_hooks(log_dir: Path) -> OTelHooks | None:
+    """Build the file exporters, or return None when the files cannot open."""
     try:
-        parsed = urlparse(endpoint)
-        _ = parsed.port
-    except ValueError:
-        raise ConfigurationError(
-            "Invalid OTLP trace endpoint. Use an http(s) collector URL."
-        ) from None
-
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.params
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ConfigurationError(
-            "Invalid OTLP trace endpoint. Use an http(s) collector URL "
-            "without credentials, queries, or fragments."
-        )
-
-    if protocol == "grpc":
-        if parsed.params or parsed.path not in {"", "/"}:
-            raise ConfigurationError(
-                "Invalid gRPC OTLP trace endpoint. Use a collector URL without a path."
-            )
-        return endpoint
-
-    if trace_specific:
-        return endpoint
-    return f"{endpoint.rstrip('/')}/{_HTTP_TRACE_PATH}"
-
-
-def _load_otlp_trace_config() -> OTLPTraceConfig | None:
-    """Load OTLP trace settings with trace-specific values taking precedence."""
-    endpoint_setting = _first_environment_setting(_OTLP_ENDPOINT_KEYS)
-    protocol_setting = _first_environment_setting(_OTLP_PROTOCOL_KEYS)
-    header_setting = _first_environment_setting(_OTLP_HEADER_KEYS)
-
-    if endpoint_setting is None:
-        if protocol_setting is not None or header_setting is not None:
-            raise ConfigurationError(
-                "OTLP trace protocol or headers require "
-                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or "
-                "OTEL_EXPORTER_OTLP_ENDPOINT."
-            )
+        traces = open_private_append(log_dir / TRACE_FILE_NAME)
+        try:
+            logs = open_private_append(log_dir / LOG_FILE_NAME)
+        except OSError:
+            traces.close()
+            raise
+    except OSError as error:
+        print(f"⚠️ Failed to open telemetry files under {log_dir}: {error}")
         return None
-
-    endpoint_key, endpoint = endpoint_setting
-    selected_protocol = (
-        protocol_setting[1].casefold() if protocol_setting is not None else "grpc"
-    )
-    if selected_protocol not in _OTLP_PROTOCOLS:
-        raise ConfigurationError(
-            "Unsupported OTLP trace protocol. This deployment supports "
-            "grpc and http/protobuf."
-        )
-
-    trace_specific = endpoint_key == "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
-    normalized_endpoint = _normalize_otlp_endpoint(
-        endpoint,
-        protocol=selected_protocol,
-        trace_specific=trace_specific,
-    )
-    headers = (
-        _parse_otlp_headers(header_setting[1]) if header_setting is not None else None
-    )
-    return OTLPTraceConfig(
-        endpoint=normalized_endpoint,
-        endpoint_is_trace_specific=trace_specific,
-        protocol=selected_protocol,
-        headers=headers,
+    return OTelHooks(
+        span_processors=[
+            BatchSpanProcessor(FileSpanExporter(out=traces, formatter=span_line))
+        ],
+        log_record_processors=[
+            BatchLogRecordProcessor(FileLogRecordExporter(out=logs, formatter=log_line))
+        ],
     )
 
 
-def _create_otlp_exporter(
-    otlp_config: OTLPTraceConfig,
-) -> tuple[SpanExporter, str]:
-    """Construct the selected network exporter without sending any spans."""
-    exporter_headers = dict(otlp_config.headers) if otlp_config.headers else None
-    if otlp_config.protocol == "grpc":
-        otlp_exporter: SpanExporter = GrpcOTLPSpanExporter(
-            endpoint=otlp_config.endpoint,
-            headers=exporter_headers,
-        )
-    else:
-        otlp_exporter = HttpOTLPSpanExporter(
-            endpoint=otlp_config.endpoint,
-            headers=exporter_headers,
-        )
-    mode = "grpc" if otlp_config.protocol == "grpc" else "http-protobuf"
-    return otlp_exporter, mode
+def setup_tracing() -> TelemetryProviders:
+    """Install ADK's OpenTelemetry providers with the local file exporters.
 
-
-def _create_tracer_provider(log_path: Path) -> tuple[TracerProvider, str]:
-    """Create a provider with local JSON and optional OTLP span processors."""
-    provider = TracerProvider(resource=Resource.create())
-
-    local_exporter = JSONFileSpanExporter(str(log_path))
-    provider.add_span_processor(BatchSpanProcessor(local_exporter))
-
-    otlp_config = _load_otlp_trace_config()
-    if otlp_config is None:
-        return provider, "local"
-
-    otlp_exporter, mode = _create_otlp_exporter(otlp_config)
-    provider.add_span_processor(BatchSpanProcessor(otlp_exporter))
-    return provider, f"local+otlp-{mode}"
-
-
-def validate_observability_environment() -> None:
-    """Construct and close the configured exporter without sending spans."""
-    otlp_config = _load_otlp_trace_config()
-    if otlp_config is None:
-        return
-
-    otlp_exporter, _ = _create_otlp_exporter(otlp_config)
-    otlp_exporter.shutdown()
-
-
-def setup_tracing() -> TracerProvider | None:
-    """Set up local JSON tracing and opt-in remote OTLP export."""
-    log_dir = get_log_dir()
-    log_path = log_dir / "blacki-traces.log"
-
+    A tracer provider is installed even when the files cannot be opened.
+    Otherwise ADK's web server would install its own in-memory exporter, which
+    keeps every span in memory.
+    """
+    configure_genai_telemetry()
+    hooks = _otel_hooks(get_log_dir())
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        print(f"⚠️ Failed to create trace directory: {e}")
-        return None
+        maybe_set_otel_providers(
+            [hooks] if hooks else [], otel_resource=Resource.create()
+        )
+    except ImportError as error:
+        raise RuntimeError(
+            "OTEL_EXPORTER_OTLP_* is set, but no OTLP exporter package is "
+            "installed. Install opentelemetry-exporter-otlp-proto-http or unset "
+            "the variables."
+        ) from error
 
-    provider, mode = _create_tracer_provider(log_path)
-    trace.set_tracer_provider(provider)
-    logger.info("Trace exporter mode configured: %s", mode)
-    return provider
+    tracer = trace.get_tracer_provider()
+    if not isinstance(tracer, TracerProvider):
+        tracer = TracerProvider(resource=Resource.create())
+        trace.set_tracer_provider(tracer)
+    current_log_provider = _logs.get_logger_provider()
+    log_provider = (
+        current_log_provider
+        if isinstance(current_log_provider, LoggerProvider)
+        else None
+    )
+    if log_provider is not None:
+        logging.getLogger().addHandler(LoggingHandler(logger_provider=log_provider))
+
+    logger.info("OpenTelemetry file exporters configured")
+    if not genai_content_capture_enabled():
+        logger.warning(
+            "GenAI content capture is off, so the dashboard cannot show model "
+            "calls. Set %s=%s and %s=SPAN_ONLY.",
+            OTEL_SEMCONV_STABILITY_OPT_IN,
+            GENAI_EXPERIMENTAL_OPT_IN,
+            OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT,
+        )
+    return TelemetryProviders(tracer=tracer, logger=log_provider)
 
 
-def shutdown_tracing(provider: TracerProvider | None) -> None:
-    """Flush and release an OpenTelemetry provider when one was configured."""
-    if provider is None:
+def shutdown_tracing(providers: TelemetryProviders | None) -> None:
+    """Flush and release the providers installed by :func:`setup_tracing`."""
+    if providers is None:
         return
-    provider.shutdown()
+    providers.tracer.shutdown()
+    if providers.logger is not None:
+        providers.logger.shutdown()

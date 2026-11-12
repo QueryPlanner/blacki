@@ -43,7 +43,7 @@ surface on every host interface.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENT_NAME` | None | Required identity for the service and telemetry |
-| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `LOG_LEVEL` | `DEBUG` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
 | `HOST` | `127.0.0.1` | Process bind address outside Compose |
 | `PORT` | `8080` | Process port outside Compose |
 | `AGENT_DIR` | `src` | ADK agents and local-state base directory |
@@ -247,22 +247,16 @@ stored object remains available for a later restore.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `TELEMETRY_NAMESPACE` | `local` | OpenTelemetry service namespace |
-| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `false` | Allow instrumentors to capture message content |
-| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` | Allow legacy ADK spans to capture prompts and tool data |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | Preferred complete trace collector URL |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | Global collector URL fallback; HTTP adds `/v1/traces` |
-| `OTEL_EXPORTER_OTLP_TRACES_PROTOCOL` | `grpc` | Preferred trace protocol: `grpc` or `http/protobuf` |
-| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Global protocol fallback |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | unset | Preferred trace authentication headers |
-| `OTEL_EXPORTER_OTLP_HEADERS` | unset | Global authentication-header fallback |
+| `OTEL_SEMCONV_STABILITY_OPT_IN` | `gen_ai_latest_experimental` | Use the experimental OpenTelemetry GenAI attributes |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `SPAN_ONLY` | Put prompts, messages, and tool definitions on spans |
+| `ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS` | `false` | ADK's legacy request and response attributes; off to avoid a second copy |
+| `OTEL_EXPORTER_OTLP_*` | Unset | Also export through ADK's OTLP exporters |
 
-Blacki always exports spans to local JSON. A validated trace-specific or global
-endpoint adds gRPC or HTTP/protobuf OTLP export; trace-specific values take
-precedence. See [Observability](observability.md).
-
-When any private-tool integration is configured, Blacki forces both
-content-capture variables to `false` and disables the OpenInference Google ADK
-instrumentor because it otherwise records raw tool parameters.
+Blacki sets the three GenAI defaults at startup unless the variable is already
+set. The dashboard's model-call views need `gen_ai_latest_experimental` and a
+span content mode (`SPAN_ONLY` or `SPAN_AND_EVENT`); startup logs a warning
+otherwise. `SPAN_AND_EVENT` also copies the content into
+`blacki-telemetry.log`. See [Observability](observability.md).
 
 ## Precedence
 

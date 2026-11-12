@@ -60,7 +60,7 @@ regular audio files continue to use the existing file-upload behavior. If the
 credentials are absent, Blacki reports that voice transcription is not
 configured instead of failing startup. The raw voice bytes are transient; the
 resulting transcript is handled like ordinary Telegram text and follows the
-existing conversation-history and logging/privacy settings.
+existing conversation-history and logging settings.
 
 ### Optional Kokoro speech replies
 
@@ -79,10 +79,10 @@ the current Telegram chat or topic. Synthesis and upload are serialized so only
 one audio payload is retained at a time. The tool is not registered on the
 public ADK HTTP runner.
 
-When this private tool is configured, Blacki disables content-rich ADK and
-OpenInference logging. Tool notifications may show that speech synthesis is
-running, but never include the text being spoken. ADK session history still
-retains the model's tool call and arguments.
+When this tool is configured, tool notifications may show that speech synthesis
+is running and can include the requested text. Full prompts, tool arguments, and
+responses are kept in the local trace file for the private dashboard. ADK
+session history still retains the model's tool call and arguments.
 
 ### Optional Connect Google Health
 
@@ -320,7 +320,8 @@ The query runs against an owner- and account-scoped read-only host connection.
 The full archive stays on the host. Only selected results, up to 100 records and
 32 KiB per call, enter the model and private conversation history. The tool does
 not execute model-written SQL or Python, copy files into a sandbox, upload to R2,
-or send a file through Telegram. Private logging filters redact query payloads.
+or send a file through Telegram. Query payloads can appear in local logs and
+trace files, which are raw operator records; protect the log volume.
 
 Queries select the latest observed version per provider record ID. Anonymous
 payloads remain separate observations. Sums and averages over anonymous inputs

@@ -23,62 +23,20 @@ MAX_LOG_PAGE_SIZE = 200
 MAX_TRACE_PAGE_SIZE = 200
 MAX_SEARCH_LENGTH = 128
 MAX_JSONL_LINE_BYTES = 1 * 1024 * 1024
+# A model request (system prompt, tool declarations, and full history) is stored
+# on a single trace line, so the private trace view needs a larger bound than
+# application logs to keep long sessions inspectable.
+MAX_TRACE_JSONL_LINE_BYTES = 8 * 1024 * 1024
+# The trace file is never trimmed, and each model-call span repeats the whole
+# conversation.  The dashboard reads only this much of its end, so a page load
+# stays bounded while recent model calls remain visible.
+MAX_TRACE_JSONL_TAIL_BYTES = 128 * 1024 * 1024
 # A bounded tail keeps scans recent and predictable even when the process has
 # accumulated months of local telemetry.  The scanner retains only the last
 # 10,000 valid records from this tail.
 MAX_JSONL_TAIL_BYTES = 16 * 1024 * 1024
 MAX_ACCEPTED_JSONL_RECORDS = 10_000
 MAX_DATABASE_ROWS = 100_000
-
-# Only these OpenTelemetry attributes are useful for an operator dashboard.
-# In particular, no prompt/content/tool argument attributes are included.
-TRACE_ATTRIBUTE_ALLOWLIST = frozenset(
-    {
-        "service.name",
-        "service.namespace",
-        "service.version",
-        "service.instance.id",
-        "gen_ai.system",
-        "gen_ai.request.model",
-        "gen_ai.response.model",
-        "gen_ai.operation.name",
-        "gen_ai.agent.name",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "gen_ai.usage.prompt_tokens",
-        "gen_ai.usage.completion_tokens",
-        "gen_ai.usage.prompt_token_count",
-        "gen_ai.usage.candidates_token_count",
-        "gen_ai.usage.cost",
-        "gen_ai.usage.cost_estimate",
-        "gen_ai.cost.upstream_inference_cost",
-        "gen_ai.cost.source",
-        "gen_ai.cost.kind",
-        "llm.token_count.input",
-        "llm.token_count.output",
-        "llm.token_count.total",
-        "llm.token_count.prompt",
-        "llm.token_count.completion",
-        "http.method",
-        "http.route",
-        "http.status_code",
-        "rpc.system",
-        "error.type",
-        "error.code",
-        "blacki.user_id",
-        "blacki.session_id",
-        "blacki.invocation_id",
-        "gcp.vertex.agent.session_id",
-        "gcp.vertex.agent.invocation_id",
-        "gen_ai.conversation.id",
-        "gen_ai.tool.name",
-        "agent.name",
-        "llm.model_name",
-        "session.id",
-        "user.id",
-    }
-)
 
 DEGRADED_DATABASE_WARNING = "Session data is temporarily unavailable."
 MISSING_EVENTS_WARNING = "Session event history is unavailable."

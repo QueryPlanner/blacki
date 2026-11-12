@@ -698,30 +698,6 @@ async def test_large_unknown_field_names_cannot_expand_error_responses(
     assert all(len(name) <= 160 for name in result["available_fields"])
 
 
-async def test_query_logging_redacts_inputs_and_results(
-    queries: Queries, capsys: pytest.CaptureFixture[str]
-) -> None:
-    from google.adk.tools import FunctionTool
-
-    from blacki.observability.privacy_logging import PrivacyAwareLoggingPlugin
-
-    plugin = PrivacyAwareLoggingPlugin()
-    tool = FunctionTool(func=query_health_data)
-    args = {"metric": "private-health-argument"}
-    await plugin.before_tool_callback(tool=tool, tool_args=args, tool_context=context())
-    await plugin.after_tool_callback(
-        tool=tool,
-        tool_args=args,
-        tool_context=context(),
-        result={"data": "private-health-value"},
-    )
-    output = capsys.readouterr().out
-    assert "query_health_data" in output
-    assert (
-        "private-health-argument" not in output and "private-health-value" not in output
-    )
-
-
 async def test_legacy_consent_cannot_query_archival_records(queries: Queries) -> None:
     await queries.add("daily-resting-heart-rate", [resting()])
     await queries.conn.execute(

@@ -118,13 +118,11 @@ class TestAgentCallbacks:
         assert "*** Starting agent 'test_agent'" in caplog.text
         assert "User Content:" not in caplog.text
 
-    def test_private_tool_mode_redacts_all_lifecycle_content(
+    def test_full_lifecycle_content_is_captured(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Prompts, responses, and all tool payloads stay out of secure logs."""
-        monkeypatch.setenv("R2_FILES_ENABLED", "true")
+        """Prompts, responses, and tool payloads are all written to local logs."""
         caplog.set_level(logging.DEBUG)
         callbacks = LoggingCallbacks()
         context = MockLoggingCallbackContext(
@@ -157,7 +155,6 @@ class TestAgentCallbacks:
             {"phone": "private-tool-result"},
         )
 
-        assert "redacted" in caplog.text
         for private_value in (
             "private-user-message",
             "private-model-request",
@@ -166,7 +163,7 @@ class TestAgentCallbacks:
             "private-tool-argument",
             "private-tool-result",
         ):
-            assert private_value not in caplog.text
+            assert private_value in caplog.text
 
     def test_after_agent_with_full_context(
         self,
@@ -395,59 +392,6 @@ class TestToolCallbacks:
         assert "*** After invoking tool 'test_tool'" in caplog.text
         assert "User Content:" not in caplog.text
         assert "Tool response: {'status': 'success'}" in caplog.text
-
-    def test_gmail_tool_payloads_are_redacted(
-        self,
-        mock_tool_context: MockToolContext,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Private Gmail arguments, responses, and user content stay out of logs."""
-        caplog.set_level(logging.DEBUG)
-        callbacks = LoggingCallbacks()
-        tool = MockBaseTool(name="gmail_send_draft")
-
-        cast(Any, callbacks.before_tool)(
-            tool,
-            {"address": "private-address"},
-            mock_tool_context,
-        )
-        cast(Any, callbacks.after_tool)(
-            tool,
-            {"address": "private-address"},
-            mock_tool_context,
-            {"phone": "private-phone"},
-        )
-
-        assert "gmail_send_draft" in caplog.text
-        assert "Private tool payload redacted" in caplog.text
-        assert "private-address" not in caplog.text
-        assert "private-phone" not in caplog.text
-
-    def test_tts_tool_payloads_are_redacted(
-        self,
-        mock_tool_context: MockToolContext,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Speech text stays out of before- and after-tool debug logs."""
-        caplog.set_level(logging.DEBUG)
-        callbacks = LoggingCallbacks()
-        tool = MockBaseTool(name="send_text_to_speech")
-
-        cast(Any, callbacks.before_tool)(
-            tool,
-            {"text": "private speech"},
-            mock_tool_context,
-        )
-        cast(Any, callbacks.after_tool)(
-            tool,
-            {"text": "private speech"},
-            mock_tool_context,
-            {"status": "success"},
-        )
-
-        assert "send_text_to_speech" in caplog.text
-        assert "Private tool payload redacted" in caplog.text
-        assert "private speech" not in caplog.text
 
 
 class TestEdgeCases:

@@ -18,17 +18,18 @@ process from a dependency-readiness failure.
 docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 ```
 
-Blacki also appends application JSON logs and traces to `logs/` on the host.
-Those files are separate from Docker's stdout logs and are not rotated by
-Docker log-driver settings. Monitor their size:
+Blacki also appends OpenTelemetry log records to `logs/blacki-telemetry.log` and
+spans to `logs/blacki-traces.log` on the host. Neither file is rotated or
+deleted by the application, so monitor them even when Docker's log-driver
+rotation is enabled:
 
 ```bash
 du -sh logs
 ```
 
-Define a host retention or log-rotation policy before long-running production
-use. Archive or clear old files only during a maintenance window after keeping
-anything required for incident analysis.
+The dashboard reads only the end of each file, so old lines do not slow down
+page loads. Archive or clear the files only during a maintenance window after
+keeping anything required for incident analysis.
 
 ## Restart
 

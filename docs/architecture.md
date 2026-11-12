@@ -216,9 +216,10 @@ The public ADK runner cannot call it. Blacki sends
 only the requested speech text to the configured Kokoro endpoint, accepts a
 bounded MP3 response, keeps it in memory, and serializes synthesis through
 Telegram upload so concurrent chats cannot retain multiple audio payloads. It
-does not retry Telegram delivery automatically. Configuring the tool disables
-content-rich ADK and OpenInference logging, although the local ADK session
-database still retains tool calls and arguments as normal conversation history.
+does not retry Telegram delivery automatically. Full prompts, tool arguments,
+and responses are kept in the local trace file for the private dashboard;
+the local ADK session database retains tool calls and arguments as normal
+conversation history.
 
 Google Health summaries are a separate read-only boundary. The connector uses
 the current Google Health API, not the legacy Fitbit Web API. It requests the

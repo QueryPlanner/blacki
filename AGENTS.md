@@ -125,7 +125,7 @@ observable foundation that can run on bare metal, a VPS, or a private cloud.
 *   **Model Interface:** OpenRouter (OpenAI-compatible HTTP) with native Google ADK Gemini fallback
 *   **Server:** FastAPI
 *   **Database:** PostgreSQL (via `asyncpg`)
-*   **Observability:** OpenTelemetry (OTel) with vendor-neutral OTLP configuration
+*   **Observability:** OpenTelemetry (OTel) with local JSON trace files
 *   **Infrastructure:** Docker, Docker Compose
 
 ## Building and Running

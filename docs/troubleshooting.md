@@ -67,31 +67,19 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --tail=200 agent
 Common causes are missing configuration, an invalid Telegram token, a database
 permission problem, or an exception while an enabled integration starts.
 
-## Startup rejects the OTLP trace protocol
+## Startup fails with "no OTLP exporter package"
 
-Blacki supports `grpc` and `http/protobuf`. Match the protocol to the collector:
+An `OTEL_EXPORTER_OTLP_*` endpoint is set, so ADK tries to add its OTLP
+exporters, but the package is not installed. Remove the variables to keep the
+local files only, or install `opentelemetry-exporter-otlp-proto-http`.
 
-```dotenv
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com:4318
-```
+## The dashboard shows no model calls
 
-A global HTTP endpoint receives `/v1/traces` automatically. A trace-specific
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` must be the complete signal URL and is used
-exactly as configured. gRPC endpoints cannot contain a path.
-
-Validate the environment against the candidate image without starting the
-service:
-
-```bash
-ENV_FILE=.env docker compose --env-file .env \
-  -f compose.yaml -f compose.prod.yaml run --rm --no-deps --no-build \
-  --entrypoint python agent -c \
-  'from blacki.observability.setup import validate_observability_environment; validate_observability_environment()'
-```
-
-The production workflow runs this preflight before stopping the existing
-container.
+Startup logs "GenAI content capture is off" when
+`OTEL_SEMCONV_STABILITY_OPT_IN` does not include `gen_ai_latest_experimental` or
+`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` is not `SPAN_ONLY` or
+`SPAN_AND_EVENT`. Older `.env` files set the second variable to `false`; change
+it to `SPAN_ONLY` and restart.
 
 ## /ready returns HTTP 503
 

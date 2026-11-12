@@ -102,6 +102,21 @@ details[open] > summary .caret { transform: rotate(225deg); }
 .tool { border-bottom: 1px solid var(--line); }
 .tool > summary { display: flex; align-items: center; justify-content: space-between; gap: .7rem; padding: .7rem .65rem; overflow-wrap: anywhere; }
 .tool p { padding: 0 .65rem .9rem; }
+.capture-messages, .tool-call-list { display: grid; gap: .65rem; list-style: none; padding: 0; }
+.capture-message, .tool-call { padding: .75rem .85rem; background: var(--bg); border-radius: var(--key-edge); }
+.capture-message-head, .tool-call-head { display: flex; justify-content: space-between; align-items: baseline; gap: .6rem; margin-bottom: .45rem; }
+.capture-message-head b, .tool-call-head b { font-size: .85rem; font-weight: 620; }
+.capture-message-head span, .tool-call-head span { color: var(--muted); font-size: .74rem; }
+.capture-message .message-text { max-width: none; }
+.capture-thought { color: var(--subtle); font-style: italic; }
+.capture-label { display: block; margin: .55rem 0 .3rem; color: var(--subtle); font-size: .74rem; font-weight: 550; }
+.capture-block .prompt { margin-top: 0; }
+.capture-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem 1rem; margin: .2rem 0 .8rem; }
+.capture-facts div { border-top: 1px solid var(--line); padding-top: .35rem; }
+.capture-facts dt { color: var(--subtle); font-size: .74rem; }
+.capture-facts dd { margin: .1rem 0 0; font-size: .9rem; overflow-wrap: anywhere; }
+.capture-subhead { font-size: .95rem; margin: 1rem 0 .35rem; }
+.tool-call .prompt { margin-top: .2rem; }
 .help { font-size: .82rem; color: var(--subtle); margin-top: .75rem; }
 .warning { font-size: .82rem; color: var(--subtle); margin: .6rem 0; }
 
@@ -193,6 +208,7 @@ details[open] > summary .caret { transform: rotate(225deg); }
   .wiki-split { grid-template-columns: minmax(0, 1fr); gap: .8rem; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .report-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .capture-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .log-entry > summary { grid-template-columns: 55px minmax(0, 1fr); gap: .25rem .5rem; }
   .log-entry > summary time { grid-column: 2; }
   .trace-link { grid-template-columns: minmax(0, 1fr) auto; }
