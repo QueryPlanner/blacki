@@ -51,7 +51,9 @@ from blacki.dashboard.data import (
     _window_bounds,
 )
 from blacki.dashboard.models import clamp_limit, clamp_offset
+from blacki.observability.costs import observe_openai_usage
 from blacki.observability.ledger import UsageRecord, write_usage_record
+from blacki.observability.lifecycle import begin_cost_capture
 
 
 def _make_db(path: Path) -> None:
@@ -318,7 +320,7 @@ async def test_cost_ledger_projects_cumulative_monthly_and_average_user_cost(
             user_id="user-1",
             session_id="session-1",
             invocation_id="inv-1",
-            model="openrouter/test",
+            model="openai/test",
             provider_response_id="generation-1",
             input_tokens=10,
             output_tokens=5,
@@ -338,7 +340,7 @@ async def test_cost_ledger_projects_cumulative_monthly_and_average_user_cost(
             user_id="user-1",
             session_id="session-1",
             invocation_id="inv-old",
-            model="openrouter/test",
+            model="openai/test",
             provider_response_id="generation-old",
             input_tokens=20,
             output_tokens=10,
@@ -358,7 +360,7 @@ async def test_cost_ledger_projects_cumulative_monthly_and_average_user_cost(
             user_id="user-2",
             session_id="session-2",
             invocation_id="inv-2",
-            model="openrouter/test",
+            model="openai/test",
             provider_response_id="generation-2",
             input_tokens=8,
             output_tokens=4,
@@ -410,7 +412,7 @@ async def test_estimated_costs_are_visible_when_exact_cost_is_unavailable(
             user_id="user-estimated",
             session_id="session-estimated",
             invocation_id="inv-estimated",
-            model="openrouter/test",
+            model="openai/test",
             provider_response_id="generation-estimated",
             input_tokens=10,
             output_tokens=5,
@@ -459,6 +461,92 @@ async def test_event_metadata_cost_is_used_when_ledger_is_not_present(
     overview = await DashboardStore(db_path, tmp_path).get_overview("all")
     assert overview["stats"]["cumulative_cost_usd"] == 0.003
     assert overview["stats"]["cost"]["source"] == "event_metadata"
+
+
+@pytest.mark.asyncio
+async def test_openai_catalog_estimate_is_displayed_with_its_cost(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    ledger_path = tmp_path / "costs.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-openai", "session-openai")
+    begin_cost_capture(
+        user_id="user-openai",
+        session_id="session-openai",
+        invocation_id="inv-openai",
+    )
+    # 10,000 input (4,000 cached) and 1,000 output on gpt-6.1-terra: no provider
+    # cost, so the ledger holds only the catalog estimate.
+    await observe_openai_usage(
+        {
+            "input_tokens": 10_000,
+            "input_tokens_details": {"cached_tokens": 4_000},
+            "output_tokens": 1_000,
+            "total_tokens": 11_000,
+        },
+        "gpt-6.1-terra",
+        ledger_path,
+    )
+
+    store = DashboardStore(db_path, tmp_path, cost_ledger_path=ledger_path)
+    overview = await store.get_overview("all")
+    assert overview["stats"]["cost_kind"] == "estimated"
+    assert overview["stats"]["cumulative_cost_usd"] is None
+    assert overview["stats"]["cumulative_estimated_cost_usd"] == pytest.approx(0.0112)
+    assert overview["stats"]["monthly_estimated_cost_usd"] == pytest.approx(0.0112)
+    assert overview["stats"]["cost"]["source"] == "ledger"
+
+    users = await store.list_users("", 50, 0)
+    assert users["items"][0]["monthly_estimated_cost_usd"] == pytest.approx(0.0112)
+    sessions = await store.list_sessions("user-openai", 50, 0)
+    assert sessions["items"][0]["monthly_estimated_cost_usd"] == pytest.approx(0.0112)
+
+
+@pytest.mark.asyncio
+async def test_estimate_only_event_metadata_is_displayed_without_ledger(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    _make_db(db_path)
+    _insert_session(db_path, "user-1", "session-1")
+    timestamp = datetime.now(tz=UTC).timestamp() - 10
+    event = _text_event("estimate-event", "model", "answer", timestamp)
+    event["usage_metadata"] = {"totalTokenCount": 11_000}
+    event["custom_metadata"] = {
+        "blacki.cost": {
+            "estimated_cost_usd": 0.0112,
+            "cost_kind": "estimate",
+            "cost_source": "catalog_price",
+        }
+    }
+    _insert_event(db_path, "estimate-event", "user-1", "session-1", timestamp, event)
+
+    store = DashboardStore(db_path, tmp_path)
+    overview = await store.get_overview("all")
+    assert overview["stats"]["cost_kind"] == "estimated"
+    assert overview["stats"]["cumulative_cost_usd"] is None
+    assert overview["stats"]["cumulative_estimated_cost_usd"] == pytest.approx(0.0112)
+    assert overview["stats"]["cost"]["source"] == "event_metadata"
+    sessions = await store.list_sessions("user-1", 50, 0)
+    assert sessions["items"][0]["monthly_estimated_cost_usd"] == pytest.approx(0.0112)
+
+
+def test_estimate_only_span_cost_is_projected_to_trace_items() -> None:
+    estimate_trace = _trace_item(
+        {
+            "context": {"trace_id": "estimate-trace"},
+            "attributes": {
+                "gen_ai.usage.cost_estimate": 0.0112,
+                "gen_ai.cost.kind": "estimate",
+                "gen_ai.cost.source": "catalog_price",
+            },
+        }
+    )
+    assert estimate_trace is not None
+    assert estimate_trace["cost_usd"] is None
+    assert estimate_trace["estimated_cost_usd"] == pytest.approx(0.0112)
+    assert estimate_trace["cost_source"] == "catalog_price"
 
 
 @pytest.mark.asyncio

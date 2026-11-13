@@ -2,7 +2,7 @@
 
 Blacki is a self-hosted personal assistant built with
 [Google ADK](https://google.github.io/adk-docs/). It runs on your own Linux
-server, talks to an LLM through OpenRouter or Google AI Studio, and can expose
+server, talks to an LLM through OpenAI or Google AI Studio, and can expose
 the assistant through Telegram long polling or the ADK web interface.
 
 Blacki keeps the runtime small and delegates expensive capabilities to managed

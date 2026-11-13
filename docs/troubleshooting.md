@@ -33,11 +33,11 @@ ENV_FILE=.env.production docker compose --env-file .env.production \
 
 Activate one provider:
 
-=== "OpenRouter"
+=== "OpenAI"
 
     ```dotenv
-    ROOT_AGENT_MODEL=openrouter/google/gemini-2.5-flash
-    OPENROUTER_API_KEY=replace-me
+    ROOT_AGENT_MODEL=gpt-6-luna
+    OPENAI_API_KEY=replace-me
     ```
 
 === "Google AI Studio"
@@ -48,6 +48,10 @@ Activate one provider:
     ```
 
 Do not leave an active placeholder for the provider you are not using.
+
+If startup names `OPENAI_API_KEY`, `ROOT_AGENT_MODEL` is an OpenAI model and the
+key is missing. If startup reports an unsupported `openrouter/...` value, use a
+catalog id such as `gpt-6-luna`, or a plain `gemini-*` id with `GOOGLE_API_KEY`.
 
 ## Telegram token validation fails
 

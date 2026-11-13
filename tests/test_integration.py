@@ -19,7 +19,7 @@ from blacki.agent import (
     AUTO_COMPACTION_TOKEN_THRESHOLD,
 )
 from blacki.models.factory import build_model
-from blacki.models.openrouter import OpenRouterLlm
+from blacki.models.openai_responses import OpenAIResponsesLlm
 
 
 class AgentConfigLike(Protocol):
@@ -99,7 +99,7 @@ class TestAgentIntegration:
 
         # Required: agent model
         assert typed_agent.model is not None
-        # model can be a string name or a model object (e.g. OpenRouterLlm)
+        # model can be a string name or a model object (e.g. OpenAIResponsesLlm)
         if isinstance(typed_agent.model, str):
             assert len(typed_agent.model) > 0
         else:
@@ -153,11 +153,11 @@ class TestAgentIntegration:
         assert "save_memory" not in tool_names
         assert "search_memory" not in tool_names
 
-    def test_openrouter_models_use_openrouter_adapter(self, monkeypatch) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-        monkeypatch.setenv("ROOT_AGENT_MODEL", "google/gemini-2.5-flash")
+    def test_openai_catalog_model_uses_responses_adapter(self, monkeypatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("ROOT_AGENT_MODEL", "gpt-6-luna")
 
         model = build_model()
 
-        assert isinstance(model, OpenRouterLlm)
-        assert model.model == "openrouter/google/gemini-2.5-flash"
+        assert isinstance(model, OpenAIResponsesLlm)
+        assert model.model == "gpt-6-luna"

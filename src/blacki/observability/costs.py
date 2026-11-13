@@ -1,4 +1,4 @@
-"""Capture provider-reported OpenRouter usage before ADK reduces the response."""
+"""Capture model usage and cost before ADK reduces the response."""
 
 from __future__ import annotations
 
@@ -11,17 +11,22 @@ import uuid
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from google.adk.models.llm_response import LlmResponse
 from opentelemetry import trace
 
+from ..models.catalog import get_model, normalize_model_id
 from .ledger import UsageRecord, write_usage_record
 
 logger = logging.getLogger("blacki.llm_costs")
 
 COST_METADATA_KEY = "blacki.cost"
+_OPENAI_PROVIDER = "openai"
+_TOKENS_PER_PRICE_UNIT = Decimal(1_000_000)
+_warned_unpriced_models: set[str] = set()
 
 
 CostObservation = dict[str, Any]
@@ -47,14 +52,6 @@ def _read_value(value: Any, key: str) -> Any:
     return getattr(value, key, None)
 
 
-def _first_value(value: Any, keys: tuple[str, ...]) -> Any:
-    for key in keys:
-        candidate = _read_value(value, key)
-        if candidate is not None:
-            return candidate
-    return None
-
-
 def _nonnegative_number(value: Any) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -70,89 +67,6 @@ def _nonnegative_number(value: Any) -> float | None:
 def _nonnegative_integer(value: Any) -> int | None:
     number = _nonnegative_number(value)
     return int(number) if number is not None else None
-
-
-def _selected_provider(response: Any) -> str | None:
-    metadata = _read_value(response, "openrouter_metadata")
-    endpoints = _read_value(_read_value(metadata, "endpoints"), "available")
-    if isinstance(endpoints, list):
-        for endpoint in endpoints:
-            provider = _read_value(endpoint, "provider")
-            if _read_value(endpoint, "selected") is True and isinstance(provider, str):
-                return provider[:256]
-    return None
-
-
-def extract_cost_observation(response: Any, model: str) -> CostObservation | None:
-    """Extract raw provider cost and token fields from an OpenRouter response."""
-    usage = _read_value(response, "usage")
-
-    reported_cost = _nonnegative_number(_first_value(usage, ("cost", "total_cost")))
-    cost_details = _read_value(usage, "cost_details")
-    upstream_cost = _nonnegative_number(
-        _first_value(
-            cost_details,
-            ("upstream_inference_cost", "upstream_cost"),
-        )
-    )
-    input_tokens = _nonnegative_integer(
-        _first_value(usage, ("prompt_tokens", "input_tokens"))
-    )
-    output_tokens = _nonnegative_integer(
-        _first_value(usage, ("completion_tokens", "output_tokens"))
-    )
-    total_tokens = _nonnegative_integer(_first_value(usage, ("total_tokens",)))
-    prompt_details = _read_value(usage, "prompt_tokens_details")
-    cached_tokens = _nonnegative_integer(_read_value(prompt_details, "cached_tokens"))
-    cache_write_tokens = _nonnegative_integer(
-        _read_value(prompt_details, "cache_write_tokens")
-    )
-    if (
-        cached_tokens is None
-        and cache_write_tokens is None
-        and reported_cost is None
-        and upstream_cost is None
-        and input_tokens is None
-        and output_tokens is None
-        and total_tokens is None
-    ):
-        return None
-
-    response_id = _first_value(response, ("id", "response_id", "generation_id"))
-    if response_id is not None:
-        response_id = str(response_id)[:256]
-    cost_kind = (
-        "reported"
-        if reported_cost is not None
-        else "upstream_only"
-        if upstream_cost is not None
-        else "unknown"
-    )
-    cost_source = (
-        "provider_usage"
-        if reported_cost is not None or upstream_cost is not None
-        else "usage_only"
-    )
-    resolved_model = _read_value(response, "model")
-    return {
-        "model": str(model)[:256],
-        "resolved_model": resolved_model[:256]
-        if isinstance(resolved_model, str)
-        else None,
-        "provider": _selected_provider(response),
-        "cached_tokens": cached_tokens,
-        "cache_write_tokens": cache_write_tokens,
-        "provider_response_id": response_id,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "total_tokens": total_tokens,
-        "cost_usd": reported_cost,
-        "upstream_cost_usd": upstream_cost,
-        "estimated_cost_usd": None,
-        "cost_kind": cost_kind,
-        "cost_source": cost_source,
-        "currency": "USD",
-    }
 
 
 def _begin_cost_capture(
@@ -215,15 +129,8 @@ def _remember_observation(observation: CostObservation) -> _CostCapture | None:
     return capture
 
 
-async def observe_response(
-    response: Any,
-    model: str,
-    ledger_path: Path,
-) -> None:
-    """Record one OpenRouter response payload in the local usage ledger."""
-    observation = extract_cost_observation(response, model)
-    if observation is None:
-        return
+async def _record_observation(observation: CostObservation, ledger_path: Path) -> None:
+    """Set span attributes, merge into the active capture, and write its ledger row."""
     _set_span_cost_attributes(observation)
     capture = _remember_observation(observation)
     if capture is None:
@@ -257,6 +164,135 @@ async def observe_response(
         await asyncio.to_thread(write_usage_record, ledger_path, record)
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("Unable to persist model usage to the local cost ledger")
+
+
+def _reset_unpriced_model_warnings() -> None:
+    """Forget which models already logged a missing-price warning (tests use this)."""
+    _warned_unpriced_models.clear()
+
+
+def _warn_unpriced_model_once(model: str) -> None:
+    key = normalize_model_id(model)[:256]
+    if key in _warned_unpriced_models:
+        return
+    _warned_unpriced_models.add(key)
+    logger.warning(
+        "No catalog price for model %s; recording tokens without a cost estimate.",
+        key,
+    )
+
+
+def _catalog_estimate_usd(
+    model: str,
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_tokens: int | None,
+    cache_write_tokens: int | None,
+) -> float | None:
+    """Estimate USD from catalog rates, or return None when that is not safe.
+
+    Reasoning tokens are not an input: OpenAI counts them inside output tokens.
+    Cache writes get their own rate only when the usage reports them and the
+    catalog prices them; otherwise they are priced as ordinary input.
+    """
+    entry = get_model(model)
+    if entry is None or entry.output is None:
+        _warn_unpriced_model_once(model)
+        return None
+    if input_tokens is None or output_tokens is None:
+        return None
+    write_rate = entry.cache_write
+    priced_writes = 0
+    if write_rate is not None and cache_write_tokens:
+        priced_writes = cache_write_tokens
+    cached = cached_tokens or 0
+    uncached = input_tokens - cached - priced_writes
+    if uncached < 0:
+        logger.warning(
+            "OpenAI usage counts more cached and cache-write tokens than input "
+            "tokens; recording tokens without a cost estimate."
+        )
+        return None
+    cost = (
+        Decimal(uncached) * Decimal(str(entry.input))
+        + Decimal(cached) * Decimal(str(entry.cached_input))
+        + Decimal(priced_writes) * Decimal(str(write_rate or 0))
+        + Decimal(output_tokens) * Decimal(str(entry.output))
+    )
+    return float(cost / _TOKENS_PER_PRICE_UNIT)
+
+
+def _openai_usage_observation(
+    usage: Mapping[str, Any],
+    model: str,
+) -> CostObservation | None:
+    """Build one observation from OpenAI Responses usage, or None without counts."""
+    input_details = _read_value(usage, "input_tokens_details")
+    input_tokens = _nonnegative_integer(_read_value(usage, "input_tokens"))
+    output_tokens = _nonnegative_integer(_read_value(usage, "output_tokens"))
+    total_tokens = _nonnegative_integer(_read_value(usage, "total_tokens"))
+    cached_tokens = _nonnegative_integer(_read_value(input_details, "cached_tokens"))
+    cache_write_tokens = _nonnegative_integer(
+        _read_value(input_details, "cache_write_tokens")
+    )
+    if cache_write_tokens is None:
+        cache_write_tokens = _nonnegative_integer(
+            _read_value(usage, "cache_write_tokens")
+        )
+    if all(
+        count is None
+        for count in (
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_write_tokens,
+        )
+    ):
+        return None
+    estimated = _catalog_estimate_usd(
+        model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cached_tokens=cached_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
+    return {
+        "model": str(model)[:256],
+        "resolved_model": None,
+        "provider": _OPENAI_PROVIDER,
+        "cached_tokens": cached_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "provider_response_id": None,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": None,
+        "upstream_cost_usd": None,
+        "estimated_cost_usd": estimated,
+        "cost_kind": "estimate" if estimated is not None else "unknown",
+        "cost_source": "catalog_price" if estimated is not None else "usage_only",
+        "currency": "USD",
+    }
+
+
+async def observe_openai_usage(
+    usage: Mapping[str, Any],
+    model: str,
+    ledger_path: Path,
+) -> CostObservation | None:
+    """Record one OpenAI Responses call's usage, priced from the model catalog.
+
+    Uses the request-scoped capture, dedupe, span and ledger path, so each model
+    call writes one ledger row. Returns the call's observation, or None when the
+    usage holds no token counts.
+    """
+    observation = _openai_usage_observation(usage, model)
+    if observation is None:
+        return None
+    await _record_observation(observation, ledger_path)
+    return observation
 
 
 def _attach_cost_metadata(response: LlmResponse) -> CostObservation | None:

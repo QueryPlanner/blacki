@@ -42,23 +42,23 @@ class TestValidateTelegramToken:
 
 
 class TestValidateApiKeys:
-    def test_has_openrouter_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+    def test_has_openai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         validate_api_keys()
 
     def test_has_google_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
         validate_api_keys()
 
     def test_has_both_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
         validate_api_keys()
 
     def test_no_api_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         with pytest.raises(MissingAPIKeyError, match="No LLM API key found"):
             validate_api_keys()
@@ -68,7 +68,7 @@ class TestValidateConfiguration:
     def test_valid_configuration_with_telegram(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("ROOT_AGENT_MODEL", raising=False)
 
@@ -82,9 +82,9 @@ class TestValidateConfiguration:
     def test_valid_configuration_without_telegram(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.setenv("ROOT_AGENT_MODEL", "openrouter/google/gemini-2.0-flash-001")
+        monkeypatch.setenv("ROOT_AGENT_MODEL", "gpt-6-luna")
 
         warnings = validate_configuration(
             telegram_enabled=False,
@@ -95,7 +95,7 @@ class TestValidateConfiguration:
     def test_telegram_enabled_but_no_token(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         with pytest.raises(TelegramAuthError, match="TELEGRAM_BOT_TOKEN is not set"):
@@ -104,14 +104,14 @@ class TestValidateConfiguration:
     def test_telegram_enabled_with_invalid_token(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         with pytest.raises(InvalidTokenFormatError):
             validate_configuration(telegram_enabled=True, telegram_token="invalid")
 
     def test_no_api_keys_with_telegram(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
         with pytest.raises(MissingAPIKeyError):

@@ -46,7 +46,7 @@ class TestServerEnv:
         assert env.reload_agents is False
         assert env.agent_engine is None
         assert env.sqlite_path is None
-        assert env.openrouter_api_key is None
+        assert env.openai_api_key is None
         assert env.allow_origins == '["http://127.0.0.1", "http://127.0.0.1:8080"]'
         assert env.host == "127.0.0.1"
 
@@ -105,7 +105,7 @@ class TestServerEnv:
             "RELOAD_AGENTS": "true",
             "AGENT_ENGINE": "test-engine-id",
             "SQLITE_PATH": "/tmp/blacki.db",
-            "OPENROUTER_API_KEY": "sk-or-v1-test",
+            "OPENAI_API_KEY": "sk-test",
             "ALLOW_ORIGINS": '["http://localhost:3000"]',
             "HOST": "0.0.0.0",  # noqa: S104
             "PORT": "9000",
@@ -119,7 +119,7 @@ class TestServerEnv:
         assert env.reload_agents is True
         assert env.agent_engine == "test-engine-id"
         assert env.sqlite_path == "/tmp/blacki.db"
-        assert env.openrouter_api_key == "sk-or-v1-test"
+        assert env.openai_api_key == "sk-test"
         assert env.allow_origins == '["http://localhost:3000"]'
         assert env.host == "0.0.0.0"  # noqa: S104
         assert env.port == 9000

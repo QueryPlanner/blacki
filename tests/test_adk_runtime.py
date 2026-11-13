@@ -2,11 +2,15 @@
 """Tests for shared ADK runtime helpers."""
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.adk.agents import LlmAgent
+from google.adk.agents.run_config import StreamingMode
+from google.adk.apps import App
 from google.adk.events import Event
 from google.adk.events._rewind_events import _apply_rewinds
 from google.adk.sessions import InMemorySessionService, Session
@@ -19,6 +23,8 @@ from blacki.models.inference import (
     ReasoningEffort,
     get_active_inference_profile,
 )
+from blacki.models.openai_items import item_metadata
+from blacki.models.openai_responses import OpenAIResponsesLlm
 from blacki.runtime.adk import (
     MODEL_RETURNED_NO_CONTENT,
     AdkRuntime,
@@ -54,7 +60,9 @@ def _build_server_env(**overrides: str) -> ServerEnv:
     [
         (None, None),
         ("gemini-2.5-flash", "google"),
-        ("openrouter/test-model", "openrouter"),
+        ("openai/test-model", "openai"),
+        ("gpt-6-luna", "openai"),
+        ("openrouter/openai/gpt-6.1-terra", "openai"),
         ("custom-model", None),
     ],
 )
@@ -336,7 +344,7 @@ async def test_run_user_turn_consumes_empty_response_event_before_raising() -> N
         yield Event(
             author="root_agent",
             invocation_id="empty-invocation",
-            model_version="openrouter/test-model",
+            model_version="openai/test-model",
             error_code=MODEL_RETURNED_NO_CONTENT,
             error_message=(
                 "The model returned no content (finish_reason=STOP with empty parts)."
@@ -353,13 +361,13 @@ async def test_run_user_turn_consumes_empty_response_event_before_raising() -> N
         await runtime.run_user_turn(
             locator=locator,
             message_text="Hello",
-            inference_profile=InferenceProfile(model="openrouter/test-model"),
+            inference_profile=InferenceProfile(model="openai/test-model"),
         )
 
     error = raised.value
     assert runner_finished is True
-    assert error.model == "openrouter/test-model"
-    assert error.provider == "openrouter"
+    assert error.model == "openai/test-model"
+    assert error.provider == "openai"
     assert error.invocation_id == "empty-invocation"
     assert error.retryable is True
     assert get_active_inference_profile() is None
@@ -378,7 +386,7 @@ async def test_run_user_turn_marks_empty_response_after_unusable_events() -> Non
         yield Event(
             author="root_agent",
             invocation_id="empty-final-invocation",
-            model_version="openrouter/test-model",
+            model_version="openai/test-model",
             content=types.Content(role="model", parts=[]),
         )
 
@@ -389,8 +397,8 @@ async def test_run_user_turn_marks_empty_response_after_unusable_events() -> Non
         await runtime.run_user_turn(locator=locator, message_text="Hello")
 
     error = raised.value
-    assert error.model == "openrouter/test-model"
-    assert error.provider == "openrouter"
+    assert error.model == "openai/test-model"
+    assert error.provider == "openai"
     assert error.invocation_id == "empty-final-invocation"
     assert error.retryable is True
 
@@ -1362,7 +1370,7 @@ async def test_run_user_turn_streaming_basic() -> None:
     assert chunks[1].content == "Final answer."
     assert chunks[2].is_partial is False
     assert chunks[2].thoughts == ""
-    assert chunks[2].content == ""
+    assert chunks[2].content == "Final answer."
 
 
 async def test_run_user_turn_streaming_consumes_error_event_before_raising() -> None:
@@ -1434,3 +1442,252 @@ async def test_run_user_turn_streaming_empty_content_and_partial_skips() -> None
     assert chunks[0].is_partial is False
     assert chunks[0].thoughts == ""
     assert chunks[0].content == ""
+
+
+_OPENAI_MODEL = "gpt-6.1-terra"
+_COMMENTARY_ITEM = {
+    "id": "msg_commentary",
+    "type": "message",
+    "role": "assistant",
+    "status": "completed",
+    "phase": "commentary",
+    "content": [
+        {
+            "type": "output_text",
+            "text": "Checking the calendar first.",
+            "annotations": [],
+        }
+    ],
+}
+_FINAL_ITEM = {
+    "id": "msg_final",
+    "type": "message",
+    "role": "assistant",
+    "status": "completed",
+    "phase": "final_answer",
+    "content": [
+        {"type": "output_text", "text": "You are free at noon.", "annotations": []}
+    ],
+}
+
+
+def _openai_text(text: str, item: Mapping[str, Any]) -> types.Part:
+    """A text part as the OpenAI adapter stores it, with its raw output item."""
+    return types.Part(text=text, part_metadata=item_metadata(_OPENAI_MODEL, item))
+
+
+def _calendar_call() -> types.Part:
+    return types.Part(
+        function_call=types.FunctionCall(
+            id="call_calendar", name="check_calendar", args={}
+        )
+    )
+
+
+async def test_run_user_turn_with_thoughts_drops_commentary_from_reply() -> None:
+    """Commentary in the same response as the final answer is kept out of the reply."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-commentary",
+        session_id_prefix="telegram-chat-commentary",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    _openai_text("Checking the calendar first.", _COMMENTARY_ITEM),
+                    _openai_text("You are free at noon.", _FINAL_ITEM),
+                ],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="When am I free?"
+        )
+
+    assert response.content == "You are free at noon."
+
+
+async def test_run_user_turn_keeps_only_final_answer_after_tool_preamble() -> None:
+    """A preamble before a tool call is history, and the answer comes later."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-preamble",
+        session_id_prefix="telegram-chat-preamble",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    _openai_text("Checking the calendar first.", _COMMENTARY_ITEM),
+                    _calendar_call(),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[_openai_text("You are free at noon.", _FINAL_ITEM)],
+            ),
+        )
+
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        response = await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="When am I free?"
+        )
+
+    assert response.content == "You are free at noon."
+
+
+async def test_run_user_turn_with_only_commentary_has_no_reply() -> None:
+    """A turn that produces only commentary has no reply to show."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-commentary-only",
+        session_id_prefix="telegram-chat-commentary-only",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[_openai_text("Checking the calendar first.", _COMMENTARY_ITEM)],
+            ),
+        )
+
+    with (
+        patch.object(runtime.runner, "run_async", fake_run_async),
+        pytest.raises(EmptyModelResponseError),
+    ):
+        await runtime.run_user_turn_with_thoughts(
+            locator=locator, message_text="When am I free?"
+        )
+
+
+async def test_run_user_turn_streaming_final_chunk_supersedes_streamed_commentary() -> (
+    None
+):
+    """Partial commentary can be streamed, but the final chunk holds only the answer."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-stream-commentary",
+        session_id_prefix="telegram-chat-stream-commentary",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        # Partial events carry no message phase, so this commentary is streamed.
+        yield Event(
+            author="root_agent",
+            partial=True,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Checking the calendar first.")],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[
+                    _openai_text("Checking the calendar first.", _COMMENTARY_ITEM),
+                    _calendar_call(),
+                ],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[_openai_text("You are free at noon.", _FINAL_ITEM)],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="When am I free?"
+        ):
+            chunks.append(chunk)
+
+    assert chunks[-1] == StreamChunk(
+        thoughts="", content="You are free at noon.", is_partial=False
+    )
+    streamed = [chunk.content for chunk in chunks[:-1] if chunk.content]
+    assert streamed == ["Checking the calendar first.", "You are free at noon."]
+
+
+async def test_run_user_turn_streaming_final_chunk_skips_tool_call_text() -> None:
+    """Text in a complete event that also calls a tool is not part of the reply."""
+    runtime = AdkRuntime(InMemorySessionService())
+    locator = SessionLocator(
+        user_id="telegram-chat-stream-tool-text",
+        session_id_prefix="telegram-chat-stream-tool-text",
+    )
+
+    async def fake_run_async(**kwargs: object) -> AsyncIterator[Event]:
+        del kwargs
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text="Looking that up."), _calendar_call()],
+            ),
+        )
+        yield Event(
+            author="root_agent",
+            partial=False,
+            content=types.Content(
+                role="model",
+                parts=[_openai_text("You are free at noon.", _FINAL_ITEM)],
+            ),
+        )
+
+    chunks: list[StreamChunk] = []
+    with patch.object(runtime.runner, "run_async", fake_run_async):
+        async for chunk in runtime.run_user_turn_streaming(
+            locator=locator, message_text="When am I free?"
+        ):
+            chunks.append(chunk)
+
+    assert chunks[-1].is_partial is False
+    assert chunks[-1].content == "You are free at noon."
+
+
+@pytest.mark.parametrize("streaming_mode", [StreamingMode.NONE, StreamingMode.SSE])
+def test_turn_config_sends_no_session_affinity_header(
+    streaming_mode: StreamingMode,
+) -> None:
+    """The OpenAI adapter needs no session-affinity header on any turn."""
+    model = OpenAIResponsesLlm(_OPENAI_MODEL, api_key="test-key")
+    runtime = AdkRuntime(
+        InMemorySessionService(),
+        agent_app=App(
+            name="turn_config_test",
+            root_agent=LlmAgent(name="root_agent", model=model),
+        ),
+    )
+
+    config = runtime._turn_config(streaming_mode=streaming_mode)
+
+    assert config.streaming_mode is streaming_mode
+    assert config.http_options is None

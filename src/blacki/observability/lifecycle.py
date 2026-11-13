@@ -10,11 +10,15 @@ from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.adk.tools import ToolContext
 from google.adk.tools.base_tool import BaseTool
+from google.genai import types
 
 from .costs import (
     _attach_cost_metadata,
     _begin_cost_capture,
 )
+
+# Part fields that carry provider reasoning state rather than readable text.
+_REDACTED_PART_FIELDS = ("part_metadata", "thought_signature")
 
 
 def begin_cost_capture(
@@ -34,6 +38,20 @@ def begin_cost_capture(
 def attach_cost_metadata(response: LlmResponse) -> dict[str, Any] | None:
     """Attach the captured cost to the current ADK response event."""
     return _attach_cost_metadata(response)
+
+
+def _content_for_log(content: types.Content) -> dict[str, Any]:
+    """Dump ``content`` for a debug log without encrypted reasoning.
+
+    ``part_metadata`` holds raw OpenAI output items, which include
+    ``encrypted_content``, and ``thought_signature`` is provider state. Neither
+    is written to logs (design D11). Readable text is kept.
+    """
+    data: dict[str, Any] = content.model_dump(exclude_none=True, mode="json")
+    for part in data.get("parts", []):
+        for field in _REDACTED_PART_FIELDS:
+            part.pop(field, None)
+    return data
 
 
 class LoggingCallbacks:
@@ -72,7 +90,7 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
         if user_content := callback_context.user_content:
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
+            content_data = _content_for_log(user_content)
             self.logger.debug(f"User Content: {content_data}")
 
         return None
@@ -91,7 +109,7 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
         if user_content := callback_context.user_content:
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
+            content_data = _content_for_log(user_content)
             self.logger.debug(f"User Content: {content_data}")
 
         return None
@@ -122,14 +140,12 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
         if user_content := callback_context.user_content:
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
+            content_data = _content_for_log(user_content)
             self.logger.debug(f"User Content: {content_data}")
 
         self.logger.debug(f"LLM request contains {len(llm_request.contents)} messages:")
         for i, content in enumerate(llm_request.contents, start=1):
-            self.logger.debug(
-                f"Content {i}: {content.model_dump(exclude_none=True, mode='json')}"
-            )
+            self.logger.debug(f"Content {i}: {_content_for_log(content)}")
 
         return None
 
@@ -152,11 +168,11 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {callback_context.state.to_dict().keys()}")
 
         if user_content := callback_context.user_content:
-            content_data = user_content.model_dump(exclude_none=True, mode="json")
+            content_data = _content_for_log(user_content)
             self.logger.debug(f"User Content: {content_data}")
 
         if llm_content := llm_response.content:
-            response_data = llm_content.model_dump(exclude_none=True, mode="json")
+            response_data = _content_for_log(llm_content)
             self.logger.debug(f"LLM response: {response_data}")
 
         cost_observation = attach_cost_metadata(llm_response)
@@ -199,9 +215,7 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:
-            self.logger.debug(
-                f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
-            )
+            self.logger.debug(f"User Content: {_content_for_log(content)}")
 
         actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
         self.logger.debug(f"EventActions: {actions_data}")
@@ -233,9 +247,7 @@ class LoggingCallbacks:
         self.logger.debug(f"State keys: {tool_context.state.to_dict().keys()}")
 
         if content := tool_context.user_content:
-            self.logger.debug(
-                f"User Content: {content.model_dump(exclude_none=True, mode='json')}"
-            )
+            self.logger.debug(f"User Content: {_content_for_log(content)}")
 
         actions_data = tool_context.actions.model_dump(exclude_none=True, mode="json")
         self.logger.debug(f"EventActions: {actions_data}")

@@ -3,20 +3,19 @@
 import contextlib
 import logging
 import os
-import re
 from collections.abc import Awaitable, Callable, Sequence
 
 from blacki.models.capabilities import (
+    CatalogCapabilitiesResolver,
     ModelCapabilities,
-    OpenRouterModelCapabilitiesResolver,
 )
+from blacki.models.catalog import get_model, normalize_model_id, supported_model_ids
 from blacki.models.inference import (
     InferenceProfile,
     ReasoningConfig,
     ReasoningEffort,
     update_inference_profile,
 )
-from blacki.models.openrouter_ids import canonical_openrouter_model_id
 from blacki.utils.preferences import get_preferences_storage
 
 from .api import TelegramApiClient
@@ -25,10 +24,10 @@ from .types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Pa
 
 logger = logging.getLogger(__name__)
 
-_OPENROUTER_MODEL_ID = re.compile(
-    r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:-]*"
+_MODEL_USAGE = "Use /model <model-id> or /model default."
+_OPENAI_NOT_CONFIGURED = (
+    "OpenAI is not configured. Set OPENAI_API_KEY before selecting an OpenAI model."
 )
-_MODEL_USAGE = "Use /model <author/model-id> or /model default."
 
 _SETTINGS_MODEL_PREFIX = "s:m:"
 _SETTINGS_REASONING_PREFIX = "s:r:"
@@ -50,6 +49,12 @@ _REASONING_LABELS = {
 ProfileLoader = Callable[[int | str], Awaitable[InferenceProfile]]
 
 
+def _unknown_model_text(model_id: str) -> str:
+    """Explain an unsupported /model value and list the catalog ids."""
+    supported = ", ".join(supported_model_ids())
+    return f"Unknown model: {model_id}\nSupported models: {supported}\n{_MODEL_USAGE}"
+
+
 class SettingsMenu:
     """Inline-keyboard settings UI for choosing model and reasoning effort.
 
@@ -66,7 +71,7 @@ class SettingsMenu:
     ) -> None:
         self._api_provider = api_provider
         self._load_profile = load_profile
-        self._capabilities_resolver: OpenRouterModelCapabilitiesResolver | None = None
+        self._capabilities_resolver: CatalogCapabilitiesResolver | None = None
 
     @property
     def _api(self) -> TelegramApiClient:
@@ -116,22 +121,21 @@ class SettingsMenu:
     async def set_model(
         self, chat_id: int, message_thread_id: int | None, model_id: str
     ) -> None:
-        """Save an exact OpenRouter ID for subsequent turns in this chat."""
+        """Save a catalog model id for subsequent turns in this chat."""
         selected: str | None = None
         if model_id != "default":
-            canonical = canonical_openrouter_model_id(model_id)
-            if _OPENROUTER_MODEL_ID.fullmatch(canonical) is None:
-                await self._send_model_result(chat_id, message_thread_id, _MODEL_USAGE)
-                return
-            if not os.getenv("OPENROUTER_API_KEY", "").strip():
+            entry = get_model(model_id)
+            if entry is None:
                 await self._send_model_result(
-                    chat_id,
-                    message_thread_id,
-                    "OpenRouter is not configured. Set OPENROUTER_API_KEY "
-                    "before selecting an OpenRouter model.",
+                    chat_id, message_thread_id, _unknown_model_text(model_id)
                 )
                 return
-            selected = f"openrouter/{canonical}"
+            if not os.getenv("OPENAI_API_KEY", "").strip():
+                await self._send_model_result(
+                    chat_id, message_thread_id, _OPENAI_NOT_CONFIGURED
+                )
+                return
+            selected = entry.id
 
         try:
             await update_inference_profile(
@@ -200,7 +204,7 @@ class SettingsMenu:
             f"Model: **{current_display_name}**\n"
             f"Thinking: **{current_thinking}**\n\n"
             f"{_MODEL_USAGE}\n"
-            "Copy the exact ID from OpenRouter. Changes apply to the next turn."
+            "Changes apply to the next turn."
         )
         return text, InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -256,7 +260,7 @@ class SettingsMenu:
 
         if action == "model" and value != "m_default":
             await self._api.answer_callback_query(
-                query.id, text="Model preset expired. Use /model <author/model-id>."
+                query.id, text="Model preset expired. Use /model <model-id>."
             )
             return
         if action == "reasoning" and value not in {
@@ -391,16 +395,13 @@ class SettingsMenu:
     async def _resolve_capabilities(
         self, model_id: str | None
     ) -> ModelCapabilities | None:
-        """Resolve OpenRouter reasoning metadata without blocking turns."""
+        """Resolve reasoning efforts from the OpenAI model catalog."""
         if not model_id or model_id == "default":
             return None
         try:
             if self._capabilities_resolver is None:
-                self._capabilities_resolver = OpenRouterModelCapabilitiesResolver()
-            return await self._capabilities_resolver.resolve(
-                model_id,
-                openrouter_routed=bool(os.getenv("OPENROUTER_API_KEY")),
-            )
+                self._capabilities_resolver = CatalogCapabilitiesResolver()
+            return await self._capabilities_resolver.resolve(model_id)
         except Exception:
             logger.exception("Failed to resolve model capabilities for %s", model_id)
             return None
@@ -412,10 +413,13 @@ class SettingsMenu:
 
     @staticmethod
     def _model_display_name(model_id: str) -> str:
-        """Show the exact API ID, including its provider and variant."""
+        """Show a catalog model's display name, or its plain id when unknown."""
         if model_id == "default":
             return "System Default"
-        return canonical_openrouter_model_id(model_id)
+        entry = get_model(model_id)
+        if entry is not None:
+            return entry.display_name
+        return normalize_model_id(model_id)
 
     @staticmethod
     def _effort_value(value: object) -> str | None:

@@ -1,11 +1,12 @@
 """Request-scoped model and reasoning controls for ADK turns.
 
-The ADK ``LlmRequest`` does not expose a provider-neutral field for arbitrary
-OpenRouter parameters.  OpenRouter's reasoning object is therefore carried in
-``GenerateContentConfig.http_options.extra_body`` and merged into the request
-body by Blacki's OpenRouter adapter.  This module keeps the profile immutable
-and request-scoped so concurrent Telegram turns cannot change one another's
-model settings.
+The ADK ``LlmRequest`` has no field for reasoning settings that the request
+builder can read.  The reasoning object is therefore carried in
+``GenerateContentConfig.http_options.extra_body["reasoning"]``, and Blacki's
+OpenAI Responses adapter reads it from there and sends the typed
+``reasoning`` field.  This module keeps the profile immutable and
+request-scoped so concurrent Telegram turns cannot change one another's model
+settings.
 """
 
 from __future__ import annotations
@@ -32,7 +33,11 @@ LEGACY_MODEL_PREFERENCE_KEY = "telegram_model_override"
 
 
 class ReasoningEffort(str, Enum):
-    """Gateway effort values accepted by the OpenRouter reasoning object."""
+    """Reasoning effort values Blacki can request.
+
+    Each catalog model accepts a subset of these values. The override plugin
+    checks the subset before sending one.
+    """
 
     NONE = "none"
     MINIMAL = "minimal"
@@ -43,17 +48,17 @@ class ReasoningEffort(str, Enum):
     MAX = "max"
 
 
-# Descriptive alias for callers that want to distinguish gateway values from
-# provider-specific future reasoning settings.
+# Descriptive alias for callers that want to name the values as request-level
+# effort settings rather than as model-specific ones.
 GatewayReasoningEffort = ReasoningEffort
 
 
 class ReasoningConfig(BaseModel):
     """Provider-neutral reasoning settings.
 
-    ``effort`` is the currently supported OpenRouter gateway control.  The
-    optional ``max_tokens`` field leaves room for providers that expose a
-    token budget instead of an effort enum.  Exactly one control is accepted
+    ``effort`` is the control the OpenAI adapter sends as ``reasoning.effort``.
+    The optional ``max_tokens`` field leaves room for providers that expose a
+    token budget instead of an effort enum. Exactly one control is accepted
     at a time so an invalid mixed provider request cannot be sent silently.
     """
 
@@ -111,7 +116,7 @@ def get_active_inference_profile() -> InferenceProfile | None:
 
 
 def reasoning_payload(reasoning: ReasoningConfig) -> dict[str, Any]:
-    """Serialize reasoning settings to the OpenRouter request shape."""
+    """Serialize reasoning settings to the ``extra_body`` reasoning shape."""
 
     return reasoning.model_dump(mode="json", exclude_none=True)
 

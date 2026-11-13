@@ -22,7 +22,7 @@ from google.genai import types
 
 from blacki.container import AppContainer, reset_container_for_tests, set_container
 from blacki.health.config import GOOGLE_HEALTH_NUTRITION_SCOPES
-from blacki.models.openrouter_request import build_chat_request
+from blacki.models.openai_request import build_responses_request
 from blacki.observability.lifecycle import LoggingCallbacks
 from blacki.telegram.progress import describe_tool
 from blacki.telegram.progress_callbacks import (
@@ -508,10 +508,10 @@ def test_compact_meal_schemas_reduce_actual_provider_payload() -> None:
     legacy.append_tools([FunctionTool(function) for function in MEAL_ACTIONS.values()])
     compact = LlmRequest()
     compact.append_tools(create_meal_tools())
-    legacy_tools = build_chat_request(legacy, model="google/gemini-2.5-flash").tools
-    compact_tools = build_chat_request(compact, model="google/gemini-2.5-flash").tools
+    legacy_tools = build_responses_request(legacy, model="gpt-6-luna").tools
+    compact_tools = build_responses_request(compact, model="gpt-6-luna").tools
     assert len(json.dumps(compact_tools)) < len(json.dumps(legacy_tools)) * 0.3
-    assert [tool["function"]["name"] for tool in compact_tools or []] == [
+    assert [tool["name"] for tool in compact_tools] == [
         "meals",
         "describe_action",
     ]

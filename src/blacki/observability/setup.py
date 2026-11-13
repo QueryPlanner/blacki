@@ -62,6 +62,8 @@ GENAI_TELEMETRY_DEFAULTS = {
     ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS: "false",
 }
 _SPAN_CONTENT_MODES = frozenset({"SPAN_ONLY", "SPAN_AND_EVENT"})
+# ADK treats only these values of its legacy span-content flag as off.
+_LEGACY_CAPTURE_OFF_VALUES = frozenset({"0", "false"})
 
 
 @dataclass(frozen=True)
@@ -89,9 +91,30 @@ def configure_otel_resource(agent_name: str) -> None:
 
 
 def configure_genai_telemetry() -> None:
-    """Apply the GenAI telemetry defaults without overriding operator values."""
+    """Apply the GenAI telemetry defaults and keep legacy span content off.
+
+    Operator values for the other variables are kept. The legacy content flag is
+    the exception: ADK's legacy span format writes whole message parts, including
+    encrypted reasoning, so it is forced off (design D11).
+    """
     for name, value in GENAI_TELEMETRY_DEFAULTS.items():
         os.environ.setdefault(name, value)
+    _force_legacy_span_content_off()
+
+
+def _force_legacy_span_content_off() -> None:
+    """Set ADK's legacy span-content flag to false, warning on an override."""
+    requested = os.environ.get(ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS)
+    os.environ[ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS] = "false"
+    if (
+        requested is not None
+        and requested.strip().lower() not in _LEGACY_CAPTURE_OFF_VALUES
+    ):
+        logger.warning(
+            "%s is overridden to false. The legacy span format would export whole "
+            "message parts, including encrypted reasoning.",
+            ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS,
+        )
 
 
 def genai_content_capture_enabled() -> bool:

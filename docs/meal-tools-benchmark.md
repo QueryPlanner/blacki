@@ -1,13 +1,15 @@
 # Meals tool pilot measurement
 
-Measured on 2026-10-23 against the handlers and OpenRouter request adapter in
-this change. These are local tokenizer estimates, not provider usage, bills,
-or real-model task success measurements.
+Measured on 2026-10-23 against the handlers and the OpenRouter request adapter
+that was in place then. That adapter has since been removed, so these figures
+were not re-measured for the OpenAI Responses request builder. These are local
+tokenizer estimates, not provider usage, bills, or real-model task success
+measurements.
 
 ## Initial schemas
 
 The seven original meal functions use 820 `cl100k_base` tokens or 850
-`o200k_base` tokens after serialization by the production OpenRouter adapter.
+`o200k_base` tokens after serialization by the OpenRouter adapter in place at the time.
 The compact `meals` tool plus `describe_action` use 188 or 190 tokens,
 respectively. This is a 77.1–77.6% reduction in the initial meals schema.
 

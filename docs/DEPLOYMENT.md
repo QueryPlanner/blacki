@@ -13,7 +13,7 @@ You need:
 - a VPS you can reach over SSH;
 - a user with permission to run Docker;
 - Git;
-- an [OpenRouter](https://openrouter.ai/keys) key or a
+- an [OpenAI API key](https://platform.openai.com/api-keys) or a
   [Google AI Studio](https://aistudio.google.com/apikey) key; and
 - for Telegram, a token from
   [BotFather](https://core.telegram.org/bots/features#botfather).
@@ -57,8 +57,8 @@ Open `.env` in your editor and replace every `replace-me` value:
 
 ```dotenv
 AGENT_NAME=my-blacki
-ROOT_AGENT_MODEL=openrouter/google/gemini-2.5-flash
-OPENROUTER_API_KEY=replace-me
+ROOT_AGENT_MODEL=gpt-6-luna
+OPENAI_API_KEY=replace-me
 TELEGRAM_ENABLED=true
 TELEGRAM_BOT_TOKEN=replace-me
 ```
@@ -246,3 +246,20 @@ both supported overlays force loopback. Production also forces the UI and
 reload off, while the development overlay enables both without public
 exposure. After the first successful start, continue with
 [Day-two operations](operations.md).
+
+## Migrating from OpenRouter
+
+Blacki no longer routes model calls through OpenRouter. Before you deploy this
+version:
+
+1. Add an `OPENAI_API_KEY` GitHub Actions secret. The publish workflow writes it
+   to the server's `.env` in place of `OPENROUTER_API_KEY`.
+2. Set the `ROOT_AGENT_MODEL` GitHub Actions secret to a catalog id such as
+   `gpt-6-luna`. The legacy `openrouter/openai/<id>` form still works for OpenAI
+   models.
+3. For native Gemini, set `ROOT_AGENT_MODEL` to a plain id such as
+   `gemini-2.5-flash` and keep `GOOGLE_API_KEY`. Any other `openrouter/...`
+   value stops startup.
+
+Blacki no longer reads `OPENROUTER_API_KEY`, so an old value left in `.env` has
+no effect.

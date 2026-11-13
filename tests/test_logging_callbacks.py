@@ -17,7 +17,11 @@ from conftest import (
     MockState,
     MockToolContext,
 )
+from google.adk.models.llm_request import LlmRequest
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
 
+from blacki.models.openai_items import item_metadata
 from blacki.observability.lifecycle import LoggingCallbacks
 
 # Note: Custom mock classes (conftest.py) use duck typing to match ADK interfaces.
@@ -726,3 +730,82 @@ class TestWalrusOperators:
         caplog.clear()
         callbacks.after_tool(MockBaseTool(), {}, tool_context_none, {})  # type: ignore
         assert "User Content:" not in caplog.text
+
+
+_ENCRYPTED_FIXTURE = "ENC_fixture_reasoning_blob"
+_REASONING_ITEM = {
+    "id": "rs_redaction",
+    "type": "reasoning",
+    "summary": [{"type": "summary_text", "text": "Checking the meal log."}],
+    "encrypted_content": _ENCRYPTED_FIXTURE,
+}
+_ANSWER_ITEM = {
+    "id": "msg_redaction",
+    "type": "message",
+    "role": "assistant",
+    "status": "completed",
+    "phase": "final_answer",
+    "content": [
+        {"type": "output_text", "text": "Two meals logged.", "annotations": []}
+    ],
+}
+_LEAKED_FRAGMENTS = (
+    _ENCRYPTED_FIXTURE,
+    "encrypted_content",
+    "blacki_openai",
+    "part_metadata",
+    "thought_signature",
+)
+
+
+def _replayed_content() -> types.Content:
+    """Model content as replayed from an OpenAI turn, with reasoning state."""
+    return types.Content(
+        role="model",
+        parts=[
+            types.Part(
+                text="Checking the meal log.",
+                thought=True,
+                thought_signature=b"signature-bytes",
+                part_metadata=item_metadata("gpt-6.1-terra", _REASONING_ITEM),
+            ),
+            types.Part(
+                text="Two meals logged.",
+                part_metadata=item_metadata("gpt-6.1-terra", _ANSWER_ITEM),
+            ),
+        ],
+    )
+
+
+def test_before_model_debug_log_omits_encrypted_reasoning(
+    mock_logging_callback_context: MockLoggingCallbackContext,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A replayed request is logged without reasoning state, text kept."""
+    caplog.set_level(logging.DEBUG)
+    callbacks = LoggingCallbacks()
+    llm_request = LlmRequest(contents=[_replayed_content()])
+
+    callbacks.before_model(mock_logging_callback_context, llm_request)  # type: ignore
+
+    assert "Two meals logged." in caplog.text
+    assert "Checking the meal log." in caplog.text
+    for fragment in _LEAKED_FRAGMENTS:
+        assert fragment not in caplog.text
+
+
+def test_after_model_debug_log_omits_encrypted_reasoning(
+    mock_logging_callback_context: MockLoggingCallbackContext,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A model response is logged without reasoning state, text kept."""
+    caplog.set_level(logging.DEBUG)
+    callbacks = LoggingCallbacks()
+    llm_response = LlmResponse(content=_replayed_content())
+
+    callbacks.after_model(mock_logging_callback_context, llm_response)  # type: ignore
+
+    assert "LLM response:" in caplog.text
+    assert "Two meals logged." in caplog.text
+    for fragment in _LEAKED_FRAGMENTS:
+        assert fragment not in caplog.text

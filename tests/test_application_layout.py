@@ -36,8 +36,8 @@ def _subprocess_environment() -> dict[str, str]:
     environment.update(
         {
             "AGENT_NAME": "layout-test-agent",
-            "OPENROUTER_API_KEY": "layout-test-key",
-            "ROOT_AGENT_MODEL": "openrouter/openai/gpt-5.6-luna",
+            "OPENAI_API_KEY": "layout-test-key",
+            "ROOT_AGENT_MODEL": "gpt-6-luna",
             "TELEGRAM_ENABLED": "false",
             "SERVE_WEB_INTERFACE": "false",
             "RELOAD_AGENTS": "false",

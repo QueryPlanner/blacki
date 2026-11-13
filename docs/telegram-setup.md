@@ -201,7 +201,7 @@ Open the bot in Telegram and send:
 | --- | --- |
 | `/start` | Show the welcome message |
 | `/help` | Show the supported command summary |
-| `/model <author/model-id>` | Use an exact OpenRouter model ID for the next turn |
+| `/model <model-id>` | Use a supported OpenAI model ID for later turns in this chat |
 | `/model default` | Restore the configured deployment model |
 | `/model` or `/models` | Show the active model, command usage, and thinking settings |
 | `/thinking` | Open the supported reasoning-effort choices for the active model |
@@ -218,17 +218,19 @@ If Kokoro speech is configured, ask the bot to “send that as audio” and conf
 Telegram receives an MP3 in its native audio player. Kokoro failures return a
 text error and do not create a local audio file.
 
-Send `/model author/model-id` with the exact ID from
-[OpenRouter](https://openrouter.ai/docs/api_reference/overview), for example
-`/model openai/gpt-5.2`. The optional `openrouter/` transport prefix is also
-accepted, as in `/model openrouter/openai/gpt-5.2`. Variant suffixes such as
-`:free` are preserved. There is no preset model list. `/model` and `/models`
-show the complete active ID and the thinking and reset controls.
+Send `/model <model-id>` with one of the supported OpenAI IDs: `gpt-6-luna`,
+`gpt-6.1-terra`, `gpt-6.1-sol`, or `gpt-6-astra`. The legacy form
+`/model openrouter/openai/<model-id>` is also accepted and saved as `<model-id>`.
+Any other ID is rejected, and the reply lists the supported IDs. `/model` and
+`/models` show the active model, command usage, and the thinking and reset
+controls.
 
-Blacki checks the ID's syntax and saves the selection; OpenRouter checks model
-availability and account access when the next message runs. Custom selections
-require `OPENROUTER_API_KEY` on the Blacki host. They reuse that configured
-account and may change model costs, context limits, and tool or image support.
+The list is fixed in Blacki's model catalog. Blacki does not query OpenAI for
+available models, so adding a model requires a Blacki update. Selecting an OpenAI
+model requires `OPENAI_API_KEY` on the Blacki host. Without it, the reply says
+OpenAI is not configured. A chat that saved a legacy OpenAI selection keeps that
+model when its ID is in the catalog. Any other saved selection uses the
+deployment default.
 
 `/model default` clears the chat override. The default remains `ROOT_AGENT_MODEL`,
 which the deployment workflow takes from the GitHub Actions secret of the same

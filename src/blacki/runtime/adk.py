@@ -17,8 +17,9 @@ from google.adk.sessions.base_session_service import BaseSessionService
 from google.adk.sessions.database_session_service import DatabaseSessionService
 from google.genai import types
 
+from ..models.catalog import get_model
 from ..models.inference import InferenceProfile, inference_profile_context
-from ..models.openrouter import OpenRouterLlm
+from ..models.openai_items import is_commentary
 from ..utils.config import ServerEnv
 from ..wiki import wiki_configured
 from ..wiki.tools import wiki_origin
@@ -84,9 +85,29 @@ class PendingConfirmation:
     tool_args: dict[str, Any]
 
 
+def _thought_text(parts: Sequence[types.Part]) -> str:
+    """Join the reasoning-summary text of one event's parts."""
+    return " ".join(p.text for p in parts if getattr(p, "thought", False) and p.text)
+
+
+def _reply_text(parts: Sequence[types.Part]) -> str:
+    """Join the text of one event's parts that belongs in the reply.
+
+    Thoughts are excluded. So is commentary, the preamble a model writes before
+    a tool call (design D13): it stays in history but is not part of the answer.
+    """
+    return " ".join(
+        p.text
+        for p in parts
+        if not getattr(p, "thought", False) and p.text and not is_commentary(p)
+    )
+
+
 def _provider_from_model(model: str | None) -> str | None:
     if not model:
         return None
+    if get_model(model) is not None:
+        return "openai"
     if "/" in model:
         return model.split("/", 1)[0]
     if model.casefold().startswith(("gemini", "gemma")):
@@ -318,19 +339,12 @@ class AdkRuntime:
         )
 
     def _turn_config(
-        self, session: Session, *, streaming_mode: StreamingMode = StreamingMode.NONE
+        self, *, streaming_mode: StreamingMode = StreamingMode.NONE
     ) -> RunConfig:
-        model = getattr(self.app.root_agent, "model", None)
-        http_options = None
-        if isinstance(model, OpenRouterLlm):
-            affinity_id = model.session_affinity_id(
-                app=session.app_name, user=session.user_id, session=session.id
-            )
-            http_options = types.HttpOptions(headers={"x-session-id": affinity_id})
         return RunConfig(
             streaming_mode=streaming_mode,
             custom_metadata=wiki_origin() if wiki_configured() else None,
-            http_options=http_options,
+            http_options=None,
         )
 
     def wiki_history_path(self) -> Path | None:
@@ -478,7 +492,7 @@ class AdkRuntime:
                 user_id=locator.user_id,
                 session_id=session.id,
                 new_message=new_message,
-                run_config=self._turn_config(session),
+                run_config=self._turn_config(),
                 state_delta=state,
             ):
                 if event.invocation_id:
@@ -524,16 +538,8 @@ class AdkRuntime:
                 )
 
                 if event.content and event.content.parts:
-                    event_thoughts = " ".join(
-                        p.text
-                        for p in event.content.parts
-                        if getattr(p, "thought", False) and p.text
-                    )
-                    event_content = " ".join(
-                        p.text
-                        for p in event.content.parts
-                        if not getattr(p, "thought", False) and p.text
-                    )
+                    event_thoughts = _thought_text(event.content.parts)
+                    event_content = _reply_text(event.content.parts)
 
                     if event_thoughts:
                         if event.partial:
@@ -585,6 +591,10 @@ class AdkRuntime:
         """Yield streaming chunks as ADK events arrive.
 
         The final chunk has is_partial=False, indicating the stream is complete.
+        Its content is the reply without commentary and supersedes earlier
+        partial chunks. Partial chunks can include commentary text, because a
+        partial event carries no message phase. It is empty when no complete
+        event contributed reply text.
 
         Note: This method is implemented and tested but not yet integrated into
         the Telegram bot. It is available for future streaming support.
@@ -595,9 +605,10 @@ class AdkRuntime:
             parts=[types.Part.from_text(text=message_text)],
         )
 
-        streaming_config = self._turn_config(session, streaming_mode=StreamingMode.SSE)
+        streaming_config = self._turn_config(streaming_mode=StreamingMode.SSE)
         pending_error: RuntimeError | None = None
         tool_calls_seen = False
+        reply_parts: list[str] = []
 
         with inference_profile_context(inference_profile):
             async for event in self.runner.run_async(
@@ -617,16 +628,8 @@ class AdkRuntime:
                     )
 
                 if event.content and event.content.parts:
-                    event_thoughts = " ".join(
-                        p.text
-                        for p in event.content.parts
-                        if getattr(p, "thought", False) and p.text
-                    )
-                    event_content = " ".join(
-                        p.text
-                        for p in event.content.parts
-                        if not getattr(p, "thought", False) and p.text
-                    )
+                    event_thoughts = _thought_text(event.content.parts)
+                    event_content = _reply_text(event.content.parts)
 
                     if event_thoughts or event_content:
                         yield StreamChunk(
@@ -634,13 +637,20 @@ class AdkRuntime:
                             content=event_content,
                             is_partial=True,
                         )
+                    # Partial events carry no message phase, so commentary in
+                    # them is streamed. A complete event is filtered above, and
+                    # its reply text is kept for the final chunk.
+                    if not event.partial and event_content and not event_function_calls:
+                        reply_parts.append(event_content)
 
         if pending_error is not None:
             raise pending_error
 
+        # The final chunk carries the complete reply without commentary. It
+        # supersedes any partial commentary the consumer already displayed.
         yield StreamChunk(
             thoughts="",
-            content="",
+            content=" ".join(reply_parts).strip(),
             is_partial=False,
         )
 

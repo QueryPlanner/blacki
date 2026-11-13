@@ -104,7 +104,7 @@ jobs:
           HOST_BIND_IP: ${{ secrets.HOST_BIND_IP }}
           # App secrets for .env generation
           AGENT_NAME: ${{ secrets.AGENT_NAME }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ROOT_AGENT_MODEL: ${{ secrets.ROOT_AGENT_MODEL }}
           TELEGRAM_ENABLED: ${{ secrets.TELEGRAM_ENABLED }}
           TELEGRAM_ACCESS_CODE: ${{ secrets.TELEGRAM_ACCESS_CODE }}
@@ -177,7 +177,7 @@ jobs:
           python3 scripts/write_compose_env.py "$LOCAL_ENV_FILE" \
             HOST_BIND_IP \
             AGENT_NAME \
-            OPENROUTER_API_KEY \
+            OPENAI_API_KEY \
             ROOT_AGENT_MODEL \
             TELEGRAM_ENABLED \
             TELEGRAM_ACCESS_CODE \
