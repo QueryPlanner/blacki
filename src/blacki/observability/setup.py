@@ -7,14 +7,15 @@ standard ``gen_ai.*`` span attributes.
 
 The OpenTelemetry SDK console exporters write two local JSON Lines files:
 
-* ``blacki-traces.log``: every span, unfiltered.
-* ``blacki-telemetry.log``: every log record, unfiltered.
+* ``blacki-traces.log``: OpenTelemetry spans.
+* ``blacki-telemetry.log``: Python log records.
 
-Both files are created with mode ``0600`` and are never rotated or trimmed.
+Each file rolls over at its byte limit and retains one private backup.
 ADK also adds its OTLP exporters when ``OTEL_EXPORTER_OTLP_*`` is set, which
 requires installing an OTLP exporter package first.
 """
 
+import io
 import json
 import logging
 import os
@@ -22,7 +23,7 @@ import sys
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TextIO
+from typing import IO, TextIO, cast
 
 from google.adk.telemetry.setup import OTelHooks, maybe_set_otel_providers
 from opentelemetry import _logs, trace
@@ -45,6 +46,8 @@ logger = logging.getLogger("blacki.utils.observability")
 
 LOG_FILE_NAME = "blacki-telemetry.log"
 TRACE_FILE_NAME = "blacki-traces.log"
+LOG_FILE_MAX_BYTES = 16 * 1024 * 1024
+TRACE_FILE_MAX_BYTES = 128 * 1024 * 1024
 
 OTEL_SEMCONV_STABILITY_OPT_IN = "OTEL_SEMCONV_STABILITY_OPT_IN"
 OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT = (
@@ -151,7 +154,10 @@ def setup_logging(log_level: str) -> None:
         logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
     logging.basicConfig(level=level, handlers=[console_handler], force=True)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # Polling drivers log each database operation and HTTP exchange at DEBUG.
+    logging.getLogger("aiosqlite").setLevel(max(level, logging.INFO))
+    for name in ("httpcore", "httpx", "urllib3"):
+        logging.getLogger(name).setLevel(max(level, logging.WARNING))
 
 
 def span_line(span: ReadableSpan) -> str:
@@ -185,6 +191,51 @@ def open_private_append(path: Path) -> TextIO:
         raise
 
 
+class RotatingJsonlFile(io.TextIOBase):
+    """Write complete UTF-8 records with one owner-only rollover file.
+
+    Each file has a single writer, its OpenTelemetry batch processor.
+    """
+
+    def __init__(self, path: Path, max_bytes: int) -> None:
+        self._path = path
+        self._backup = path.with_suffix(path.suffix + ".1")
+        self._max_bytes = max_bytes
+        self._file: TextIO | None = None
+        self._file = open_private_append(path)
+        self._size = self._file.tell()
+
+    def write(self, text: str) -> int:
+        size = len(text.encode("utf-8"))
+        if size > self._max_bytes:
+            # The independently configured OTLP exporter can keep this record.
+            return len(text)
+        if self._file is None:
+            self._file = open_private_append(self._path)
+            self._size = self._file.tell()
+        if self._size + size > self._max_bytes:
+            file, self._file = self._file, None
+            file.close()
+            self._path.replace(self._backup)
+            self._file = open_private_append(self._path)
+            self._size = 0
+        written = self._file.write(text)
+        self._size += size
+        return written
+
+    def flush(self) -> None:
+        if self._file is not None:
+            self._file.flush()
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            if self._file is not None:
+                file, self._file = self._file, None
+                file.close()
+
+
 class FileSpanExporter(ConsoleSpanExporter):
     """The SDK console span exporter, closing its file on shutdown."""
 
@@ -202,9 +253,9 @@ class FileLogRecordExporter(ConsoleLogRecordExporter):
 def _otel_hooks(log_dir: Path) -> OTelHooks | None:
     """Build the file exporters, or return None when the files cannot open."""
     try:
-        traces = open_private_append(log_dir / TRACE_FILE_NAME)
+        traces = RotatingJsonlFile(log_dir / TRACE_FILE_NAME, TRACE_FILE_MAX_BYTES)
         try:
-            logs = open_private_append(log_dir / LOG_FILE_NAME)
+            logs = RotatingJsonlFile(log_dir / LOG_FILE_NAME, LOG_FILE_MAX_BYTES)
         except OSError:
             traces.close()
             raise
@@ -213,10 +264,14 @@ def _otel_hooks(log_dir: Path) -> OTelHooks | None:
         return None
     return OTelHooks(
         span_processors=[
-            BatchSpanProcessor(FileSpanExporter(out=traces, formatter=span_line))
+            BatchSpanProcessor(
+                FileSpanExporter(out=cast("IO[str]", traces), formatter=span_line)
+            )
         ],
         log_record_processors=[
-            BatchLogRecordProcessor(FileLogRecordExporter(out=logs, formatter=log_line))
+            BatchLogRecordProcessor(
+                FileLogRecordExporter(out=cast("IO[str]", logs), formatter=log_line)
+            )
         ],
     )
 
@@ -252,7 +307,12 @@ def setup_tracing() -> TelemetryProviders:
         else None
     )
     if log_provider is not None:
-        logging.getLogger().addHandler(LoggingHandler(logger_provider=log_provider))
+        handler = LoggingHandler(logger_provider=log_provider)
+        # Export failures still reach stdout but cannot feed the failing exporter.
+        handler.addFilter(
+            lambda record: record.name != "opentelemetry.sdk._shared_internal"
+        )
+        logging.getLogger().addHandler(handler)
 
     logger.info("OpenTelemetry file exporters configured")
     if not genai_content_capture_enabled():

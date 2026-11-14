@@ -122,7 +122,7 @@ def test_minimal_environment_is_safe_and_complete() -> None:
     assert values["OTEL_SEMCONV_STABILITY_OPT_IN"] == "gen_ai_latest_experimental"
     assert values["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] == "SPAN_ONLY"
     assert "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS" not in values
-    assert values["LOG_LEVEL"] == "DEBUG"
+    assert values["LOG_LEVEL"] == "INFO"
 
 
 def test_full_environment_does_not_activate_fake_optional_credentials() -> None:
@@ -153,6 +153,10 @@ def test_compose_defaults_are_private_persistent_and_live() -> None:
     assert service["environment"]["RELOAD_AGENTS"] == "${RELOAD_AGENTS:-false}"
     assert service["env_file"] == ["${ENV_FILE:-.env}"]
     assert service["restart"] == "${RESTART_POLICY:-unless-stopped}"
+    assert service["logging"] == {
+        "driver": "json-file",
+        "options": {"max-size": "10m", "max-file": "3"},
+    }
 
     assert set(service["volumes"]) == {
         "./.adk_state:/app/src/.adk",

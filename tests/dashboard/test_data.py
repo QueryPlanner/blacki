@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime, tzinfo
+from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
@@ -1224,30 +1226,17 @@ def test_canonical_helpers_tolerate_unknown_and_timestamp_values() -> None:
 def test_bounded_jsonl_iterator_edges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class ChunkedHandle:
-        def __init__(self, chunks: list[bytes]) -> None:
-            self.chunks = iter(chunks)
-
-        def read(self, _size: int) -> bytes:
-            return next(self.chunks, b"")
-
-    oversized = list(
+    oversized_line = b"x" * (1024 * 1024 + 1)
+    payload = oversized_line + b"y" * (128 * 1024) + b'\n{"ok": true}\n'
+    assert list(
+        _iter_raw_jsonl_lines(BytesIO(payload), remaining_bytes=len(payload))
+    ) == [(b"", True), (b'{"ok": true}', False)]
+    assert list(
         _iter_raw_jsonl_lines(
-            ChunkedHandle(
-                [
-                    b"x" * (1024 * 1024 + 1),
-                    b"y" * (64 * 1024),
-                    b"z" * (64 * 1024),
-                    b'\n{"ok": true}\n',
-                ]
-            )
+            BytesIO(oversized_line), remaining_bytes=len(oversized_line)
         )
-    )
-    assert oversized == [(b"", True), (b'{"ok": true}', False)]
-    assert list(_iter_raw_jsonl_lines(ChunkedHandle([b"x" * (1024 * 1024 + 1)]))) == [
-        (b"", True)
-    ]
-    assert list(_iter_raw_jsonl_lines(ChunkedHandle([b'{"x": 1}']))) == [
+    ) == [(b"", True)]
+    assert list(_iter_raw_jsonl_lines(BytesIO(b'{"x": 1}'), remaining_bytes=8)) == [
         (b'{"x": 1}', False)
     ]
     scalar_path = tmp_path / "scalar.jsonl"
@@ -1280,6 +1269,43 @@ def test_bounded_jsonl_iterator_edges(
     assert _scan_jsonl_sync(no_newline, max_tail_bytes=25).truncated is True
 
     assert _log_item({"level": 10, "message": "numeric"})["message"] == "numeric"
+
+
+@pytest.mark.parametrize("tail_bytes", [4, 32])
+def test_jsonl_scan_handles_truncation_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tail_bytes: int
+) -> None:
+    path = tmp_path / "telemetry.log"
+    path.write_text('{"message": "old"}\n')
+    original_fstat = os.fstat
+
+    def truncate_after_stat(fd: int) -> os.stat_result:
+        snapshot = original_fstat(fd)
+        path.write_text("")
+        return snapshot
+
+    monkeypatch.setattr("blacki.dashboard.data.os.fstat", truncate_after_stat)
+    scan = _scan_jsonl_sync(path, max_tail_bytes=tail_bytes)
+    assert not scan.unavailable
+    assert scan.records == ()
+    assert scan.truncated is (tail_bytes == 4)
+
+
+def test_jsonl_scan_reads_renamed_active_file_only_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "telemetry.log"
+    backup = tmp_path / "telemetry.log.1"
+    path.write_text('{"message": "once"}\n')
+    original_open = Path.open
+
+    def rotate_while_opening_backup(self: Path, *args: Any, **kwargs: Any) -> Any:
+        if self == backup:
+            path.replace(backup)
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", rotate_while_opening_backup)
+    assert _scan_jsonl_sync(path).records == ({"message": "once"},)
 
 
 def test_snapshot_schema_and_event_projection_edges(

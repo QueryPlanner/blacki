@@ -96,7 +96,7 @@ class ServerEnv(BaseModel):
     )
 
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
-        default="DEBUG",
+        default="INFO",
         alias="LOG_LEVEL",
         description="Logging verbosity level",
     )
