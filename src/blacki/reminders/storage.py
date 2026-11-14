@@ -142,31 +142,27 @@ class SqliteReminderStorage(SqlStorage):
         )
         return [self._row_to_reminder(r) for r in rows]
 
-    async def mark_sent(self, reminder_id: int) -> None:
-        async with self._lock:
-            await self._conn.execute(
-                "UPDATE reminders SET is_sent = 1 WHERE id = ?",
-                (reminder_id,),
-            )
-        logger.info("Marked reminder %s as sent (SQLite)", reminder_id)
-
-    async def reschedule_reminder(
-        self, reminder_id: int, next_trigger_time: str
-    ) -> None:
-        async with self._lock:
-            await self._conn.execute(
+    async def claim_occurrence(
+        self, reminder_id: int, trigger_time: str, next_trigger_time: str | None
+    ) -> bool:
+        """Consume the exact pending occurrence in one autocommitted write."""
+        async with (
+            self._lock,
+            self._conn.execute(
                 """
                 UPDATE reminders
-                SET trigger_time = ?, is_sent = 0
-                WHERE id = ?
+                SET trigger_time = COALESCE(?, trigger_time), is_sent = ?
+                WHERE id = ? AND trigger_time = ? AND is_sent = 0
                 """,
-                (next_trigger_time, reminder_id),
-            )
-        logger.info(
-            "Rescheduled recurring reminder %s for %s (SQLite)",
-            reminder_id,
-            next_trigger_time,
-        )
+                (
+                    next_trigger_time,
+                    int(next_trigger_time is None),
+                    reminder_id,
+                    trigger_time,
+                ),
+            ) as cursor,
+        ):
+            return cursor.rowcount == 1
 
     async def get_user_reminders(
         self, user_id: str, include_sent: bool = False
