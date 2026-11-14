@@ -1,7 +1,7 @@
 """Helpers for recurring reminder schedules and cron validation."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
@@ -40,7 +40,9 @@ def get_next_trigger_time(
         utc_reference_time = utc_reference_time.replace(tzinfo=UTC)
 
     timezone = ZoneInfo(timezone_name)
-    local_reference_time = utc_reference_time.astimezone(timezone)
+    # CronTrigger includes its lower bound when it lies on a fire time.
+    after_reference = utc_reference_time.astimezone(UTC) + timedelta(microseconds=1)
+    local_reference_time = after_reference.astimezone(timezone)
 
     trigger = CronTrigger.from_crontab(
         normalized_expression,

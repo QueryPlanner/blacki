@@ -108,7 +108,7 @@ class ReminderScheduler:
                     MISFIRE_GRACE_PERIOD,
                 )
                 for reminder in stale_reminders:
-                    await self._handle_stale_reminder(
+                    await self._claim_occurrence(
                         reminder,
                         reference_time=current_time,
                     )
@@ -125,82 +125,42 @@ class ReminderScheduler:
 
     async def _send_reminder(self, reminder: Reminder) -> None:
         """Send a reminder notification to the user."""
-        if reminder.id is None:
-            logger.error("Reminder has no ID, skipping")
+        if not await self._claim_occurrence(reminder, reference_time=now_utc()):
             return
-
-        reminder_delivery_succeeded = False
-        reminder_reference_time = now_utc()
 
         try:
             await self.callback(reminder)
-
-            reminder_delivery_succeeded = True
-
         except Exception:
             logger.exception(
                 "Failed to execute callback for reminder %s (user: %s)",
                 reminder.id,
                 reminder.user_id,
             )
-        finally:
-            await self._complete_reminder_delivery(
-                reminder,
-                reference_time=reminder_reference_time,
+        else:
+            logger.info("Sent reminder %s to user %s", reminder.id, reminder.user_id)
+
+    async def _claim_occurrence(
+        self, reminder: Reminder, reference_time: datetime
+    ) -> bool:
+        """Persist the next state before a callback can cause side effects."""
+        if reminder.id is None:
+            logger.error("Reminder has no ID, skipping")
+            return False
+
+        next_trigger_time = None
+        if reminder.recurrence_rule:
+            next_trigger_time = utc_iso_seconds(
+                get_next_trigger_time(
+                    reminder.recurrence_rule,
+                    reminder.timezone_name or str(get_app_timezone()),
+                    reference_time=max(
+                        reference_time,
+                        _parse_stored_trigger_time(reminder.trigger_time),
+                    ),
+                )
             )
-
-        if reminder_delivery_succeeded:
-            logger.info(f"Sent reminder {reminder.id} to user {reminder.user_id}")
-
-    async def _handle_stale_reminder(
-        self,
-        reminder: Reminder,
-        reference_time: datetime,
-    ) -> None:
-        """Resolve an overdue reminder without delivering a stale notification."""
-        if reminder.id is None:
-            logger.error("Stale reminder has no ID, skipping")
-            return
-
-        await self._complete_reminder_delivery(
-            reminder,
-            reference_time=reference_time,
-        )
-
-    async def _complete_reminder_delivery(
-        self,
-        reminder: Reminder,
-        reference_time: datetime | None = None,
-    ) -> None:
-        """Finalize a delivery by marking one-shot reminders sent or rescheduling."""
-        if reminder.id is None:
-            raise ValueError("Reminder must have an ID before completion")
-
-        if not reminder.is_recurring:
-            await self.storage.mark_sent(reminder.id)
-            return
-
-        await self._reschedule_recurring_reminder(reminder, reference_time)
-
-    async def _reschedule_recurring_reminder(
-        self,
-        reminder: Reminder,
-        reference_time: datetime | None = None,
-    ) -> None:
-        """Move a recurring reminder to the next future fire time."""
-        if reminder.id is None:
-            raise ValueError("Reminder must have an ID before rescheduling")
-
-        timezone_name = reminder.timezone_name or str(get_app_timezone())
-        effective_reference_time = reference_time or now_utc()
-        next_trigger_time = get_next_trigger_time(
-            reminder.recurrence_rule or "",
-            timezone_name,
-            reference_time=effective_reference_time,
-        )
-        await self.storage.reschedule_reminder(
-            reminder.id,
-            utc_iso_seconds(next_trigger_time),
+        return await self.storage.claim_occurrence(
+            reminder.id, reminder.trigger_time, next_trigger_time
         )
 
     async def schedule_reminder(
