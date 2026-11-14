@@ -12,14 +12,16 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import re
 import sqlite3
 from collections import defaultdict, deque
 from collections.abc import Iterable, Iterator, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import quote
 
 from ..observability.ledger import (
@@ -429,15 +431,19 @@ def _load_telegram_identities_sync(path: Path) -> dict[int, tuple[str, str | Non
 
 
 def _iter_raw_jsonl_lines(
-    handle: Any, *, max_line_bytes: int = MAX_JSONL_LINE_BYTES
+    handle: BinaryIO,
+    *,
+    remaining_bytes: int,
+    max_line_bytes: int = MAX_JSONL_LINE_BYTES,
 ) -> Iterator[tuple[bytes, bool]]:
     """Yield bounded lines and flag oversized lines without allocating them."""
     buffer = bytearray()
     oversized = False
-    while True:
-        chunk = handle.read(64 * 1024)
+    while remaining_bytes:
+        chunk = handle.read(min(remaining_bytes, 64 * 1024))
         if not chunk:
             break
+        remaining_bytes -= len(chunk)
         buffer.extend(chunk)
         while True:
             newline = buffer.find(b"\n")
@@ -470,16 +476,15 @@ def _iter_raw_jsonl_lines(
         yield bytes(buffer).rstrip(b"\r"), False
 
 
-def _discard_partial_jsonl_line(handle: Any) -> None:
+def _discard_partial_jsonl_line(handle: BinaryIO, end: int) -> None:
     """Advance to the first complete line after a bounded tail seek."""
-    while True:
-        chunk_start = handle.tell()
-        chunk = handle.read(64 * 1024)
-        newline = chunk.find(b"\n") if chunk else -1
+    while (chunk_start := handle.tell()) < end:
+        chunk = handle.read(min(end - chunk_start, 64 * 1024))
+        if not chunk:
+            return
+        newline = chunk.find(b"\n")
         if newline >= 0:
             handle.seek(chunk_start + newline + 1)
-            return
-        if not chunk:
             return
 
 
@@ -494,34 +499,50 @@ def _scan_jsonl_sync(
     oversized = 0
     accepted = 0
     truncated = False
-    try:
-        file_size = path.stat().st_size
-        handle = path.open("rb")
-    except (OSError, ValueError):
-        return _JsonlScan((), 0, 0, 0, unavailable=True)
-
-    with handle:
-        tail_offset = max(0, file_size - max_tail_bytes)
-        if tail_offset:
-            truncated = True
-            handle.seek(tail_offset)
-            _discard_partial_jsonl_line(handle)
-        for raw_line, was_oversized in _iter_raw_jsonl_lines(
-            handle, max_line_bytes=max_line_bytes
-        ):
-            if was_oversized:
-                oversized += 1
-                continue
+    with ExitStack() as stack:
+        segments: list[tuple[BinaryIO, int, int]] = []
+        remaining = max_tail_bytes
+        seen: set[tuple[int, int]] = set()
+        handle: BinaryIO
+        for segment in (path, path.with_suffix(path.suffix + ".1")):
             try:
-                decoded = json.loads(raw_line.decode("utf-8", errors="replace"))
-            except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
-                invalid += 1
+                handle = stack.enter_context(segment.open("rb"))
+                stat = os.fstat(handle.fileno())
+            except (OSError, ValueError):
                 continue
-            if not isinstance(decoded, dict):
-                invalid += 1
-                continue
-            accepted = min(MAX_ACCEPTED_JSONL_RECORDS, accepted + 1)
-            records.append(decoded)
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in seen:
+                continue  # The active file rotated between the two opens.
+            seen.add(identity)
+            offset = max(0, stat.st_size - remaining)
+            remaining -= stat.st_size - offset
+            truncated |= offset > 0
+            segments.append((handle, offset, stat.st_size))
+        if not segments:
+            return _JsonlScan((), 0, 0, 0, unavailable=True)
+
+        for handle, offset, end in reversed(segments):
+            if offset:
+                handle.seek(offset - 1)
+                _discard_partial_jsonl_line(handle, end)
+            for raw_line, was_oversized in _iter_raw_jsonl_lines(
+                handle,
+                max_line_bytes=max_line_bytes,
+                remaining_bytes=max(0, end - handle.tell()),
+            ):
+                if was_oversized:
+                    oversized += 1
+                    continue
+                try:
+                    decoded = json.loads(raw_line.decode("utf-8", errors="replace"))
+                except (json.JSONDecodeError, RecursionError, TypeError, ValueError):
+                    invalid += 1
+                    continue
+                if not isinstance(decoded, dict):
+                    invalid += 1
+                    continue
+                accepted = min(MAX_ACCEPTED_JSONL_RECORDS, accepted + 1)
+                records.append(decoded)
     return _JsonlScan(tuple(records), accepted, invalid, oversized, truncated=truncated)
 
 

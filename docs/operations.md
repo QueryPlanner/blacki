@@ -19,17 +19,10 @@ docker compose -f compose.yaml -f compose.prod.yaml logs --follow agent
 ```
 
 Blacki also appends OpenTelemetry log records to `logs/blacki-telemetry.log` and
-spans to `logs/blacki-traces.log` on the host. Neither file is rotated or
-deleted by the application, so monitor them even when Docker's log-driver
-rotation is enabled:
-
-```bash
-du -sh logs
-```
-
-The dashboard reads only the end of each file, so old lines do not slow down
-page loads. Archive or clear the files only during a maintenance window after
-keeping anything required for incident analysis.
+spans to `logs/blacki-traces.log` on the host. Blacki keeps the active file
+and one rotated backup for each signal. The dashboard reads their recent
+records. See [observability retention](base-infra/observability.md#retention)
+for the size limits and how upgrades handle existing oversized files.
 
 ## Restart
 

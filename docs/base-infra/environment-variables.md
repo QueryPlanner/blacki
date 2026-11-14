@@ -43,7 +43,7 @@ surface on every host interface.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `AGENT_NAME` | None | Required identity for the service and telemetry |
-| `LOG_LEVEL` | `DEBUG` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
 | `HOST` | `127.0.0.1` | Process bind address outside Compose |
 | `PORT` | `8080` | Process port outside Compose |
 | `AGENT_DIR` | `src` | ADK agents and local-state base directory |

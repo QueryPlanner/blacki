@@ -54,8 +54,10 @@ def preserve_logging_configuration() -> Iterator[None]:
     root_logger = logging.getLogger()
     original_handlers = list(root_logger.handlers)
     original_level = root_logger.level
-    urllib3_logger = logging.getLogger("urllib3")
-    original_urllib3_level = urllib3_logger.level
+    library_levels = {
+        name: logging.getLogger(name).level
+        for name in ("aiosqlite", "httpcore", "httpx", "urllib3")
+    }
     try:
         yield
     finally:
@@ -64,7 +66,8 @@ def preserve_logging_configuration() -> Iterator[None]:
                 handler.close()
         root_logger.handlers = original_handlers
         root_logger.setLevel(original_level)
-        urllib3_logger.setLevel(original_urllib3_level)
+        for name, level in library_levels.items():
+            logging.getLogger(name).setLevel(level)
 
 
 def _mode(path: Path) -> int:
@@ -233,7 +236,17 @@ def test_setup_tracing_installs_adk_providers_and_bridges_logging(
     [hooks] = install.call_args.args[0]
     assert len(hooks.span_processors) == len(hooks.log_record_processors) == 1
     assert providers == TelemetryProviders(tracer_provider, logger_provider)
-    assert any(isinstance(h, LoggingHandler) for h in logging.getLogger().handlers)
+    [bridge] = [
+        handler
+        for handler in logging.getLogger().handlers
+        if isinstance(handler, LoggingHandler)
+    ]
+    for name, forwarded in (
+        ("opentelemetry.sdk._shared_internal", False),
+        ("blacki.test", True),
+    ):
+        record = logging.LogRecord(name, logging.ERROR, __file__, 1, "error", (), None)
+        assert bool(bridge.filter(record)) is forwarded
     assert genai_content_capture_enabled()
     shutdown_tracing(providers)
     for processor in hooks.span_processors:
@@ -316,7 +329,9 @@ def test_setup_logging_writes_to_stdout_at_the_requested_level(
     root = logging.getLogger()
     assert root.level == logging.DEBUG
     assert [type(handler) for handler in root.handlers] == [logging.StreamHandler]
-    assert logging.getLogger("urllib3").level == logging.WARNING
+    assert logging.getLogger("aiosqlite").getEffectiveLevel() == logging.INFO
+    for name in ("httpcore.http11", "httpx", "urllib3"):
+        assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING
 
 
 def test_file_exporters_close_their_file_on_shutdown() -> None:

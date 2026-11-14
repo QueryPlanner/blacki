@@ -1,8 +1,7 @@
 # Observability
 
 Blacki uses ADK's official OpenTelemetry setup and the OpenTelemetry SDK's
-exporters. Spans and log records go to two local JSON Lines files. Nothing is
-filtered or redacted.
+exporters. Spans and log records go to two local JSON Lines files. Retained records carry their original content.
 
 ## Outputs
 
@@ -10,8 +9,8 @@ Inside the container:
 
 | File | Contents |
 | --- | --- |
-| `/app/logs/blacki-traces.log` | Every OpenTelemetry span, one JSON object per line |
-| `/app/logs/blacki-telemetry.log` | Every OpenTelemetry log record, one JSON object per line |
+| `/app/logs/blacki-traces.log` | OpenTelemetry spans, one JSON object per line |
+| `/app/logs/blacki-telemetry.log` | OpenTelemetry log records, one JSON object per line |
 
 Each line is the SDK's own JSON for a span (`ReadableSpan.to_json`) or log
 record (`ReadableLogRecord.to_json`, plus the instrumentation scope that holds
@@ -183,17 +182,15 @@ A `200` means the endpoint and credentials are correct. In OpenObserve, check
 
 ## Retention
 
-Neither file is rotated, trimmed, or deleted by the application. Docker's stdout
-log-driver rotation does not touch `./logs`. Each model-call span repeats the
-conversation sent to the model, so `blacki-traces.log` grows quickly. Monitor
-disk usage:
+Blacki keeps an active file and one `.1` backup for each signal. Each log
+file is capped at 16 MiB and each trace file at 128 MiB, for up to 288 MiB
+of newly written local telemetry. Existing oversized files become the first
+backup on rollover and age out at the next rollover. A record larger than
+its file's cap is skipped locally and can still reach the OTLP exporter.
+Compose rotates Docker stdout separately, with three 10 MB files.
 
-```bash
-du -sh logs
-```
-
-The dashboard reads only the last 128 MiB of the trace file and the last 16 MiB
-of the log file, so page loads stay bounded. Older lines stay on disk.
+The dashboard reads the newest 128 MiB of traces and 16 MiB of logs across
+the active file and its backup. OpenObserve applies its own retention policy.
 
 ## Failure behavior
 

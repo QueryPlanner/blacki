@@ -41,7 +41,7 @@ class TestServerEnv:
         env = ServerEnv.model_validate(valid_server_env)
 
         # Check defaults
-        assert env.log_level == "DEBUG"
+        assert env.log_level == "INFO"
         assert env.serve_web_interface is False
         assert env.reload_agents is False
         assert env.agent_engine is None

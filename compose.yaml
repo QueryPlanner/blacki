@@ -6,7 +6,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8080
       AGENT_NAME: ${AGENT_NAME:?Set AGENT_NAME in the environment file}
-      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
       RELOAD_AGENTS: ${RELOAD_AGENTS:-false}
       SERVE_WEB_INTERFACE: ${SERVE_WEB_INTERFACE:-false}
     env_file:
@@ -30,6 +30,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: ${RESTART_POLICY:-unless-stopped}
     stop_grace_period: 30s
     command: python -m blacki.server
