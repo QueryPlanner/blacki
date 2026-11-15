@@ -113,6 +113,64 @@ flow; public agents cannot call Gmail. The Gmail skill in
 `src/blacki/skills/gmail/SKILL.md` supplies the agent-facing usage and safety
 rules; loading the skill is not itself an authorization grant.
 
+### Production observability
+
+Start production incident investigations in [OpenObserve](http://100.77.130.71:5080/)
+over Tailscale. The operator's `~/.zshrc` provides `OO_USER` and `OO_PASS`.
+Load them in a login shell and pass them through the environment to an HTTP
+client using Basic authentication. Keep credential values out of command
+arguments, output, and repository files.
+
+- In the UI, select organization `default` and stream `default`. In Logs,
+  filter on `service_name = 'blacki'`. Use the incident's timezone when
+  setting the time range, then widen the range backward to find the first
+  error and forward through recovery.
+- For read-only API queries, `GET /api/default/streams?type=logs` lists log
+  streams and `POST /api/default/_search?type=logs` searches a stream. Supply
+  `query.sql`, `query.start_time`, `query.end_time`, and `query.size` in the
+  request body. The API takes Unix timestamps in microseconds. Use
+  `type=traces` for trace queries. [OpenObserve Search API](https://openobserve.ai/docs/reference/api/search/search/)
+- In a Telegram incident, check for polling errors, `Telegram access control
+  failed closed`, voice transcription errors, and `Message turn superseded`.
+  Blacki retries transport failures, HTTP 408, and HTTP 5xx. Use `Telegram
+  polling still failing` to detect a prolonged retry streak. `Telegram polling
+  recovered` marks the first successful poll, including an empty result.
+  Compare `service_instance_id` to tell whether recovery followed a restart.
+  Verify an end-to-end reply with `Sent ADK response` and use `trace_id` where
+  present to find the associated trace. `/ready` checks SQLite connectivity, so
+  a healthy check can coexist with stopped Telegram polling.
+- Log bodies, exception details, and model spans can contain private data and
+  credentials. Select only the fields needed and redact sensitive values before
+  sharing excerpts. If remote telemetry is missing, check Compose stdout and
+  the host's `./logs/blacki-telemetry.log` and `./logs/blacki-traces.log`.
+
+Run this SQL in the `default` Logs stream with the incident time range selected
+to trace polling failures and recovery.
+
+```sql
+SELECT _timestamp, severity, service_instance_id, body, exception_type
+FROM "default"
+WHERE service_name = 'blacki'
+  AND instrumentation_library_name = 'blacki.telegram.bot'
+  AND (
+    body LIKE '%stopping polling%'
+    OR body LIKE 'Too many consecutive Telegram API errors%'
+    OR body LIKE 'Transient Telegram API error in polling loop%'
+    OR body LIKE 'Telegram API error in polling loop%'
+    OR body LIKE 'Telegram transport error in polling loop%'
+    OR body LIKE 'Telegram polling still failing%'
+    OR body LIKE 'Telegram polling recovered%'
+    OR body LIKE 'Error in polling loop%'
+    OR body LIKE 'Telegram bot stopped%'
+    OR body LIKE 'Starting Telegram bot polling%'
+    OR body LIKE 'Sent ADK response%'
+  )
+ORDER BY _timestamp ASC
+```
+
+See [Observability](docs/base-infra/observability.md) for exporters, local files,
+and retention.
+
 ## Project Overview
 
 Blacki is a production-ready personal assistant built with the Google Agent

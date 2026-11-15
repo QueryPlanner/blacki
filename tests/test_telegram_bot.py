@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
+import httpx
 import pytest
 from google.genai import types
 
@@ -1588,6 +1589,32 @@ class TestTelegramBotLifecycle:
         assert bot._polling_task is not None
 
         await bot.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_polling_when_command_registration_times_out(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+    ) -> None:
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        poll_started = asyncio.Event()
+
+        def telegram_api(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/setMyCommands"):
+                raise httpx.ReadTimeout(
+                    "command registration timed out", request=request
+                )
+            assert request.url.path.endswith("/getUpdates")
+            poll_started.set()
+            return httpx.Response(401)
+
+        bot.api._client = httpx.AsyncClient(transport=httpx.MockTransport(telegram_api))
+
+        try:
+            await bot.start_polling()
+            await asyncio.wait_for(poll_started.wait(), timeout=2)
+        finally:
+            await bot.stop()
 
     @pytest.mark.asyncio
     async def test_stop_closes_api(
@@ -4224,32 +4251,37 @@ class TestHandleFileUpload:
         )
 
     @pytest.mark.asyncio
-    async def test_polling_fatal_telegram_error(self, caplog: Any) -> None:
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_polling_fatal_telegram_error(self, caplog: Any, status: int) -> None:
         """Polling loop returns on TelegramApiError with fatal error_code."""
         bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
         bot.config.telegram_bot_token = "test-token"  # noqa: S105
-        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api = create_autospec(TelegramApiClient, instance=True, spec_set=True)
         bot._api = mock_api
 
         mock_api.get_updates = AsyncMock(
-            side_effect=TelegramApiError("unauthorized", error_code=401)
+            side_effect=TelegramApiError("unauthorized", error_code=status)
         )
 
         bot._running = True
         await bot._polling_loop()
 
+        mock_api.get_updates.assert_awaited_once()
         assert "Fatal Telegram API error" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_polling_too_many_telegram_errors(self, caplog: Any) -> None:
-        """Polling loop returns after too many consecutive TelegramApiError."""
+    @pytest.mark.parametrize("status", [400, 429])
+    async def test_polling_limits_retries_for_other_api_errors(
+        self, caplog: Any, status: int
+    ) -> None:
+        """Polling stops after five consecutive errors outside the reconnect policy."""
         bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
         bot.config.telegram_bot_token = "test-token"  # noqa: S105
-        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api = create_autospec(TelegramApiClient, instance=True, spec_set=True)
         bot._api = mock_api
 
         errors: list[BaseException] = [
-            TelegramApiError("fail", error_code=500) for _ in range(5)
+            TelegramApiError("fail", error_code=status) for _ in range(5)
         ]
         errors.append(asyncio.CancelledError())
         mock_api.get_updates = AsyncMock(side_effect=errors)
@@ -4258,42 +4290,83 @@ class TestHandleFileUpload:
         with patch("asyncio.sleep", AsyncMock()):
             await bot._polling_loop()
 
+        assert mock_api.get_updates.await_count == 5
         assert "Too many consecutive Telegram API errors" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_polling_transient_telegram_error(self, caplog: Any) -> None:
-        """Polling loop warns and sleeps on transient TelegramApiError."""
-        bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
-        bot.config.telegram_bot_token = "test-token"  # noqa: S105
-        mock_api = create_autospec(TelegramApiClient, instance=True)
-        bot._api = mock_api
-
-        transient = TelegramApiError("rate limit", error_code=429)
-        mock_api.get_updates = AsyncMock(
-            side_effect=[transient, asyncio.CancelledError()]
+    async def test_polling_recovers_after_prolonged_telegram_outage(
+        self,
+        telegram_config: TelegramConfig,
+        runtime_recorder: RecordingRuntime,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        bot = TelegramBot(telegram_config, cast(AdkRuntime, runtime_recorder))
+        offsets: list[int] = []
+        responses = iter(
+            [httpx.Response(502) for _ in range(13)]
+            + [
+                httpx.Response(200, json={"ok": True, "result": []}),
+                httpx.Response(408),
+                httpx.Response(200, json={"ok": True, "result": [{"update_id": 42}]}),
+                httpx.Response(401),
+            ]
         )
 
-        bot._running = True
-        with patch("asyncio.sleep", AsyncMock()), pytest.raises(asyncio.CancelledError):
-            await bot._polling_loop()
+        def telegram_api(request: httpx.Request) -> httpx.Response:
+            assert request.url.path.endswith("/getUpdates")
+            offsets.append(json.loads(request.content)["offset"])
+            if len(offsets) == 1:
+                raise httpx.ReadTimeout("poll timed out", request=request)
+            return next(responses)
 
-        assert "Transient Telegram API error" in caplog.text
+        bot.api._client = httpx.AsyncClient(transport=httpx.MockTransport(telegram_api))
+        bot._running = True
+        try:
+            with (
+                patch("asyncio.sleep", autospec=True) as sleep,
+                caplog.at_level(logging.INFO, logger="blacki.telegram.bot"),
+            ):
+                await bot._polling_loop()
+        finally:
+            await bot.stop()
+
+        assert offsets == [0] * 17 + [43]
+        assert [call.args[0] for call in sleep.await_args_list] == [
+            *range(5, 60, 5),
+            60,
+            60,
+            60,
+            5,
+        ]
+        assert (
+            "Telegram polling still failing after 5 consecutive errors" in caplog.text
+        )
+        assert "Telegram polling recovered after 14 consecutive errors" in caplog.text
 
     @pytest.mark.asyncio
-    async def test_polling_too_many_generic_errors(self, caplog: Any) -> None:
-        """Polling loop returns after too many consecutive generic exceptions."""
+    async def test_polling_stops_after_consecutive_unexpected_errors(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Retryable outages do not count toward the unexpected-error limit."""
         bot = TelegramBot(create_autospec(TelegramConfig), create_autospec(AdkRuntime))
         bot.config.telegram_bot_token = "test-token"  # noqa: S105
-        mock_api = create_autospec(TelegramApiClient, instance=True)
+        mock_api = create_autospec(TelegramApiClient, instance=True, spec_set=True)
         bot._api = mock_api
 
-        errors = [RuntimeError("fail") for _ in range(5)]
+        errors = [
+            *[RuntimeError("unexpected failure") for _ in range(4)],
+            TelegramApiError("bad gateway", error_code=502),
+            *[RuntimeError("unexpected failure") for _ in range(4)],
+            httpx.ReadTimeout("poll timed out"),
+            *[RuntimeError("unexpected failure") for _ in range(5)],
+        ]
         mock_api.get_updates = AsyncMock(side_effect=errors)
 
         bot._running = True
         with patch("asyncio.sleep", AsyncMock()):
             await bot._polling_loop()
 
+        assert mock_api.get_updates.await_count == len(errors)
         assert "Too many consecutive errors" in caplog.text
 
     @pytest.mark.asyncio
