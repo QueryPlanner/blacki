@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import httpx
 from google.genai import types
 
 from blacki.health.config import telegram_chat_id_for_health_user
@@ -70,8 +71,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 POLLING_TIMEOUT = 30
-_MAX_CONSECUTIVE_ERRORS = 5
+_POLLING_FAILURE_THRESHOLD = 5
 _FATAL_ERROR_CODES = {401, 403}
+_POLLING_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
 _MAX_EMPTY_RESPONSE_RETRIES = 1
 _TELEGRAM_USER_ID_PATTERN = re.compile(r"^telegram-chat-(-?\d+)(?:-thread-(\d+))?$")
 _MAX_NATIVE_IMAGE_BYTES = 10 * 1024 * 1024
@@ -465,13 +471,14 @@ class TelegramBot:
         try:
             await self.api.set_my_commands(commands)
             logger.info("Registered Telegram bot commands")
-        except TelegramApiError:
-            logger.exception("Failed to register bot commands")
+        except (TelegramApiError, *_POLLING_TRANSPORT_ERRORS) as exc:
+            logger.warning("Failed to register bot commands (%s)", type(exc).__name__)
 
     async def _polling_loop(self) -> None:
         """Long polling loop for updates."""
         offset = 0
         consecutive_errors = 0
+        consecutive_unexpected_errors = 0
 
         while self._running:
             try:
@@ -481,50 +488,72 @@ class TelegramBot:
                     allowed_updates=["message", "callback_query"],
                 )
 
+                if consecutive_errors:
+                    logger.info(
+                        "Telegram polling recovered after %d consecutive errors",
+                        consecutive_errors,
+                    )
                 consecutive_errors = 0
+                consecutive_unexpected_errors = 0
 
                 for update in updates:
                     offset = update.update_id + 1
                     task = asyncio.create_task(self._safe_handle_update(update))
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)
+                continue
 
             except asyncio.CancelledError:
                 raise
+            except _POLLING_TRANSPORT_ERRORS as exc:
+                consecutive_unexpected_errors = 0
+                logger.warning(
+                    "Telegram transport error in polling loop: %s", type(exc).__name__
+                )
             except TelegramApiError as exc:
-                consecutive_errors += 1
                 status = exc.error_code
                 if status in _FATAL_ERROR_CODES:
                     logger.critical(
-                        "Fatal Telegram API error (status=%s), stopping polling: %s",
+                        "Fatal Telegram API error (status=%s), stopping polling",
                         status,
-                        exc,
                     )
                     return
-                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
-                    logger.error(
-                        "Too many consecutive Telegram API errors (%d), stopping: %s",
-                        consecutive_errors,
-                        exc,
+                if status == 408 or (status is not None and 500 <= status < 600):
+                    consecutive_unexpected_errors = 0
+                    logger.warning(
+                        "Transient Telegram API error in polling loop: HTTP %d", status
                     )
-                    return
-                logger.warning(
-                    "Transient Telegram API error in polling loop (%d/%d): %s",
-                    consecutive_errors,
-                    _MAX_CONSECUTIVE_ERRORS,
-                    exc,
-                )
-                await asyncio.sleep(min(5 * consecutive_errors, 60))
+                else:
+                    consecutive_unexpected_errors += 1
+                    if consecutive_unexpected_errors >= _POLLING_FAILURE_THRESHOLD:
+                        logger.error(
+                            "Too many consecutive Telegram API errors (%d), "
+                            "stopping polling (status=%s)",
+                            consecutive_unexpected_errors,
+                            status,
+                        )
+                        return
+                    logger.warning(
+                        "Telegram API error in polling loop (status=%s)", status
+                    )
             except Exception:
-                consecutive_errors += 1
+                consecutive_unexpected_errors += 1
                 logger.exception("Error in polling loop")
-                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                if consecutive_unexpected_errors >= _POLLING_FAILURE_THRESHOLD:
                     logger.error(
                         "Too many consecutive errors (%d), stopping polling",
-                        consecutive_errors,
+                        consecutive_unexpected_errors,
                     )
                     return
-                await asyncio.sleep(min(5 * consecutive_errors, 60))
+
+            consecutive_errors += 1
+            if consecutive_errors == _POLLING_FAILURE_THRESHOLD:
+                logger.error(
+                    "Telegram polling still failing after %d consecutive errors, "
+                    "retrying",
+                    consecutive_errors,
+                )
+            await asyncio.sleep(min(5 * consecutive_errors, 60))
 
     async def _safe_handle_update(self, update: Update) -> None:
         """Handle update concurrently and allow cancellation."""
