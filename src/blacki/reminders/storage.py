@@ -48,6 +48,8 @@ class Reminder(BaseModel):
     recurrence_text: str | None = None
     timezone_name: str | None = None
     created_at: str
+    # NULL identifies rows written before Telegram origin was recorded.
+    private_telegram: bool | None = None
 
     @property
     def is_recurring(self) -> bool:
@@ -72,9 +74,16 @@ class SqliteReminderStorage(SqlStorage):
                 recurrence_rule TEXT,
                 recurrence_text TEXT,
                 timezone_name TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                private_telegram INTEGER
             )
         """)
+        async with self._conn.execute("PRAGMA table_info(reminders)") as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        if "private_telegram" not in columns:
+            await self._conn.execute(
+                "ALTER TABLE reminders ADD COLUMN private_telegram INTEGER"
+            )
         await self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_reminders_due
             ON reminders (is_sent, trigger_time)
@@ -96,9 +105,9 @@ class SqliteReminderStorage(SqlStorage):
                     recurrence_rule,
                     recurrence_text,
                     timezone_name,
-                    created_at
+                    created_at, private_telegram
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 reminder.user_id,
@@ -109,6 +118,7 @@ class SqliteReminderStorage(SqlStorage):
                 reminder.recurrence_text,
                 reminder.timezone_name,
                 reminder.created_at,
+                reminder.private_telegram,
             ),
         )
         logger.info(
@@ -132,7 +142,7 @@ class SqliteReminderStorage(SqlStorage):
                 recurrence_rule,
                 recurrence_text,
                 timezone_name,
-                created_at
+                created_at, private_telegram
             FROM reminders
             WHERE trigger_time <= ? AND is_sent = 0
             ORDER BY trigger_time ASC
@@ -174,7 +184,8 @@ class SqliteReminderStorage(SqlStorage):
         query = """
             SELECT
                 id, user_id, message, trigger_time, is_sent,
-                recurrence_rule, recurrence_text, timezone_name, created_at
+                recurrence_rule, recurrence_text, timezone_name, created_at,
+                private_telegram
             FROM reminders WHERE user_id = ?
         """
         params: list[Any] = [user_id]
@@ -206,6 +217,7 @@ class SqliteReminderStorage(SqlStorage):
             recurrence_text=row["recurrence_text"],
             timezone_name=row["timezone_name"],
             created_at=row["created_at"],
+            private_telegram=row["private_telegram"],
         )
 
 

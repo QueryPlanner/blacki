@@ -413,6 +413,51 @@ class AdkRuntime:
         """Return whether a locator has a persisted session without creating one."""
         return await self._get_latest_session(locator=locator) is not None
 
+    async def has_private_reminder_receipt(
+        self, *, user_id: str, reminder_id: int, message: str
+    ) -> bool:
+        """Verify legacy reminders against interactive turns in Telegram's store."""
+        sessions = await self.session_service.list_sessions(
+            app_name=self.app_name, user_id=user_id
+        )
+        for summary in sorted(
+            sessions.sessions,
+            key=lambda session: session.last_update_time,
+            reverse=True,
+        ):
+            session = await self.session_service.get_session(
+                app_name=self.app_name, user_id=user_id, session_id=summary.id
+            )
+            if session is None or session.state.get("telegram_chat_type") != "private":
+                continue
+            interactive: set[str] = set()
+            matching_calls: set[str] = set()
+            for event in session.events:
+                invocation = event.invocation_id
+                if (
+                    event.author == "user"
+                    and event.content
+                    and any(
+                        part.text and not part.text.startswith("[Scheduled Event]")
+                        for part in event.content.parts or []
+                    )
+                ):
+                    interactive.add(invocation)
+                if invocation in interactive and any(
+                    call.name == "schedule_reminder"
+                    and (call.args or {}).get("message") == message
+                    for call in event.get_function_calls()
+                ):
+                    matching_calls.add(invocation)
+                if invocation in matching_calls and any(
+                    response.name == "schedule_reminder"
+                    and (response.response or {}).get("reminder_id") == reminder_id
+                    and (response.response or {}).get("status") == "success"
+                    for response in event.get_function_responses()
+                ):
+                    return True
+        return False
+
     async def run_user_turn(
         self,
         *,

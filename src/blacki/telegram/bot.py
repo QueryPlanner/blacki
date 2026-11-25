@@ -30,6 +30,7 @@ from blacki.models.inference import (
     inference_profile_from_environment,
     load_inference_profile,
 )
+from blacki.reminders.context import reminder_turn
 from blacki.reminders.storage import Reminder
 from blacki.runtime.adk import AdkRuntime, EmptyModelResponseError, SessionLocator
 from blacki.utils.preferences import get_preferences_storage
@@ -378,13 +379,14 @@ class TelegramBot:
         async def run() -> None:
             try:
                 # seq 0 never supersedes an in-flight turn; it queues on the lock.
-                await self._run_sequenced_turn(
-                    identity.conversation_key,
-                    0,
-                    turn,
-                    progress_chat_id=chat_id,
-                    progress_thread_id=None,
-                )
+                with wiki_turn(self._private_wiki_turn(chat_id, identity)):
+                    await self._run_sequenced_turn(
+                        identity.conversation_key,
+                        0,
+                        turn,
+                        progress_chat_id=chat_id,
+                        progress_thread_id=None,
+                    )
             except asyncio.CancelledError:
                 logger.info("Mini App prompt superseded by a newer message")
             except Exception:
@@ -1102,8 +1104,7 @@ class TelegramBot:
         own message.
         """
         if (
-            self.wiki_store is None
-            or message.chat.type != ChatType.PRIVATE
+            message.chat.type != ChatType.PRIVATE
             or not message.from_user
             or message.from_user.id != message.chat.id
         ):
@@ -1111,12 +1112,29 @@ class TelegramBot:
         locator = self._build_session_identity(
             chat_id=str(message.chat.id), message_thread_id=message.message_thread_id
         )
+        return self._private_wiki_turn(
+            message.chat.id,
+            locator,
+            message_id=None if _is_forwarded(message) else message.message_id,
+        )
+
+    def _private_wiki_turn(
+        self,
+        chat_id: int,
+        identity: TelegramSessionIdentity,
+        *,
+        message_id: int | None = None,
+        synthetic: bool = False,
+    ) -> WikiTurn | None:
+        if self.wiki_store is None:
+            return None
         return WikiTurn(
             self.wiki_store,
             self.runtime.wiki_history_path(),
-            message.chat.id,
-            locator.user_id,
-            message_id=None if _is_forwarded(message) else message.message_id,
+            chat_id,
+            identity.user_id,
+            message_id=message_id,
+            synthetic=synthetic,
         )
 
     async def _handle_memory_command(self, message: Message, command: str) -> None:
@@ -2474,13 +2492,20 @@ class TelegramBot:
     ) -> None:
         """Load the chat profile, run a turn with retry, and send the response."""
         profile = await self._load_chat_profile(chat_id)
-        final_response = await self._run_user_turn_with_retry(
-            session_identity=session_identity,
-            message_text=message_text,
-            state=state,
-            user_parts=user_parts,
-            inference_profile=profile,
+        private_conversation = (
+            session_identity.user_id
+            if state.get("telegram_chat_type") == ChatType.PRIVATE
+            and state.get("temp:telegram_sender_user_id") == str(chat_id)
+            else None
         )
+        with reminder_turn(private_conversation):
+            final_response = await self._run_user_turn_with_retry(
+                session_identity=session_identity,
+                message_text=message_text,
+                state=state,
+                user_parts=user_parts,
+                inference_profile=profile,
+            )
         await self._send_final_response(
             chat_id=chat_id,
             message_thread_id=message_thread_id,
@@ -2569,40 +2594,82 @@ class TelegramBot:
         logger.info("Handling scheduled reminder %s for chat %s", reminder.id, chat_id)
 
         try:
-            await self.api.send_chat_action(
-                chat_id=chat_id,
-                action="typing",
-                message_thread_id=message_thread_id,
+            turn_lock = self._conversation_turn_locks.setdefault(
+                session_identity.conversation_key, asyncio.Lock()
             )
-
-            state = self._build_session_state(
-                chat_id=chat_id_str,
-                message_thread_id=message_thread_id,
-                conversation_key=session_identity.conversation_key,
-            )
-            # Scheduled events never get wiki tools. Only the owner's own chat
-            # messages reach the wiki.
-            with wiki_turn(None):
-                await self._run_turn_and_send_response(
-                    session_identity=session_identity,
-                    chat_id=chat_id,
-                    message_thread_id=message_thread_id,
-                    state=state,
-                    message_text=f"[Scheduled Event] {reminder.message}",
-                )
+            async with turn_lock:
+                if chat_id <= 0 or await self._private_reminder_authorized(
+                    reminder, chat_id, session_identity
+                ):
+                    await self._run_reminder_turn(
+                        reminder, chat_id, message_thread_id, session_identity
+                    )
+                    return
         except Exception:
             logger.exception(
                 "Error processing scheduled reminder %s for chat %s",
                 reminder.id,
                 chat_id,
             )
-            text = format_for_telegram(f"⏰ *Reminder*\n\n{reminder.message}")
-            await self.api.send_message(
-                chat_id=chat_id,
-                text=text,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                message_thread_id=message_thread_id,
+        await self.api.send_message(
+            chat_id=chat_id,
+            text=format_for_telegram(f"⏰ *Reminder*\n\n{reminder.message}"),
+            parse_mode=ParseMode.MARKDOWN_V2,
+            message_thread_id=message_thread_id,
+        )
+
+    async def _private_reminder_authorized(
+        self, reminder: Reminder, chat_id: int, identity: TelegramSessionIdentity
+    ) -> bool:
+        if not await self.miniapp_user_authorized(chat_id):
+            return False
+        if reminder.private_telegram is not None:
+            return reminder.private_telegram
+        return (
+            reminder.id is not None
+            and await self.runtime.has_private_reminder_receipt(
+                user_id=identity.user_id,
+                reminder_id=reminder.id,
+                message=reminder.message,
             )
+        )
+
+    async def _run_reminder_turn(
+        self,
+        reminder: Reminder,
+        chat_id: int,
+        message_thread_id: int | None,
+        identity: TelegramSessionIdentity,
+    ) -> None:
+        await self.api.send_chat_action(
+            chat_id=chat_id, action="typing", message_thread_id=message_thread_id
+        )
+        private = chat_id > 0
+        state = self._build_session_state(
+            chat_id=str(chat_id),
+            message_thread_id=message_thread_id,
+            conversation_key=identity.conversation_key,
+            chat_type=ChatType.PRIVATE if private else None,
+            sender_user_id=chat_id if private else None,
+        )
+        turn = (
+            self._private_wiki_turn(chat_id, identity, synthetic=True)
+            if private
+            else None
+        )
+        with wiki_turn(turn):
+            try:
+                await self._run_turn_and_send_response(
+                    session_identity=identity,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    state=state,
+                    message_text=f"[Scheduled Event] {reminder.message}",
+                )
+            finally:
+                await clear_telegram_progress_for_conversation(
+                    chat_id, message_thread_id
+                )
 
     async def _send_final_response(
         self,

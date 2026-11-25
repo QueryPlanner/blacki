@@ -10,9 +10,12 @@ from google.adk.models import BaseLlm, LlmRequest, LlmResponse
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from blacki import container
 from blacki.agent import create_agent, create_app
-from blacki.reminders.storage import Reminder
-from blacki.runtime.adk import AdkRuntime
+from blacki.container import AppContainer
+from blacki.reminders import scheduler
+from blacki.reminders.storage import SqliteReminderStorage
+from blacki.runtime.adk import AdkRuntime, SessionLocator
 from blacki.telegram import TelegramConfig
 from blacki.telegram.album_buffer import _BufferedAlbum
 from blacki.telegram.api import TelegramApiClient
@@ -26,10 +29,13 @@ from .conftest import OWNER, PATH
 
 
 def _bot(
-    store: WikiStore | None, runtime: AdkRuntime | None = None
+    store: WikiStore | None,
+    runtime: AdkRuntime | None = None,
+    *,
+    access_code: str | None = None,
 ) -> tuple[TelegramBot, Any]:
     bot = TelegramBot(
-        TelegramConfig.model_validate({}),
+        TelegramConfig(TELEGRAM_ACCESS_CODE=access_code),
         runtime or AdkRuntime(InMemorySessionService()),
         wiki_store=store,
     )
@@ -203,48 +209,143 @@ async def test_help_lists_memory_only_when_wiki_is_configured(store: WikiStore) 
 
 
 class ReminderModel(BaseLlm):
-    """Fails the test if wiki tools or the wiki policy reach a scheduled run."""
+    """Use real ADK tools to schedule a reminder and read its wiki page."""
+
+    reminder_message: str = "Review the deployment wiki."
+    delivery_requests: int = 0
 
     async def generate_content_async(
         self,
         llm_request: LlmRequest,
         stream: bool = False,
     ) -> AsyncGenerator[LlmResponse, None]:
-        assert TOOL_NAMES.isdisjoint(llm_request.tools_dict)
-        assert "personal knowledge base" not in str(
-            llm_request.config.system_instruction
+        assert llm_request.contents
+        parts = llm_request.contents[-1].parts or []
+        response = next(
+            (part.function_response for part in parts if part.function_response), None
         )
-        yield LlmResponse(
-            content=types.Content(
-                role="model", parts=[types.Part(text="Reminder delivered.")]
+        if response and response.name == "schedule_reminder":
+            assert response.response and response.response["status"] == "success"
+            part = types.Part(text="Reminder scheduled.")
+        elif response and response.name == "wiki_read":
+            assert response.response and response.response["status"] == "ok"
+            part = types.Part(text=response.response["markdown"])
+        elif any((part.text or "").startswith("[Scheduled Event]") for part in parts):
+            self.delivery_requests += 1
+            part = (
+                types.Part.from_function_call(name="wiki_read", args={"path": PATH})
+                if "wiki_read" in llm_request.tools_dict
+                else types.Part(text="Wiki unavailable.")
             )
-        )
+        else:
+            part = types.Part.from_function_call(
+                name="schedule_reminder",
+                args={"message": self.reminder_message, "recurrence": "0 8 * * *"},
+            )
+        yield LlmResponse(content=types.Content(role="model", parts=[part]))
 
 
-async def test_scheduled_reminders_run_without_wiki_tools(
+@pytest.fixture
+async def reminder_storage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[SqliteReminderStorage, None]:
+    app = await AppContainer.create(tmp_path / "app.db")
+    try:
+        await app.initialize_all_storages()
+        monkeypatch.setattr(container, "_container", app)
+        monkeypatch.setattr(scheduler, "_scheduler", None)
+        yield app.reminder_storage
+    finally:
+        await app.close()
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("private", "Updated deployment notes"),
+        ("legacy_private", "Updated deployment notes"),
+        ("paused", "Wiki unavailable\\."),
+        ("access_revoked", "Review the deployment wiki\\."),
+        ("public", "Review the deployment wiki\\."),
+        ("legacy_public", "Review the deployment wiki\\."),
+    ],
+)
+async def test_private_scheduled_reminder_reads_latest_wiki(
+    store: WikiStore,
+    reminder_storage: SqliteReminderStorage,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    expected: str,
 ) -> None:
     monkeypatch.setenv("BLACKI_WIKI_ENABLED", "1")
     monkeypatch.delenv("TELEGRAM_ACCESS_CODE", raising=False)
-    store = WikiStore(tmp_path / "wiki.db")
-    store.set_enabled(OWNER, True)
     agent = create_agent(include_user_scoped_tools=True)
-    agent.model = ReminderModel(model="test")
+    model = ReminderModel(model="test")
+    agent.model = model
     runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
     bot, api = _bot(store, runtime)
-    reminder = Reminder(
-        user_id="telegram-chat-12",
-        message="Review the deployment wiki.",
-        trigger_time="2026-11-09T18:00:00Z",
-        created_at="2026-11-09T12:00:00Z",
-    )
+    user_id = f"telegram-chat-{OWNER}"
+    locator = SessionLocator(user_id=user_id, session_id_prefix=user_id)
+    if source.endswith("public"):
+        public_agent = create_agent()
+        public_agent.model = ReminderModel(model="test")
+        public_runtime = AdkRuntime(
+            InMemorySessionService(), agent_app=create_app(public_agent)
+        )
+        result = await public_runtime.run_user_turn(
+            locator=locator,
+            message_text="Schedule a wiki review.",
+            state={
+                "telegram_chat_id": str(OWNER),
+                "telegram_chat_type": "private",
+                "temp:telegram_sender_user_id": str(OWNER),
+            },
+        )
+        assert result == "Reminder scheduled."
+    else:
+        await _send(bot, "Schedule a wiki review.", 1)
+    [reminder] = await reminder_storage.get_user_reminders(user_id)
+    assert reminder.private_telegram == (not source.endswith("public"))
+    if source.startswith("legacy"):
+        reminder = reminder.model_copy(update={"private_telegram": None})
+        if source == "legacy_public":
+            # A private reminder with the same text has a different receipt.
+            await _send(bot, "Schedule a wiki review.", 1)
+        else:
+            await runtime.create_next_session(locator=locator)
+    if source == "paused":
+        await _send(bot, "/memory off", 2)
+    if source == "access_revoked":
+        bot, api = _bot(store, runtime, access_code="replacement-code")
+    store.edit(OWNER, PATH, "Updated deployment notes", "", read=False)
+    store.edit(99, PATH, "Another owner's notes", "", read=False)
+
     await bot.handle_scheduled_reminder(reminder)
-    assert "Reminder delivered" in api.send_message.call_args.kwargs["text"]
-    assert store.list_pages(OWNER) == []
+
+    assert expected in api.send_message.call_args.kwargs["text"]
+    assert model.delivery_requests == (
+        0 if source.endswith("public") or source == "access_revoked" else 1
+    )
+    session = await runtime.get_or_create_session(locator=locator)
+    scheduled_events = [
+        event
+        for event in session.events
+        if event.author == "user"
+        and event.content
+        and any(
+            (part.text or "").startswith("[Scheduled Event]")
+            for part in event.content.parts or []
+        )
+    ]
+    assert len(scheduled_events) == model.delivery_requests
+    assert all(
+        event.custom_metadata == {"blacki_wiki": {"kind": "synthetic"}}
+        for event in scheduled_events
+    )
 
 
 class MediaWikiModel(BaseLlm):
-    """Record the effective model request for a private media turn."""
+    """Record the effective model request for a private turn."""
 
     request: LlmRequest | None = None
 
@@ -255,6 +356,27 @@ class MediaWikiModel(BaseLlm):
         yield LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text="Media read.")])
         )
+
+
+async def test_confirmed_miniapp_turn_receives_owner_wiki(
+    store: WikiStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("BLACKI_WIKI_ENABLED", "1")
+    agent = create_agent(include_user_scoped_tools=True)
+    model = MediaWikiModel(model="test")
+    agent.model = model
+    runtime = AdkRuntime(InMemorySessionService(), agent_app=create_app(agent))
+    bot, api = _bot(store, runtime)
+    store.edit(OWNER, "memory.md", "An owner preference", "", read=False)
+
+    await bot.submit_miniapp_prompt(OWNER, "Use my saved preferences.")
+    [turn] = bot._background_tasks
+    await turn
+
+    assert model.request is not None
+    assert model.request.tools_dict.keys() >= TOOL_NAMES
+    assert "An owner preference" in str(model.request.config.system_instruction)
+    assert api.send_message.call_args.kwargs["chat_id"] == OWNER
 
 
 @pytest.mark.parametrize("media", ["voice", "album", "forwarded_album", "mixed_album"])

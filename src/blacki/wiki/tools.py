@@ -60,17 +60,18 @@ List sessions to find a conversation or read one page at a time for its full tra
 
 @dataclass
 class WikiTurn:
-    """Wiki access for one owner message. Read paths are tracked per turn."""
+    """Wiki access for one owner turn. Read paths are tracked per turn."""
 
     store: WikiStore
     history: Path | None
     owner: int
     locator: str
-    # Telegram message being answered. None for forwarded messages.
+    # Telegram message being answered, when there is an owner-authored message.
     message_id: int | None = None
     # Pages fully read in this turn. Only a full wiki_read adds one.
     read_paths: set[str] = field(default_factory=set)
     memory_block: str | None = None
+    synthetic: bool = False
 
 
 ACTIVE_WIKI: ContextVar[WikiTurn | None] = ContextVar("blacki_wiki", default=None)
@@ -88,7 +89,7 @@ def wiki_turn(turn: WikiTurn | None) -> Iterator[None]:
 def wiki_origin() -> dict[str, Any]:
     """Return history metadata for the run. Synthetic runs stay out of search."""
     turn = ACTIVE_WIKI.get()
-    if turn is None:
+    if turn is None or turn.synthetic:
         return {"blacki_wiki": {"kind": "synthetic"}}
     origin: dict[str, Any] = {"owner": turn.owner}
     if turn.message_id is not None:
