@@ -9,8 +9,17 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
+from google.adk.flows.llm_flows.functions import merge_parallel_function_response_events
 from google.adk.models.llm_request import LlmRequest
 from google.adk.plugins.multimodal_tool_results_plugin import PARTS_RETURNED_BY_TOOLS_ID
+from google.adk.sessions import InMemorySessionService
+from google.adk.telemetry._experimental_semconv import (
+    set_operation_details_attributes_from_request,
+)
+from google.adk.tools import ToolContext
 from google.adk.tools.function_tool import FunctionTool
 from google.genai import types
 
@@ -418,108 +427,79 @@ async def test_sandbox_view_image_reports_invalid_image() -> None:
 
 
 @pytest.mark.asyncio
-async def test_multimodal_plugin_keeps_multiple_sandbox_images_independent() -> None:
-    first = _png_bytes(2, 3)
-    second = _png_bytes(4, 5)
-    manager, sandbox = _sandbox_manager(first)
-    sandbox.files.read_bytes.side_effect = [first, second]
-    state: dict[str, Any] = {}
-    tool_context = SimpleNamespace(state=state)
-    tool = SimpleNamespace(name="sandbox_view_image")
+@pytest.mark.parametrize("image_count", [1, 2], ids=["single", "parallel"])
+async def test_multimodal_plugin_attaches_images_after_adk_event_merge(
+    image_count: int,
+) -> None:
+    service = InMemorySessionService()
+    session = await service.create_session(app_name="blacki", user_id="owner")
+    invocation = InvocationContext(
+        invocation_id="view-images", session_service=service, session=session
+    )
+    tool = FunctionTool(sandbox_view_image)
+    plugin = SandboxMultimodalToolResultsPlugin()
+    captions = [f"Image {index}" for index in range(image_count)]
+    images = [_png_bytes(width=index + 2) for index in range(image_count)]
 
-    with patch("blacki.tools.sandbox_images.get_sandbox_manager", return_value=manager):
-        first_result = await sandbox_view_image(
-            "uploads/first.png", cast(Any, tool_context)
+    events = []
+    for caption, data in zip(captions, images, strict=True):
+        tool_context = ToolContext(invocation)
+        result = [
+            types.Part.from_text(text=caption),
+            types.Part.from_bytes(data=data, mime_type="image/png"),
+        ]
+        summary = await plugin.after_tool_callback(
+            tool=tool, tool_args={}, tool_context=tool_context, result=result
         )
-        second_result = await sandbox_view_image(
-            "uploads/second.png", cast(Any, tool_context)
-        )
-    assert isinstance(first_result, list)
-    assert isinstance(second_result, list)
-
-    bridge = SandboxMultimodalToolResultsPlugin()
-    for result in (first_result, second_result):
-        assert await bridge.after_tool_callback(
-            tool=cast(Any, tool),
-            tool_args={},
-            tool_context=cast(Any, tool_context),
-            result=cast(Any, result),
-        ) == {
+        assert summary == {
             "status": "success",
             "message": "Image attached as a separate visual input.",
         }
-
-    first_function_response = types.Part.from_function_response(
-        name="sandbox_view_image",
-        response={"result": first_result},
-    ).function_response
-    second_function_response = types.Part.from_function_response(
-        name="sandbox_view_image",
-        response={"result": second_result},
-    ).function_response
-    assert first_function_response is not None
-    assert second_function_response is not None
-    event = SimpleNamespace(
-        content=types.Content(
-            role="user",
-            parts=[
-                types.Part(function_response=first_function_response),
-                types.Part(function_response=second_function_response),
-            ],
-        )
-    )
-    await bridge.on_event_callback(
-        invocation_context=cast(Any, SimpleNamespace()),
-        event=cast(Any, event),
-    )
-    assert first_function_response.response == {
-        "status": "success",
-        "message": "Image attached as a separate visual input.",
-    }
-    assert second_function_response.response == {
-        "status": "success",
-        "message": "Image attached as a separate visual input.",
-    }
-    serialized_event = event.content.model_dump(mode="json")
-    assert "Sandbox image first.png" not in str(serialized_event)
-    assert "Sandbox image second.png" not in str(serialized_event)
-
-    request = LlmRequest(
-        contents=[
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_function_response(
-                        name="sandbox_view_image",
-                        response={
-                            "status": "success",
-                            "message": "Image attached as a separate visual input.",
-                        },
-                    )
-                ],
+        events.append(
+            Event(
+                invocation_id=invocation.invocation_id,
+                author="blacki",
+                actions=tool_context.actions,
+                content=types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_function_response(
+                            name=tool.name, response={"result": result}
+                        )
+                    ],
+                ),
             )
-        ]
-    )
-    await bridge.before_model_callback(
-        callback_context=cast(Any, SimpleNamespace(state=state)),
-        llm_request=request,
-    )
+        )
 
-    parts = request.contents[-1].parts or []
-    inline_parts = [part for part in parts if part.inline_data is not None]
-    text_parts = [part.text for part in parts if part.text]
-    assert len(inline_parts) == 2
-    inline_data = [part.inline_data for part in inline_parts]
-    assert all(data is not None for data in inline_data)
-    assert [data.data for data in inline_data if data is not None] == [first, second]
-    assert text_parts == [
-        "Sandbox image first.png: PNG, 2x3px",
-        "Sandbox image second.png: PNG, 4x5px",
-    ]
-    assert (
-        PARTS_RETURNED_BY_TOOLS_ID not in state
-        or state[PARTS_RETURNED_BY_TOOLS_ID] == []
+    event = merge_parallel_function_response_events(events)
+    await plugin.on_event_callback(invocation_context=invocation, event=event)
+    await service.append_event(session, event)
+    saved_session = await service.get_session(
+        app_name=session.app_name, user_id=session.user_id, session_id=session.id
     )
+    assert saved_session is not None
+    assert PARTS_RETURNED_BY_TOOLS_ID not in saved_session.state
+    saved_event = saved_session.events[-1]
+    assert PARTS_RETURNED_BY_TOOLS_ID not in saved_event.actions.state_delta
+    assert [response.response for response in saved_event.get_function_responses()] == [
+        summary
+    ] * image_count
+    assert saved_event.content is not None
+
+    request = LlmRequest(contents=[saved_event.content.model_copy(deep=True)])
+    await plugin.before_model_callback(
+        callback_context=CallbackContext(invocation), llm_request=request
+    )
+    set_operation_details_attributes_from_request({}, request)
+    parts = request.contents[-1].parts or []
+    assert [part.text for part in parts if part.text] == captions
+    assert [part.inline_data.data for part in parts if part.inline_data] == images
+
+    next_request = LlmRequest(contents=[saved_event.content.model_copy(deep=True)])
+    await plugin.before_model_callback(
+        callback_context=CallbackContext(invocation), llm_request=next_request
+    )
+    assert next_request.contents == [saved_event.content]
 
 
 @pytest.mark.asyncio

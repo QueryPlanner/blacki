@@ -5,14 +5,18 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from google.adk.plugins.multimodal_tool_results_plugin import (
+    PARTS_RETURNED_BY_TOOLS_ID,
     MultimodalToolResultsPlugin,
 )
 from google.adk.tools import ToolContext
 from google.genai import types
 
 if TYPE_CHECKING:
+    from google.adk.agents.callback_context import CallbackContext
     from google.adk.agents.invocation_context import InvocationContext
     from google.adk.events import Event
+    from google.adk.models.llm_request import LlmRequest
+    from google.adk.models.llm_response import LlmResponse
     from google.adk.tools.base_tool import BaseTool
 
 
@@ -44,6 +48,19 @@ class SandboxMultimodalToolResultsPlugin(MultimodalToolResultsPlugin):
                 "message": "Image attached as a separate visual input.",
             }
         return None
+
+    async def before_model_callback(
+        self, *, callback_context: CallbackContext, llm_request: LlmRequest
+    ) -> LlmResponse | None:
+        state = callback_context.state
+        if saved_parts := state.get(PARTS_RETURNED_BY_TOOLS_ID):
+            # ADK's parallel event merge serializes Parts in temporary state.
+            state[PARTS_RETURNED_BY_TOOLS_ID] = [
+                types.Part.model_validate(part) for part in saved_parts
+            ]
+        return await super().before_model_callback(
+            callback_context=callback_context, llm_request=llm_request
+        )
 
     async def on_event_callback(
         self,
