@@ -344,8 +344,10 @@ past conversations.
 
 `/memory off` pauses access and `/memory on` resumes it. `/memory list` shows
 each page path with its size. Pages are edited in chat when you ask, or when
-Blacki saves a durable fact from your own messages. Scheduled reminders do not
-read or edit the wiki.
+Blacki saves a durable fact from your own messages. Reminders scheduled in your
+private chat can use the same tools, including the wiki while memory is on. An
+older reminder can use private tools when Blacki finds its scheduling record in
+your private chat history. Otherwise, Blacki sends the saved reminder text.
 
 Original chat transcripts and session events keep their normal retention.
 Wiki tool calls and results are stored with them, but they are not searchable

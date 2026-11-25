@@ -13,6 +13,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from blacki.utils.timezone import get_app_timezone, now_utc, utc_iso_seconds
 
+from .context import is_private_reminder_owner
 from .recurrence import get_next_trigger_time
 from .storage import Reminder, get_storage
 
@@ -230,6 +231,7 @@ class ReminderScheduler:
             recurrence_text=recurrence_text,
             timezone_name=timezone_name,
             created_at=now_utc().isoformat(timespec="seconds"),
+            private_telegram=is_private_reminder_owner(user_id),
         )
 
         reminder_id = await self.storage.add_reminder(reminder)

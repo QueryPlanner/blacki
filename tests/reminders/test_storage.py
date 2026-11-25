@@ -383,12 +383,14 @@ class TestWikiReviewColumnRetirement:
             await storage.initialize()
             reminders = await storage.get_user_reminders("telegram-chat-12")
             assert [reminder.message for reminder in reminders] == ["Old review"]
+            assert reminders[0].private_telegram is None
             new_id = await storage.add_reminder(
                 Reminder(
                     user_id="telegram-chat-12",
                     message="New reminder",
-                    trigger_time="2026-11-10T18:00:00+00:00",
-                    created_at="2026-11-09T12:00:00+00:00",
+                    trigger_time="2020-11-10T18:00:00+00:00",
+                    created_at="2020-11-09T12:00:00+00:00",
+                    private_telegram=True,
                 )
             )
             async with legacy.execute(
@@ -397,5 +399,9 @@ class TestWikiReviewColumnRetirement:
                 row = await cursor.fetchone()
             assert row is not None
             assert row[0] is None
+            assert any(
+                reminder.id == new_id and reminder.private_telegram is True
+                for reminder in await storage.get_due_reminders()
+            )
         finally:
             await legacy.close()

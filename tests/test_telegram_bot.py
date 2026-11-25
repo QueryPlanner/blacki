@@ -4430,6 +4430,7 @@ class TestTelegramBotScheduledReminders:
             message="Summarize news",
             trigger_time="2026-04-18T12:00:00+00:00",
             created_at="2026-04-18T10:00:00+00:00",
+            private_telegram=True,
         )
 
         await bot.handle_scheduled_reminder(reminder)
@@ -4468,8 +4469,8 @@ class TestTelegramBotScheduledReminders:
 
         reminder = Reminder(
             id=2,
-            user_id="telegram-chat-12345-thread-678",
-            message="Check emails",
+            user_id="telegram-chat--12345-thread-678",
+            message="Summarize group reminders",
             trigger_time="2026-04-18T12:00:00+00:00",
             created_at="2026-04-18T10:00:00+00:00",
         )
@@ -4481,7 +4482,7 @@ class TestTelegramBotScheduledReminders:
         assert call["state"]["telegram_thread_id"] == "678"
 
         mock_api.send_chat_action.assert_called_once_with(
-            chat_id=12345, action="typing", message_thread_id=678
+            chat_id=-12345, action="typing", message_thread_id=678
         )
         mock_api.send_message.assert_called_once()
         call_kwargs = mock_api.send_message.call_args.kwargs
@@ -4508,6 +4509,7 @@ class TestTelegramBotScheduledReminders:
             message="Important! Notice.",
             trigger_time="2026-04-18T12:00:00+00:00",
             created_at="2026-04-18T10:00:00+00:00",
+            private_telegram=True,
         )
 
         await bot.handle_scheduled_reminder(reminder)
