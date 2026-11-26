@@ -167,7 +167,7 @@ class TestSqliteReminderStorage:
         )
         rid = await storage.add_reminder(reminder)
 
-        await storage.mark_sent(rid)
+        await storage.claim_occurrence(rid, reminder.trigger_time, None)
 
         rows = await storage.get_user_reminders("user1", include_sent=True)
         assert rows[0].is_sent is True
@@ -183,7 +183,9 @@ class TestSqliteReminderStorage:
         )
         rid = await storage.add_reminder(reminder)
 
-        await storage.reschedule_reminder(rid, "2026-04-19T12:00:00+00:00")
+        await storage.claim_occurrence(
+            rid, reminder.trigger_time, "2026-04-19T12:00:00+00:00"
+        )
 
         rows = await storage.get_user_reminders("user1")
         assert rows[0].trigger_time == "2026-04-19T12:00:00+00:00"
@@ -215,7 +217,7 @@ class TestSqliteReminderStorage:
             created_at="2026-04-18T10:00:00+00:00",
         )
         rid = await storage.add_reminder(reminder)
-        await storage.mark_sent(rid)
+        await storage.claim_occurrence(rid, reminder.trigger_time, None)
 
         result = await storage.get_user_reminders("user1", include_sent=True)
 
@@ -232,7 +234,7 @@ class TestSqliteReminderStorage:
             created_at="2026-04-18T10:00:00+00:00",
         )
         rid = await storage.add_reminder(reminder)
-        await storage.mark_sent(rid)
+        await storage.claim_occurrence(rid, reminder.trigger_time, None)
 
         result = await storage.get_user_reminders("user1")
 

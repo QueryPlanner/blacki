@@ -23,8 +23,7 @@ class TestReminderScheduler:
         storage = MagicMock()
         storage.initialize = AsyncMock()
         storage.get_due_reminders = AsyncMock(return_value=[])
-        storage.mark_sent = AsyncMock()
-        storage.reschedule_reminder = AsyncMock()
+        storage.claim_occurrence = AsyncMock(return_value=True)
         storage.add_reminder = AsyncMock(return_value=1)
         storage.get_user_reminders = AsyncMock(return_value=[])
         storage.delete_reminder = AsyncMock(return_value=True)
@@ -134,48 +133,6 @@ class TestReminderScheduler:
 
         mock_callback.assert_called_once_with(reminder)
 
-    @pytest.mark.asyncio
-    async def test_send_reminder_marks_sent(
-        self, mock_storage: MagicMock, mock_callback: MagicMock
-    ) -> None:
-        """Should mark reminder as sent after delivery."""
-        reminder = Reminder(
-            id=1,
-            user_id="telegram-chat-123456",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            created_at="2026-04-18T10:00:00+00:00",
-        )
-
-        scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_callback(mock_callback)
-
-        await scheduler._send_reminder(reminder)
-
-        mock_storage.mark_sent.assert_called_once_with(1)
-
-    @pytest.mark.asyncio
-    async def test_send_recurring_reminder_reschedules(
-        self, mock_storage: MagicMock, mock_callback: MagicMock
-    ) -> None:
-        """Should reschedule recurring reminder after delivery."""
-        reminder = Reminder(
-            id=1,
-            user_id="telegram-chat-123456",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            recurrence_rule="*/15 * * * *",
-            timezone_name="UTC",
-            created_at="2026-04-18T10:00:00+00:00",
-        )
-
-        scheduler = self._create_scheduler(mock_storage)
-        scheduler.set_callback(mock_callback)
-
-        await scheduler._send_reminder(reminder)
-
-        mock_storage.reschedule_reminder.assert_called_once()
-
     def test_callback_raises_if_not_set(self, mock_storage: MagicMock) -> None:
         """Should raise RuntimeError if callback not set."""
         scheduler = self._create_scheduler(mock_storage)
@@ -206,7 +163,7 @@ class TestReminderScheduler:
 
         await scheduler.stop()
 
-        mock_storage.mark_sent.assert_not_called()
+        mock_storage.claim_occurrence.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_reminder_skips_if_no_id(
@@ -247,62 +204,9 @@ class TestReminderScheduler:
 
         await scheduler._send_reminder(reminder)
 
-        mock_storage.mark_sent.assert_called_once_with(1)
-
-    @pytest.mark.asyncio
-    async def test_handle_stale_reminder_skips_if_no_id(
-        self, mock_storage: MagicMock
-    ) -> None:
-        """Should skip stale reminder if it has no ID."""
-        reminder = Reminder(
-            user_id="telegram-chat-123456",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            created_at="2026-04-18T10:00:00+00:00",
+        mock_storage.claim_occurrence.assert_called_once_with(
+            1, reminder.trigger_time, None
         )
-
-        scheduler = self._create_scheduler(mock_storage)
-        current_time = datetime(2026, 4, 18, 12, 0, 0, tzinfo=UTC)
-
-        await scheduler._handle_stale_reminder(reminder, current_time)
-
-        mock_storage.mark_sent.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_complete_reminder_raises_if_no_id(
-        self, mock_storage: MagicMock
-    ) -> None:
-        """Should raise ValueError if reminder has no ID."""
-        reminder = Reminder(
-            user_id="telegram-chat-123456",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            created_at="2026-04-18T10:00:00+00:00",
-        )
-
-        scheduler = self._create_scheduler(mock_storage)
-
-        with pytest.raises(ValueError, match="must have an ID"):
-            await scheduler._complete_reminder_delivery(reminder)
-
-    @pytest.mark.asyncio
-    async def test_reschedule_reminder_raises_if_no_id(
-        self, mock_storage: MagicMock
-    ) -> None:
-        """Should raise ValueError if reminder has no ID for reschedule."""
-        reminder = Reminder(
-            user_id="telegram-chat-123456",
-            message="Test",
-            trigger_time="2026-04-18T12:00:00+00:00",
-            recurrence_rule="*/15 * * * *",
-            timezone_name="UTC",
-            created_at="2026-04-18T10:00:00+00:00",
-        )
-
-        scheduler = self._create_scheduler(mock_storage)
-
-        with pytest.raises(ValueError, match="must have an ID"):
-            await scheduler._reschedule_recurring_reminder(reminder)
 
     @pytest.mark.asyncio
     async def test_check_and_send_handles_exception(
@@ -359,7 +263,7 @@ class TestReminderScheduler:
 
         await scheduler._check_and_send_reminders()
 
-        mock_storage.mark_sent.assert_not_called()
+        mock_storage.claim_occurrence.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_check_and_send_only_stale_reminders(
@@ -384,7 +288,9 @@ class TestReminderScheduler:
         ):
             await scheduler._check_and_send_reminders()
 
-        mock_storage.mark_sent.assert_called_once_with(1)
+        mock_storage.claim_occurrence.assert_called_once_with(
+            1, stale_reminder.trigger_time, None
+        )
 
     @pytest.mark.asyncio
     async def test_check_and_send_only_fresh_reminders(
